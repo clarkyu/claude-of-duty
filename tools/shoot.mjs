@@ -26,6 +26,8 @@ const width = Number(arg('w', 1600));
 const height = Number(arg('h', 900));
 const quality = arg('quality', 'high');
 const outDir = resolve(ROOT, arg('out', 'shots'));
+const tag = arg('tag', '');
+const outDir2 = tag ? `dist-${tag}` : 'dist';
 const port = Number(arg('port', 4173 + Math.floor(Math.random() * 400)));
 const names = (arg('pose', DEFAULT_SET.join(',')) || '').split(',').filter((n) => POSES[n]);
 const warmOverride = arg('warm', null);
@@ -43,7 +45,7 @@ const report = { quality, width, height, poses: {}, build: null, bootLogs: [], o
 try {
   if (!flag('no-build')) {
     process.stdout.write('building… ');
-    const b = await build();
+    const b = await build({ outDir: outDir2 });
     report.build = b;
     if (!b.ok) {
       console.error(`\nBUILD FAILED\n${b.error}`);
@@ -53,7 +55,7 @@ try {
     console.log(`ok (${b.ms}ms)`);
   }
 
-  server = await serve(port);
+  server = await serve(port, outDir2);
   const l = await launch({ width, height });
   browser = l.browser;
   const page = l.page;

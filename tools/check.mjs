@@ -16,7 +16,11 @@ const arg = (k, d) => {
   return i >= 0 ? argv[i + 1] : d;
 };
 const quality = arg('quality', 'high');
-const port = 4600 + Math.floor(Math.random() * 300);
+// Agents run concurrently: --tag gives each one its own dist dir and port so
+// simultaneous builds and preview servers never collide.
+const tag = arg('tag', '');
+const outDir = tag ? `dist-${tag}` : 'dist';
+const port = 4600 + Math.floor(Math.random() * 900);
 
 let server, browser, failures = 0;
 const say = (ok, msg) => {
@@ -26,12 +30,12 @@ const say = (ok, msg) => {
 
 try {
   if (!argv.includes('--no-build')) {
-    const b = await build();
+    const b = await build({ outDir });
     say(b.ok, `build (${b.ms}ms)` + (b.ok ? '' : `\n${b.error}`));
     if (!b.ok) process.exit(1);
   }
 
-  server = await serve(port);
+  server = await serve(port, outDir);
   const l = await launch({ width: 1280, height: 720 });
   browser = l.browser;
   const page = l.page;
@@ -57,7 +61,7 @@ try {
 
   // Black-screen detector: sample the framebuffer.
   mkdirSync(resolve(ROOT, 'shots'), { recursive: true });
-  const tmp = resolve(ROOT, 'shots', '.smoke.png');
+  const tmp = resolve(ROOT, 'shots', `.smoke${tag ? '-' + tag : ''}.png`);
   await page.evaluate(() => window.__COD.frame(1 / 60));
   await page.screenshot({ path: tmp });
   const buf = readFileSync(tmp);
@@ -65,7 +69,7 @@ try {
   try { unlinkSync(tmp); } catch { /* best effort */ }
 
   writeFileSync(
-    resolve(ROOT, 'shots', 'check.json'),
+    resolve(ROOT, 'shots', `check${tag ? '-' + tag : ''}.json`),
     JSON.stringify({ stats: s2, perFrame, errors: errs.slice(0, 20) }, null, 2)
   );
 } catch (err) {

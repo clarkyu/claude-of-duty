@@ -23,14 +23,18 @@ export function chromePath() {
   return undefined; // let Playwright resolve its own
 }
 
-export async function build({ quiet = true } = {}) {
+export async function build({ quiet = true, outDir = 'dist' } = {}) {
   const t0 = Date.now();
   try {
-    const { stdout, stderr } = await execFileP('npx', ['vite', 'build', '--logLevel', 'warn'], {
-      cwd: ROOT,
-      maxBuffer: 32 * 1024 * 1024,
-      timeout: 600000,
-    });
+    const { stdout, stderr } = await execFileP(
+      'npx',
+      ['vite', 'build', '--logLevel', 'warn', '--outDir', outDir, '--emptyOutDir'],
+      {
+        cwd: ROOT,
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: 600000,
+      }
+    );
     if (!quiet) process.stdout.write(stdout + stderr);
     return { ok: true, ms: Date.now() - t0 };
   } catch (err) {
@@ -42,8 +46,8 @@ export async function build({ quiet = true } = {}) {
   }
 }
 
-export async function serve(port = 4173) {
-  const proc = spawn('npx', ['vite', 'preview', '--port', String(port), '--strictPort'], {
+export async function serve(port = 4173, outDir = 'dist') {
+  const proc = spawn('npx', ['vite', 'preview', '--port', String(port), '--strictPort', '--outDir', outDir], {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
