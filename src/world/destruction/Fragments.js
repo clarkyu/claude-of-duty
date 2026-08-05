@@ -72,7 +72,9 @@ export class FragmentPool {
       wz: 0,
       restY: -1e9,
       resting: false,
-      scale: 1,
+      sx: 1,
+      sy: 1,
+      sz: 1,
     };
     mesh.material = slot.mats;
     this.group.add(mesh);
@@ -142,7 +144,13 @@ export class FragmentPool {
     if (!slot.mats[0]) return null;
     mesh.position.copy(d.position);
     mesh.quaternion.copy(d.quaternion || this._q.identity());
-    mesh.scale.setScalar(1);
+    // The cached cell was generated at a snapped size bucket; this puts it back onto
+    // the exact dimensions of the object that just broke.
+    const sc = d.scale;
+    slot.sx = sc ? sc[0] : 1;
+    slot.sy = sc ? sc[1] : 1;
+    slot.sz = sc ? sc[2] : 1;
+    mesh.scale.set(slot.sx, slot.sy, slot.sz);
     mesh.visible = true;
     mesh.castShadow = !!d.castShadow;
     mesh.receiveShadow = true;
@@ -151,7 +159,6 @@ export class FragmentPool {
     slot.active = true;
     slot.age = 0;
     slot.life = d.life ?? 8;
-    slot.scale = 1;
     slot.serial = ++this._serial;
     slot.resting = false;
     slot.restY = -1e9;
@@ -280,8 +287,7 @@ export class FragmentPool {
       const left = s.life - s.age;
       if (left < FADE) {
         const k = Math.max(0.001, left / FADE);
-        s.scale = k;
-        s.mesh.scale.setScalar(k);
+        s.mesh.scale.set(s.sx * k, s.sy * k, s.sz * k);
         s.mesh.position.y -= (1 - k) * 0.0016;
       }
     }

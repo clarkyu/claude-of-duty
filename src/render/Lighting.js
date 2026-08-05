@@ -1148,10 +1148,22 @@ class Lighting {
       }
     }
 
-    // One ground bounce. Without it every downward-facing surface — chins, undersides
-    // of ledges, the bottom of a rifle — goes flat black and the scene reads as CG.
+    /**
+     * One bounce off the environment. Without it every downward-facing surface —
+     * chins, undersides of ledges, the bottom of a rifle — goes flat black and the
+     * scene reads as CG.
+     *
+     * The albedo here is doing double duty: it stands in for the sunlit *ground* and
+     * for the sunlit *facades* opposite, which in a street canyon are the larger of
+     * the two bounce sources. 0.16 is a plausible number for asphalt alone and it left
+     * shade lit almost purely by the zenith — measured B:R of 1.9 on the shaded street
+     * against 1.3 at the horizon, which is what read as a blue cast over everything
+     * that was not in direct sun. Dry sand, concrete and painted stucco all sit at
+     * 0.28-0.40, so 0.30 is if anything still conservative, and it puts warm light back
+     * into the shadows the way a real canyon does.
+     */
     const sunUp = Math.max(this.sunDirection.y, 0);
-    const albedo = sky?.groundColor ? 0.16 : 0.14;
+    const albedo = sky?.groundColor ? 0.3 : 0.26;
     const gR = (albedo * (this.sunIntensity * sunUp * this.sunColor.r + eR)) / Math.PI;
     const gG = (albedo * (this.sunIntensity * sunUp * this.sunColor.g + eG)) / Math.PI;
     const gB = (albedo * (this.sunIntensity * sunUp * this.sunColor.b + eB * 0.95)) / Math.PI;

@@ -37,7 +37,8 @@ export function hashPoint(x, y, z, salt = 0) {
  * keyed on exact dimensions — so every extent snaps to the nearest step first.
  */
 const SIZE_STEPS = [
-  0.04, 0.06, 0.09, 0.13, 0.18, 0.25, 0.34, 0.45, 0.6, 0.8, 1.05, 1.4, 1.85, 2.4, 3.2,
+  0.006, 0.012, 0.022, 0.04, 0.06, 0.09, 0.13, 0.18, 0.25, 0.34, 0.45, 0.6, 0.8, 1.05,
+  1.4, 1.85, 2.4, 3.2,
 ];
 
 export function snapSize(v) {
