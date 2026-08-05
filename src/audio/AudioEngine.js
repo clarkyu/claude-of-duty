@@ -380,7 +380,8 @@ class AudioEngine {
     // WeaponSystem for every shot). Rather than pick one and have the other
     // silently stop working when its owner refactors, collapse anything
     // identical arriving at the same place inside 40 ms.
-    if (this._isDuplicate(d.id, opts.position, nowT)) return null;
+    // (A deliberately delayed play — a scheduled burst — is never a duplicate.)
+    if (!opts.delay && !opts.nodedupe && this._isDuplicate(d.id, opts.position, nowT)) return null;
 
     const spatial = opts.spatial ?? d.spatial;
     const pos = readVec(opts.position) || (spatial ? { ...this.listener } : null);
@@ -1018,14 +1019,11 @@ class AudioEngine {
 
     /* Weapons ------------------------------------------------------------- */
     on('weapon:fire', (p) => {
-      // WeaponSystem also calls play() directly; if it did, this is a duplicate.
-      // Guard on a per-frame stamp so we never double-fire the same shot.
-      if (this._lastFireFrame === this.ctx?.time?.frame) return;
-      const def = p.weapon?.def || p.def || null;
-      const id = def?.audio?.fire || (p.suppressed ? 'weapon_suppressed' : 'weapon_fire');
+      const def = p.def || p.weapon?.def || null;
+      const id = p.suppressed ? 'weapon_suppressed' : def?.audio?.fire || 'weapon_fire';
       this.play(id, {
         position: p.origin,
-        weapon: typeof p.weapon === 'string' ? p.weapon : p.weapon?.id,
+        weapon: p.weaponId || (typeof p.weapon === 'string' ? p.weapon : p.weapon?.id),
         weaponClass: def?.class,
         suppressed: p.suppressed,
         ads: p.ads,

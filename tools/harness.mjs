@@ -114,9 +114,12 @@ export async function bootGame(page, url, { quality = 'high', seed = 0x5eed1234,
   page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));
   page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}\n${e.stack || ''}`));
 
+  // Several agents capture concurrently on a 4-core box under a software
+  // rasteriser, so navigation alone can take minutes. The old 120s cap turned
+  // heavy load into a spurious failure.
   await page.goto(`${url}/?headless=1&quality=${quality}&seed=${seed}`, {
     waitUntil: 'domcontentloaded',
-    timeout: 120000,
+    timeout: 600000,
   });
   await page.waitForFunction('window.__BOOTED === true', null, { timeout, polling: 500 });
   return logs;
