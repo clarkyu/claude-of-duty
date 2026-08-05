@@ -125,6 +125,7 @@ class AudioEngine {
     this.ambience = null;
     this.nz = null;
     this._cooldowns = new Map();
+    this._dupes = new Map();
     this._unsub = [];
     this._gestureBound = false;
     this._probe = { taps: [], ceiling: Infinity, mean: 24, open: 1, t: 0, zone: 'street' };
@@ -374,6 +375,13 @@ class AudioEngine {
       this._cooldowns.set(d.id, nowT);
     }
 
+    // Several systems both emit their event *and* call play() for the same
+    // thing (Ballistics does it for every impact and every explosion,
+    // WeaponSystem for every shot). Rather than pick one and have the other
+    // silently stop working when its owner refactors, collapse anything
+    // identical arriving at the same place inside 40 ms.
+    if (this._isDuplicate(d.id, opts.position, nowT)) return null;
+
     const spatial = opts.spatial ?? d.spatial;
     const pos = readVec(opts.position) || (spatial ? { ...this.listener } : null);
     const dist = spatial && pos ? this.spatializer.distanceTo(pos) : 0;
@@ -490,7 +498,9 @@ class AudioEngine {
       bus: busName,
       priority: prio,
       start: t0,
-      end: end + 0.35,
+      // Slap-back taps keep ringing for over a second after the synth has
+      // finished; reaping the delay lines early would chop the tail off.
+      end: end + 0.35 + (tailNodes ? 1.6 : 0),
       chain: chainObj,
       tailNodes,
       tracked,
@@ -502,6 +512,23 @@ class AudioEngine {
     this.voices.push(voice);
     this.stats.spawned++;
     return voice;
+  }
+
+  /** Collapse the same sound fired twice at the same spot within 40 ms. */
+  _isDuplicate(id, position, now) {
+    const p = readVec(position);
+    const key = p
+      ? `${id}|${Math.round(p.x * 2)},${Math.round(p.y * 2)},${Math.round(p.z * 2)}`
+      : id;
+    const last = this._dupes.get(key);
+    if (last !== undefined && now - last < 0.04) return true;
+    this._dupes.set(key, now);
+    if (this._dupes.size > 256) {
+      for (const [k, t] of this._dupes) {
+        if (now - t > 0.5) this._dupes.delete(k);
+      }
+    }
+    return false;
   }
 
   /**
