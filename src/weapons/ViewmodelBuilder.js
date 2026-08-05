@@ -402,8 +402,10 @@ function extrudeG(section, o = {}) {
       if (len < 1e-7) continue;
       dx /= len;
       dy /= len;
-      // Outward for a CCW outer loop and for a CW hole loop alike.
-      put(dy * hand, -dx * hand, 0, n3);
+      // Outward for a CCW outer loop and for a CW hole loop alike. The normal is a
+      // section-space fact, so it maps straight through; only the triangle winding
+      // cares about the mapping's handedness.
+      put(dy, -dx, 0, n3);
       const buf = flags && flags[i] ? edge : main;
       const vs = [];
       let k = 0;
@@ -612,7 +614,7 @@ function lensG(r, bulge, sign = 1, rings = 5, cols = 28) {
   for (let i = 0; i < rings; i++) {
     for (let k = 0; k < cols; k++) {
       if (sign > 0) b.quad(rows[i][k], rows[i + 1][k], rows[i + 1][k + 1], rows[i][k + 1]);
-      else b.quad(rows[i][k + 1], rows[i + 1][k + 1], rows[i + 1][k], rows[i][k]);
+      else b.quad(rows[i][k], rows[i][k + 1], rows[i + 1][k + 1], rows[i + 1][k]);
     }
   }
   return b.geom();
