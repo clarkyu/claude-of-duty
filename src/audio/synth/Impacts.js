@@ -400,6 +400,214 @@ export function flyby(S, p = {}) {
   return t + dur + 0.15;
 }
 
+/* ── breaking things ───────────────────────────────────────────────────────── */
+
+/**
+ * Destruction voices. Every one of these is a transient plus a *cascade*: the
+ * thing failing, then the pieces of it arriving over the next second. The
+ * cascade is what sells destruction — a break with no debris sounds like a
+ * cardboard box no matter how loud the crack is.
+ *
+ *   crack     the failure itself
+ *   body      how heavy the object was
+ *   cascade   {n, spread, freq, decay, kind} discrete pieces landing
+ *   texture   {kind, freq, q, level, decay} a continuous layer (dust, rip, crush)
+ */
+const BREAK_PROFILES = {
+  glass_shatter: {
+    gain: 1.0, wet: 0.75,
+    crack: { level: 0.85, f0: 9000, f1: 2600, sweep: 0.006, decay: 0.05, q: 1.4, drive: 0.5 },
+    body: { level: 0.18, f0: 420, f1: 150, sweep: 0.01, decay: 0.05 },
+    cascade: { n: 22, spread: 1.5, freq: [2400, 8600], decay: [0.04, 0.24], ring: true },
+    texture: { kind: 'velvet', freq: 6400, q: 1.1, level: 0.24, decay: 0.7, rate: 1.4 },
+  },
+  glass_shatter_safety: {
+    gain: 0.95, wet: 0.6,
+    crack: { level: 0.6, f0: 5200, f1: 1500, sweep: 0.01, decay: 0.06, q: 1.0, drive: 0.4 },
+    body: { level: 0.25, f0: 340, f1: 120, sweep: 0.012, decay: 0.06 },
+    cascade: { n: 10, spread: 0.9, freq: [1600, 4200], decay: [0.02, 0.08] },
+    // Safety glass does not tinkle, it pours: one dense granular mass.
+    texture: { kind: 'velvet', freq: 4200, q: 0.8, level: 0.42, decay: 0.85, rate: 2.1 },
+  },
+  glass_crack: {
+    gain: 0.8, wet: 0.7,
+    crack: { level: 0.55, f0: 7600, f1: 2200, sweep: 0.005, decay: 0.035, q: 1.8, drive: 0.4 },
+    cascade: { n: 3, spread: 0.4, freq: [3000, 7000], decay: [0.03, 0.12], ring: true },
+  },
+  wood_break: {
+    gain: 1.0, wet: 0.5,
+    crack: { level: 0.75, f0: 2600, f1: 460, sweep: 0.02, decay: 0.11, q: 1.0, drive: 0.5 },
+    body: { level: 0.55, f0: 260, f1: 78, sweep: 0.025, decay: 0.16 },
+    cascade: { n: 9, spread: 1.1, freq: [700, 3200], decay: [0.02, 0.09] },
+    texture: { kind: 'velvet', freq: 2200, q: 1.4, level: 0.26, decay: 0.45, rate: 0.7 },
+    rip: { f0: 900, f1: 260, dur: 0.16, level: 0.3 },
+  },
+  crate_break: {
+    gain: 0.95, wet: 0.5,
+    crack: { level: 0.7, f0: 2200, f1: 520, sweep: 0.018, decay: 0.09, q: 1.1, drive: 0.45 },
+    body: { level: 0.5, f0: 300, f1: 90, sweep: 0.022, decay: 0.14 },
+    cascade: { n: 14, spread: 1.4, freq: [600, 2800], decay: [0.02, 0.11] },
+    texture: { kind: 'velvet', freq: 1800, q: 1.2, level: 0.2, decay: 0.5, rate: 0.65 },
+  },
+  concrete_break: {
+    gain: 1.15, wet: 0.65,
+    crack: { level: 0.85, f0: 3400, f1: 480, sweep: 0.024, decay: 0.14, q: 0.85, drive: 0.6 },
+    body: { level: 0.9, f0: 190, f1: 46, sweep: 0.05, decay: 0.4 },
+    cascade: { n: 16, spread: 1.6, freq: [400, 2400], decay: [0.02, 0.1] },
+    texture: { kind: 'velvet', freq: 3000, q: 0.9, level: 0.4, decay: 0.9, rate: 0.6 },
+  },
+  plaster_break: {
+    gain: 0.85, wet: 0.55,
+    crack: { level: 0.5, f0: 2800, f1: 560, sweep: 0.016, decay: 0.09, q: 0.9, drive: 0.35 },
+    body: { level: 0.4, f0: 210, f1: 62, sweep: 0.03, decay: 0.18 },
+    cascade: { n: 11, spread: 1.3, freq: [500, 2000], decay: [0.02, 0.08] },
+    texture: { kind: 'velvet', freq: 3800, q: 0.8, level: 0.44, decay: 1.0, rate: 0.8 },
+  },
+  ceramic_break: {
+    gain: 0.95, wet: 0.7,
+    crack: { level: 0.8, f0: 7000, f1: 1700, sweep: 0.007, decay: 0.05, q: 1.5, drive: 0.5 },
+    body: { level: 0.25, f0: 360, f1: 120, sweep: 0.01, decay: 0.06 },
+    cascade: { n: 12, spread: 1.0, freq: [1800, 6400], decay: [0.03, 0.18], ring: true },
+    texture: { kind: 'velvet', freq: 5200, q: 1.0, level: 0.2, decay: 0.5, rate: 1.2 },
+  },
+  metal_tear: {
+    gain: 1.05, wet: 0.7,
+    crack: { level: 0.6, f0: 5200, f1: 1200, sweep: 0.02, decay: 0.09, q: 1.6, drive: 0.6 },
+    body: { level: 0.4, f0: 400, f1: 130, sweep: 0.02, decay: 0.12 },
+    cascade: { n: 5, spread: 0.8, freq: [900, 3600], decay: [0.08, 0.4], ring: true },
+    rip: { f0: 1800, f1: 420, dur: 0.35, level: 0.42, q: 9 },
+  },
+  chainlink_break: {
+    gain: 0.85, wet: 0.6,
+    crack: { level: 0.4, f0: 4600, f1: 1400, sweep: 0.008, decay: 0.04, q: 2.0, drive: 0.35 },
+    cascade: { n: 20, spread: 1.1, freq: [1800, 6000], decay: [0.03, 0.14], ring: true },
+    texture: { kind: 'velvet', freq: 4200, q: 2.4, level: 0.28, decay: 0.7, rate: 1.5 },
+  },
+  drum_burst: {
+    gain: 1.15, wet: 0.75,
+    crack: { level: 0.85, f0: 4200, f1: 700, sweep: 0.016, decay: 0.1, q: 0.9, drive: 0.7 },
+    body: { level: 0.75, f0: 220, f1: 52, sweep: 0.04, decay: 0.3 },
+    cascade: { n: 6, spread: 0.9, freq: [500, 2600], decay: [0.15, 0.7], ring: true },
+    // The shell keeps ringing long after the burst.
+    resonance: { freq: 320, decay: 1.4, level: 0.3, partials: 5, spread: 1.47 },
+  },
+  plastic_break: {
+    gain: 0.75, wet: 0.45,
+    crack: { level: 0.6, f0: 4200, f1: 1100, sweep: 0.008, decay: 0.04, q: 1.6, drive: 0.4 },
+    body: { level: 0.2, f0: 320, f1: 110, sweep: 0.01, decay: 0.05 },
+    cascade: { n: 6, spread: 0.7, freq: [1200, 4400], decay: [0.02, 0.07] },
+  },
+  cardboard_crush: {
+    gain: 0.6, wet: 0.3,
+    crack: { level: 0.25, f0: 1800, f1: 500, sweep: 0.02, decay: 0.08, q: 0.7, drive: 0.15 },
+    body: { level: 0.18, f0: 200, f1: 70, sweep: 0.02, decay: 0.09 },
+    texture: { kind: 'crackle', freq: 2400, q: 0.9, level: 0.4, decay: 0.55, rate: 1.1 },
+  },
+  fabric_tear: {
+    gain: 0.7, wet: 0.35,
+    crack: { level: 0.2, f0: 2600, f1: 900, sweep: 0.014, decay: 0.05, q: 0.8, drive: 0.15 },
+    rip: { f0: 2600, f1: 700, dur: 0.42, level: 0.4, q: 2.2 },
+    texture: { kind: 'velvet', freq: 3600, q: 1.1, level: 0.16, decay: 0.35, rate: 1.6 },
+  },
+};
+
+export const BREAK_IDS = Object.keys(BREAK_PROFILES);
+
+/** A continuous rip/screech: bandpassed velvet noise sweeping down. */
+function rip(S, spec, t, level, dest) {
+  const { ac, rng, nz } = S;
+  const src = nz.src('velvet', { loop: true, rate: rr(rng, 1.4, 2.6) });
+  const bp = biquad(ac, 'bandpass', spec.f0, spec.q ?? 3.2);
+  const g = gainNode(ac, 0);
+  chain(src, bp, g);
+  g.connect(dest);
+  const dur = spec.dur * jitter(rng, 0.25);
+  ahr(g.gain, t, level, 0.01, dur * 0.3, dur * 0.8);
+  setFreq(ac, bp.frequency, spec.f0 * jitter(rng, 0.15), t);
+  expFreq(ac, bp.frequency, spec.f1, t + dur);
+  nz.play(src, t);
+  safeStop(src, t + dur + 0.2);
+  S.track?.(src);
+}
+
+/** Something coming apart. Used for every `breakSound` id in Destruction.js. */
+export function breakup(S, p = {}) {
+  const { ac, rng, nz } = S;
+  const t = S.t;
+  const prof = BREAK_PROFILES[p.id] || BREAK_PROFILES[p.breakProfile] || BREAK_PROFILES.wood_break;
+  const base = (prof.gain || 1) * clamp(p.level ?? 1, 0.05, 2.5);
+  const pj = jitter(rng, 0.1);
+  S.setSend?.(prof.wet ?? 0.5);
+
+  if (prof.crack) {
+    crack(S, {
+      t,
+      level: prof.crack.level * base * jitter(rng, 0.15),
+      f0: prof.crack.f0 * pj,
+      f1: prof.crack.f1 * pj,
+      sweep: prof.crack.sweep,
+      decay: prof.crack.decay * jitter(rng, 0.2),
+      q: prof.crack.q,
+      drive: prof.crack.drive,
+      hp: 100,
+    });
+  }
+  if (prof.body) {
+    thump(S, {
+      t,
+      level: prof.body.level * base,
+      f0: prof.body.f0 * pj,
+      f1: prof.body.f1 * pj,
+      sweep: prof.body.sweep,
+      decay: prof.body.decay * jitter(rng, 0.2),
+      type: 'triangle',
+      drive: 0.3,
+    });
+  }
+  if (prof.texture) {
+    const tx = prof.texture;
+    const src = nz.src(tx.kind, { loop: true, rate: (tx.rate || 1) * rr(rng, 0.8, 1.3) });
+    const bp = biquad(ac, 'bandpass', tx.freq * pj, tx.q);
+    const g = gainNode(ac, 0);
+    chain(src, bp, g);
+    g.connect(S.out);
+    const d = tx.decay * jitter(rng, 0.25);
+    ahr(g.gain, t + 0.01, tx.level * base, 0.02, d * 0.2, d);
+    expFreq(ac, bp.frequency, tx.freq * 0.35, t + d);
+    nz.play(src, t + 0.01);
+    safeStop(src, t + d + 0.3);
+    S.track?.(src);
+  }
+  if (prof.rip) rip(S, prof.rip, t + 0.004, prof.rip.level * base, S.out);
+  if (prof.resonance) {
+    ring(S, {
+      t,
+      level: prof.resonance.level * base,
+      freq: prof.resonance.freq * pj,
+      decay: prof.resonance.decay,
+      partials: prof.resonance.partials,
+      spread: prof.resonance.spread,
+    });
+  }
+  if (prof.cascade) {
+    const c = prof.cascade;
+    const n = Math.round(c.n * clamp(p.level ?? 1, 0.4, 1.6));
+    for (let i = 0; i < n; i++) {
+      // Pieces arrive densest right after the break and thin out.
+      const u = rng() * rng();
+      const dt = 0.02 + u * c.spread;
+      const lv = base * rr(rng, 0.03, 0.16) * (1 - u * 0.7);
+      const f = rr(rng, c.freq[0], c.freq[1]);
+      tick(S, { t: t + dt, level: lv, freq: f, q: rr(rng, 3, 11), decay: rr(rng, c.decay[0], c.decay[1]) });
+      if (c.ring && rng() < 0.45) {
+        ring(S, { t: t + dt, level: lv * 0.5, freq: f * 0.8, decay: rr(rng, c.decay[0], c.decay[1]) * 2.4, partials: 2, spread: rr(rng, 1.3, 2.1) });
+      }
+    }
+    return t + 0.3 + c.spread;
+  }
+  return t + 0.9;
+}
+
 /* ── brass ─────────────────────────────────────────────────────────────────── */
 
 const CASING_TONE = {

@@ -179,6 +179,13 @@ class AudioEngine {
     this._buildGraph();
     this._bindGestures();
     this._bindEvents();
+    // If the page already has an autoplay grant (a returning player, or a
+    // browser configured to allow it) we can start without waiting for a click.
+    try {
+      this.resume();
+    } catch {
+      /* the gesture handler will get it */
+    }
     this.ready = true;
   }
 
@@ -1100,6 +1107,26 @@ class AudioEngine {
       if (p.phase === 'start') this.play('slide', { spatial: false, surface: p.surface, duration: 0.9 });
     });
     on('player:mantle', (p) => this.play('mantle', { spatial: false, surface: p.surface, ...p }));
+
+    /* Other bodies. AI is a stub today; these cost nothing until it is not. */
+    on('entity:step', (p) => {
+      this.play(p.footstep || `step_${p.surface || 'concrete'}`, {
+        position: p.position, surface: p.surface, speed: p.speed, volume: p.volume, foot: p.foot,
+      });
+    });
+    on('ai:step', (p) => {
+      this.play(`step_${p.surface || 'concrete'}`, {
+        position: p.position, surface: p.surface, speed: p.speed, volume: p.volume,
+      });
+    });
+    on('ai:fire', (p) => {
+      const def = p.def || p.weapon?.def || null;
+      this.play(def?.audio?.fire || 'weapon_fire', {
+        position: p.origin || p.position,
+        weaponClass: def?.class,
+        weapon: p.weaponId,
+      });
+    });
 
     /* Combat --------------------------------------------------------------- */
     on('entity:damage', (p) => {

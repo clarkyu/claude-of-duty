@@ -106,6 +106,11 @@ export function buildRegistry() {
   });
   add('shell_casing', { bus: 'foley', send: 0.5, priority: 2, ref: 1.5, max: 30, rolloff: 1.6, build: I.shellCasing });
 
+  /* ── destruction ─────────────────────────────────────────────────────────── */
+  for (const id of I.BREAK_IDS) {
+    add(id, { bus: 'impacts', send: 0.6, priority: 7, ref: 3.5, max: 220, rolloff: 0.95, build: I.breakup });
+  }
+
   /* ── foley ───────────────────────────────────────────────────────────────── */
   const stepDef = { bus: 'foley', send: 0.45, priority: 3, ref: 2, max: 60, rolloff: 1.5, build: F.footstep };
   add('footstep', stepDef);
@@ -211,7 +216,7 @@ export function resolveId(R, id) {
       return R.get('ricochet');
     case 'break':
     case 'shatter':
-      return R.get(rest.includes('glass') ? 'impact_glass' : 'impact_concrete');
+      return R.get(rest.includes('glass') ? 'glass_shatter' : 'concrete_break');
     case 'ui':
     case 'menu':
       return R.get('ui_click');
@@ -222,6 +227,18 @@ export function resolveId(R, id) {
       return R.get('thunder');
     default:
       break;
+  }
+  // `<material>_break` / `_shatter` / `_tear` / `_crush` from Destruction.
+  if (/_(break|shatter|tear|crush|crack|burst)$/.test(s)) {
+    if (s.includes('glass')) return R.get('glass_shatter');
+    if (s.includes('metal') || s.includes('steel')) return R.get('metal_tear');
+    if (s.includes('ceramic') || s.includes('pot') || s.includes('tile')) return R.get('ceramic_break');
+    if (s.includes('plaster') || s.includes('drywall')) return R.get('plaster_break');
+    if (s.includes('concrete') || s.includes('stone') || s.includes('brick')) return R.get('concrete_break');
+    if (s.includes('plastic')) return R.get('plastic_break');
+    if (s.includes('fabric') || s.includes('cloth') || s.includes('tarp')) return R.get('fabric_tear');
+    if (s.includes('card') || s.includes('paper')) return R.get('cardboard_crush');
+    return R.get('wood_break');
   }
   // Last resort: anything with a surface-ish word in it becomes an impact.
   const near = SURFACES.find((t) => s.includes(t));
