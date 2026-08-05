@@ -44,13 +44,16 @@ import {
 export function instancedQuad(count) {
   const g = new THREE.InstancedBufferGeometry();
   g.setIndex([0, 2, 1, 2, 3, 1]);
-  g.setAttribute(
-    'position',
-    new THREE.BufferAttribute(
-      new Float32Array([-0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0]),
-      3
-    )
-  );
+  /**
+   * `position` is **all zeros**, deliberately. Every weather shader builds its vertex
+   * from `uv` and the instance attributes and never reads `position` — but the
+   * pipeline's g-buffer and debug passes swap in their own stand-in materials, which
+   * *do*. With a real quad in there, every one of these meshes would stamp a
+   * thousand-times-overdrawn 1 m square at the world origin into the ORM buffer and
+   * corrupt the reflections that read it. Zeroed, those passes rasterise nothing:
+   * degenerate triangles, no fragments, no cost, and our own shaders are unaffected.
+   */
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(12), 3));
   g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]), 2));
   g.instanceCount = count;
   // Every vertex is placed from uniforms and instance attributes, so a real bounding
@@ -141,7 +144,11 @@ export class Precipitation {
       uniforms: {
         uTime: { value: 0 },
         uAnchor: { value: new THREE.Vector3() },
-        uBox: { value: new THREE.Vector3(26, 13, 26) },
+        // Half-extents. Y is deliberately shallow and the anchor is lifted (see
+        // update()) so almost the whole volume sits between the player's feet and
+        // ~15 m up: drops spawned below the ground are killed by the shelter test
+        // and would otherwise waste half the instance budget.
+        uBox: { value: new THREE.Vector3(26, 9, 26) },
         uVel: { value: new THREE.Vector3(0, -9, 0) },
         uWidth: { value: 0.016 },
         uStretch: { value: 0.055 },
@@ -312,7 +319,11 @@ export class Precipitation {
       if (on) {
         const u = this.rainMat.uniforms;
         u.uTime.value = t;
-        u.uAnchor.value.copy(s.camera.position);
+        const box = u.uBox.value;
+        const p = s.camera.position;
+        // 2.5 m of headroom below the eye covers the ground under your feet; the rest
+        // of the column goes upward, where the rain you can actually see is.
+        u.uAnchor.value.set(p.x, p.y + box.y - 2.5, p.z);
         // Wind shear tilts the fall vector; heavier rain falls faster and straighter.
         const fall = -(s.rainSpeed * (0.75 + 0.45 * rain));
         u.uVel.value.set(s.wind.x * 0.62, fall, s.wind.z * 0.62);

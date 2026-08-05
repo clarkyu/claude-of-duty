@@ -115,7 +115,13 @@ void main() {
     // Direct sun in-scattering plus a small ambient (sky) term, so the haze reads as
     // lit air rather than a black subtractive fog. Keep the ambient term low — this is
     // what turns into a milky veil over the whole frame if it is overcooked.
-    vec3 inscatter = uSunColor * ( phase * vis ) + uFogColor * uAmbientScatter;
+    //
+    // The ambient term is sky light scattered into the ray, so it has to fall off with
+    // sky visibility too. Applying it flat lights the air inside a closed room exactly
+    // as brightly as the air over an open street, which is the specific thing that
+    // makes an interior read as if it were full of smoke.
+    vec3 inscatter = uSunColor * ( phase * vis ) +
+                     uFogColor * ( uAmbientScatter * mix( 0.45, 1.0, vis ) );
     // Energy-conserving integration of the analytic slab.
     float a = exp( -d );
     scatter += transmittance * ( 1.0 - a ) * inscatter;
@@ -332,6 +338,45 @@ export default class VolumetricPass extends Pass {
     } else {
       col.set(0.155, 0.135, 0.108);
     }
+
+    this._syncFogColour();
+  }
+
+  /**
+   * The ambient in-scattering colour is *sky light*, so its brightness has to be the
+   * sky's brightness at this hour. It was a hard-coded blue-grey, which is a defensible
+   * guess at noon and simply wrong at every other time the game renders: the haze
+   * stayed cold blue through a red sunset and stayed *bright* blue-grey through the
+   * night pose, where it is the only thing lighting the air.
+   *
+   * **The hue, though, is not ours to own.** `render/Weather.js` writes this same
+   * uniform to give each preset its cast — dust storms are orange, storms are slate —
+   * and we run later in the frame than it does, so simply assigning the sky colour
+   * here would silently win that race every frame and delete the entire weather
+   * palette. So: whatever colour the uniform is carrying when we arrive is adopted as
+   * the hue, and we only rescale it to the sky's luminance. A dust storm stays orange
+   * and still goes dark at night; nobody has to know about anybody.
+   *
+   * The 0.70 factor reproduces the previously hand-tuned magnitude at the reference
+   * mid-morning key, so the density of the veil is unchanged.
+   */
+  _syncFogColour() {
+    const u = this.uniforms.uFogColor.value;
+    if (!this._fogHue) this._fogHue = new THREE.Vector3().copy(u);
+    if (!this._fogWritten) this._fogWritten = new THREE.Vector3().copy(u);
+    // Anything that is not our own last write is another system claiming the hue.
+    if (!u.equals(this._fogWritten)) this._fogHue.copy(u);
+
+    const amb = this.ctx.sky?.ambientColor;
+    const hue = this._fogHue;
+    const hueLum = 0.2126 * hue.x + 0.7152 * hue.y + 0.0722 * hue.z;
+    if (amb && Number.isFinite(amb.r) && hueLum > 1e-5) {
+      const ambLum =
+        0.2126 * Math.max(amb.r, 0) + 0.7152 * Math.max(amb.g, 0) + 0.0722 * Math.max(amb.b, 0);
+      const k = (ambLum * 0.7) / hueLum;
+      u.set(hue.x * k, hue.y * k, hue.z * k);
+    }
+    this._fogWritten.copy(u);
 
     // Shadow map — only ever the one the lighting module hands us on purpose.
     let shadow = null;

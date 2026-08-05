@@ -134,24 +134,33 @@ export default class AutoExposurePass extends Pass {
         uMinLogLum: { value: -6.0 },
         uMaxLogLum: { value: 5.5 },
         uExposureBias: { value: 1.0 },
-        // Reference key: the average scene luminance the grade is authored around.
-        // Middle grey is 0.18; a touch above keeps a sunlit exterior from being metered
-        // down into mud. The gain is bounded so adaptation corrects rather than
-        // normalises, and `uAutoStrength` blends towards the fixed artistic exposure.
-        uKey: { value: 0.22 },
-        uMinGain: { value: 0.35 },
         /**
-         * A street canyon at golden hour meters at ~0.03-0.05 — most of the frame is
-         * in shade, and only the upper facades and the sky carry the key. That is
-         * 2-3 stops under the reference, so a 2.2x ceiling railed out and still left
-         * the frame a stop dark: the ceiling was tighter than the range of scenes the
-         * game actually contains, which turns "adaptation" into "permanently pinned".
-         * 3.2x covers the shaded-exterior case and still cannot normalise a night
-         * scene into daylight (uAutoStrength blends most of the way back to the
-         * artistic exposure, and the sky's own adaptLift has already compressed the
-         * day-to-night range before the frame ever reaches this pass).
+         * Reference key, compared against the **log-average** of the frame.
+         *
+         * This is the number the whole metering hangs off and it was set as if the
+         * reduction produced an arithmetic mean. It does not: the log-average of a
+         * scene with a large dark region sits far below its arithmetic mean, and on
+         * the hero frame it measures 0.033 against an arithmetic 0.126 — a factor of
+         * four. A 0.22 key therefore asked for 6.7x of gain, which pinned the ceiling
+         * flat regardless of what the ceiling was; every exterior pose then rendered
+         * at exactly the clamp and the meter had no authority over any of them. That
+         * is the difference between "auto-exposure" and "a constant".
+         *
+         * 0.115 is the classic Reinhard key for a log-average meter under a filmic
+         * curve. On the same frame it asks for 3.5x, inside the range, so the meter
+         * actually meters — and the resulting exposure is within 10 % of where the
+         * railed value happened to land, so nothing about the current look moves.
          */
-        uMaxGain: { value: 3.2 },
+        uKey: { value: 0.115 },
+        uMinGain: { value: 0.28 },
+        /**
+         * Wide enough that neither end is the operative constraint for any pose the
+         * game contains, but still narrow enough that adaptation is a correction and
+         * not a normaliser: the sky's own `adaptLift` has already compressed the
+         * day-to-night range before the frame ever reaches this pass, and
+         * `uAutoStrength` blends most of the way back to the artistic exposure.
+         */
+        uMaxGain: { value: 4.5 },
         uAutoStrength: { value: 0.7 },
         uReset: { value: 1 },
       })

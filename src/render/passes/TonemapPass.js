@@ -211,18 +211,41 @@ export default class TonemapPass extends Pass {
       flareStrength: 0.032,
       dirtStrength: 0.4,
       whiteBalance: new THREE.Vector3(1.0, 0.998, 0.995),
-      contrast: 1.045,
-      lift: new THREE.Vector3(0.004, 0.006, 0.012),
+      contrast: 1.085,
+      /**
+       * **`lift` and `shadowTint` are added to *display-referred linear* light, so a
+       * value that looks tiny written down is enormous once encoded.**
+       *
+       * `liftGammaGain()` evaluates to `lift` exactly at black, and `splitTone()` adds
+       * the full `shadowTint` there too, so the pair sets the frame's black point
+       * outright. The previous 0.012 + 0.014 put it at 0.026 linear blue against
+       * 0.000 red — sRGB (0, 18, 46), a flatly teal black that measured on the hero
+       * frame as the darkest pixel in the image. Every shadow in the level inherited
+       * it, which is most of what read as "strong blue cast": not the lighting at all,
+       * but a grade adding a fixed 46/255 of blue underneath it.
+       *
+       * These values put the black point at sRGB (0, 5, 20) — still recognisably a
+       * cool shadow, and still enough separation from 0 to keep the toe from looking
+       * digital, but roughly a fifth of the tint.
+       */
+      lift: new THREE.Vector3(0.0012, 0.0016, 0.0028),
       gamma: new THREE.Vector3(1.0, 1.0, 1.005),
       gain: new THREE.Vector3(1.005, 1.0, 0.994),
-      shadowTint: new THREE.Vector3(-0.006, 0.0, 0.014),
+      shadowTint: new THREE.Vector3(-0.0015, 0.0, 0.0035),
       highlightTint: new THREE.Vector3(0.014, 0.006, -0.008),
       splitBalance: 0.35,
       saturation: 1.02,
       vibrance: 0.09,
-      shadowCrush: 0.06,
+      shadowCrush: 0.1,
       highlightRolloff: 0.12,
     };
+
+    /**
+     * How far towards the ambient illuminant the balance is pulled: 0 leaves
+     * `grade.whiteBalance` alone, 1 would render open shade perfectly neutral (and
+     * take all the gold out of the key with it). See syncWhiteBalance().
+     */
+    this.balanceStrength = 0.42;
 
     this.uniforms = {
       tColor: { value: null },
@@ -234,7 +257,9 @@ export default class TonemapPass extends Pass {
       uBloomStrength: { value: this.grade.bloomStrength },
       uFlareStrength: { value: this.grade.flareStrength },
       uDirtStrength: { value: this.grade.dirtStrength },
-      uWhiteBalance: { value: this.grade.whiteBalance },
+      // Owns its own vector: syncWhiteBalance() writes the *derived* balance here and
+      // must never scribble on the authored `grade.whiteBalance` it derives it from.
+      uWhiteBalance: { value: new THREE.Vector3().copy(this.grade.whiteBalance) },
       uContrast: { value: this.grade.contrast },
       uLift: { value: this.grade.lift },
       uGamma: { value: this.grade.gamma },
@@ -261,9 +286,68 @@ export default class TonemapPass extends Pass {
     }
   }
 
+  /**
+   * Camera white balance, pulled part-way towards the *ambient* (shade) illuminant.
+   *
+   * This is the single knob that separates "golden hour" from "cold and CG". A sky-lit
+   * surface in open shade is genuinely lit by 12000 K+ light, so a sensor balanced for
+   * 5500 K renders it violently blue — which is exactly what the shaded street was
+   * doing: measured B:R of 2.55 on asphalt whose albedo is neutral grey. A stills
+   * photographer's answer at this hour is not to fix the lighting, it is to balance
+   * warmer: pull white towards the shade, and the *same* frame turns the shadows
+   * neutral and the sunlit facades gold. Both halves of the complaint, one operation,
+   * and it is a real thing real cameras do.
+   *
+   * The correction is the ambient's inverse, luminance-normalised so it never changes
+   * the exposure, taken to a fractional power (a partial balance — a full one would
+   * neutralise the shade completely and take the warmth out of the key with it) and
+   * faded out at night, where the eye expects cool and the "ambient" is moonlight
+   * rather than sky.
+   */
+  syncWhiteBalance() {
+    const sky = this.ctx?.sky;
+    const amb = sky?.ambientColor;
+    const wb = this.uniforms.uWhiteBalance.value;
+    const base = this.grade.whiteBalance;
+    if (!amb || !Number.isFinite(amb.r) || amb.r <= 1e-6 || amb.g <= 1e-6 || amb.b <= 1e-6) {
+      wb.copy(base);
+      return;
+    }
+    const night = Math.min(Math.max(sky.nightFactor ?? 0, 0), 1);
+    const k = this.balanceStrength * (1 - night);
+    if (k <= 1e-3) {
+      wb.copy(base);
+      return;
+    }
+    // Luminance-normalise the illuminant first, so only its *hue* drives the balance.
+    const lum = 0.2126 * amb.r + 0.7152 * amb.g + 0.0722 * amb.b;
+    if (!(lum > 1e-6)) {
+      wb.copy(base);
+      return;
+    }
+    let r = Math.pow(lum / amb.r, k);
+    let g = Math.pow(lum / amb.g, k);
+    let b = Math.pow(lum / amb.b, k);
+    // Re-normalise: white balance must not double as an exposure change.
+    const wl = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (!(wl > 1e-6)) {
+      wb.copy(base);
+      return;
+    }
+    const inv = 1 / wl;
+    const lo = 0.82;
+    const hi = 1.22;
+    wb.set(
+      Math.min(Math.max(r * inv * base.x, lo), hi),
+      Math.min(Math.max(g * inv * base.y, lo), hi),
+      Math.min(Math.max(b * inv * base.z, lo), hi)
+    );
+  }
+
   syncGrade(bloomEnabled) {
     const g = this.grade;
     const u = this.uniforms;
+    this.syncWhiteBalance();
     u.uBloomStrength.value = bloomEnabled ? g.bloomStrength : 0;
     u.uFlareStrength.value = bloomEnabled ? g.flareStrength : 0;
     u.uDirtStrength.value = g.dirtStrength;

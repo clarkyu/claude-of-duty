@@ -673,10 +673,26 @@ uniform float uShimmer;    // 0..1 heat haze over hot ground
 uniform float uHorizon;    // screen-space y of the horizon, 0..1
 uniform vec3  uSpec;       // colour of the specular pip on each bead
 uniform float uHasDepth;
+uniform vec2  uVignette;   // x = strength, y = roundness — LensPass's own settings
 
 varying vec2 vUv;
 
 ${W_COMMON}
+
+/**
+ * We sample the pipeline's pre-lens buffer, but composite over the post-lens frame, so
+ * the light inside a droplet has to be darkened by the same vignette the pixels around
+ * it already got. This is LensPass's cos^4 + mechanical falloff, verbatim; without it
+ * every bead near a corner glows brighter than the frame it sits on.
+ */
+float wVignette( vec2 uv ) {
+	vec2 vc = ( uv - 0.5 ) * vec2( mix( uAspect, 1.0, uVignette.y ), 1.0 );
+	float rr = length( vc ) * 2.0;
+	float cosTheta = inversesqrt( 1.0 + rr * rr * 0.55 );
+	float natural = cosTheta * cosTheta * cosTheta * cosTheta;
+	float mechanical = 1.0 - smoothstep( 0.78, 1.5, rr ) * 0.35;
+	return mix( 1.0, natural * mechanical, uVignette.x );
+}
 
 float wLinearDepth( vec2 uv ) {
 	if ( uHasDepth < 0.5 ) return 1e4;
@@ -765,7 +781,7 @@ void main() {
 	vec2 suv = clamp( uv + offs, vec2( 0.0015 ), vec2( 0.9985 ) );
 	vec3 scene = texture2D( tScene, suv ).rgb;
 	// Water on glass loses a little light and adds a specular pip.
-	vec3 col = scene * 0.94 + uSpec * spec * 0.55;
+	vec3 col = ( scene * 0.94 + uSpec * spec * 0.55 ) * wVignette( uv );
 
 	gl_FragColor = vec4( wLinearToSRGB( col ), clamp( mask, 0.0, 1.0 ) );
 }

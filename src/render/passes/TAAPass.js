@@ -140,8 +140,21 @@ void main() {
   // --- variance-driven feedback ---------------------------------------------
   float lumaSigma = sigma.x;
   float motion = length( velocity * uResolution );
-  // Busy neighbourhoods and fast motion both reduce how much history we trust.
-  float confidence = exp( -lumaSigma * 6.0 ) * exp( -motion * 0.06 );
+  /**
+   * Busy neighbourhoods and fast motion both reduce how much history we trust — but
+   * they are not equally good evidence, and weighting the variance term as heavily as
+   * the motion term defeats the whole point of the pass.
+   *
+   * Half the high-frequency energy in this renderer is *deliberate* per-frame dither:
+   * the rotated PCF disc in the cascades, GTAO's interleaved-gradient slice offsets,
+   * the volumetric ray start. All of it is designed to be averaged away temporally.
+   * A dithered shadow has, by construction, a high neighbourhood sigma, so a steep
+   * variance response drops exactly those pixels to the minimum feedback and leaves
+   * the noise on screen permanently — the pass ends up rejecting history hardest in
+   * the one place history is the answer. Motion is the signal that actually predicts
+   * a bad reprojection, and the variance *clip* below already handles the rest.
+   */
+  float confidence = exp( -lumaSigma * 3.0 ) * exp( -motion * 0.06 );
   float feedback = mix( uFeedbackMin, uFeedbackMax, saturate1( confidence ) );
   // How far the history had to be clipped is itself a disocclusion signal.
   float clipDist = length( clipped - hY );
@@ -189,7 +202,12 @@ export default class TAAPass extends Pass {
       uResolution: shared.uResolution,
       uTexel: { value: new THREE.Vector2() },
       uHistoryValid: { value: 0 },
-      uFeedbackMin: { value: 0.55 },
+      // Floor for the busiest / fastest pixels. 0.55 converges a dithered region with
+      // a 2-frame half-life, which is not convergence at all; 0.68 roughly doubles the
+      // sample count those pixels get while still dumping most of the history the
+      // moment something really moves. Kept well under uFeedbackMax so a genuinely
+      // disoccluded or fast-moving pixel still refreshes quickly enough not to trail.
+      uFeedbackMin: { value: 0.68 },
       uFeedbackMax: { value: 0.96 },
       uVarianceGamma: { value: 1.25 },
     };

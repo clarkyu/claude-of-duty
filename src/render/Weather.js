@@ -61,6 +61,7 @@ import { ShelterMap } from './weather/ShelterMap.js';
 import { Precipitation } from './weather/Precipitation.js';
 import { Atmospherics } from './weather/Atmospherics.js';
 import { LensOverlay } from './weather/LensOverlay.js';
+import { WetnessMask } from './weather/WetnessMask.js';
 import {
   PRESETS,
   PRESET_NAMES,
@@ -120,6 +121,7 @@ class Weather {
     this.shelter = new ShelterMap(ctx);
     this.precip = new Precipitation(ctx, this.shelter);
     this.atmos = new Atmospherics(ctx, this.shelter);
+    this.wetMask = new WetnessMask(ctx, this.shelter);
     this.lens = null;
 
     this.group = new THREE.Group();
@@ -136,6 +138,9 @@ class Weather {
     this._exposureResponse = 1;
 
     this._gradeBase = null;
+    /** Last value handed to each sky setter, so we never re-send an unchanged one. */
+    this._skySent = {};
+    this._lastPublish = -1e9;
     this._bakePending = 2;
     this._unsub = [];
     this._tier = ctx.settings?.tier || 'high';
@@ -294,6 +299,8 @@ class Weather {
       visibility: this.state.visibility,
       lightning: this.state.lightning,
       sheltered: this._exposure ?? 1,
+      shelterReady: !!this.shelter.ready,
+      wetMask: this.wetMask.stats(),
       state: this.state,
     };
   }
@@ -360,9 +367,12 @@ class Weather {
     const peak = (Number.isFinite(opts.intensity) ? opts.intensity : 5 + 22 * near * near) *
       (0.7 + 0.6 * rng());
     const radius = Math.max(dist * 2.4, 400);
-    // Invert the falloff three will apply, so `peak` is what actually arrives.
-    const window = Math.max(0.05, 1 - dist / radius);
-    const candela = (peak * dist * dist) / (window * window);
+    // Invert exactly the falloff three applies to a decay-2 point light with a
+    // cutoff distance — `(1 - (d/R)^4)^2 / d^2` — so `peak` is the illuminance that
+    // actually lands on the camera, in the same units as the sun.
+    const ratio = Math.min(0.999, dist / radius);
+    const win = Math.max(0.02, (1 - ratio * ratio * ratio * ratio) ** 2);
+    const candela = (peak * dist * dist) / win;
 
     let handle = null;
     try {
@@ -423,6 +433,12 @@ class Weather {
       this._strikeTimer = Math.max(this._strikeTimer, 3);
     }
 
+    // Lighting scales every local light by its exposure compensation — which *we*
+    // just pulled down to 0.17 for the storm. A bolt does not get dimmer because the
+    // sky is overcast, so divide that back out.
+    const localScale = this.ctx.lighting?._impl?.localLightScale;
+    const unscale = Number.isFinite(localScale) && localScale > 1e-3 ? 1 / localScale : 1;
+
     let flash = 0;
     for (let i = this.strikes.length - 1; i >= 0; i--) {
       const s = this.strikes[i];
@@ -435,10 +451,10 @@ class Weather {
         amp += f.a * Math.min(1, u / 0.006) * Math.exp(-u / f.d);
       }
       amp = Math.min(amp, 1.6);
-      if (s.handle) s.handle.intensity = s.candela * amp;
+      if (s.handle) s.handle.intensity = s.candela * amp * unscale;
       // The screen lift follows the same envelope but saturates much sooner: the
-      // sky is already at the top of the range.
-      flash = Math.max(flash, Math.min(1.8, (s.peak / 9) * amp));
+      // sky is already near the top of the range before the bolt arrives.
+      flash = Math.max(flash, Math.min(1.35, (s.peak / 14) * amp));
       if (s.age > s.life) {
         try {
           if (s.handle) this.ctx.lighting?.removeLight?.(s.handle);
@@ -513,8 +529,10 @@ class Weather {
       else if (t > 0.5) this.preset = this.targetPreset;
     }
 
-    this._apply(d, false);
+    // Lightning first: `_apply` reads the flash envelope and the exposure response it
+    // produces, and a frame's delay on a 75 ms flash is a visible stutter.
     this._updateLightning(d);
+    this._apply(d, false);
   }
 
   _bake() {
@@ -524,6 +542,7 @@ class Weather {
       if (ok) {
         this.precip.build(this.budget); // drips are baked from the new edge list
         this.atmos.attachShelter();
+        this.wetMask.attachShelter();
       }
     } catch (err) {
       this._warn('bake', err);
@@ -562,15 +581,29 @@ class Weather {
       const rate = wetTarget > this.wetness ? 1 / 20 : 1 / 90;
       this.wetness += (wetTarget - this.wetness) * clamp01(dt * rate * 6);
     }
+    // Per-pixel "is this under a roof?" for the wetness. Deliberately lazy: patching
+    // costs a shader recompile, so clear weather never pays for it, and rain has the
+    // whole cross-fade to absorb it.
+    if (this.wetness > 0.004 || wetTarget > 0.01) {
+      this.wetMask.scan(ctx.time?.frame ?? 0);
+    }
 
     // ── sky ─────────────────────────────────────────────────────────────────
     const sky = ctx.sky;
     if (sky) {
       try {
-        sky.setCloudCoverage?.(clamp01(s.coverage));
-        sky.setCloudType?.(clamp01(s.cloudType));
-        sky.setCirrus?.(clamp01(s.cirrus));
-        sky.setHaze?.(Math.max(0.05, s.haze));
+        // Only when it actually moved: setHaze re-runs the sky's whole lighting
+        // solve, and a preset fade would otherwise call it 480 times.
+        const set = (key, fn, v, eps = 1e-3) => {
+          const prev = this._skySent[key];
+          if (prev !== undefined && Math.abs(prev - v) < eps) return;
+          this._skySent[key] = v;
+          fn?.call(sky, v);
+        };
+        set('coverage', sky.setCloudCoverage, clamp01(s.coverage));
+        set('cloudType', sky.setCloudType, clamp01(s.cloudType));
+        set('cirrus', sky.setCirrus, clamp01(s.cirrus));
+        set('haze', sky.setHaze, Math.max(0.05, s.haze), 4e-3);
         // Cloud drift, in the sky's own units — a fraction of the ground wind.
         sky.setWind?.(this.wind.x * 0.06, this.wind.z * 0.06);
         const a = sky.aerialUniforms;
@@ -737,11 +770,13 @@ class Weather {
     if (!bus?.emit) return;
     const s = this.state;
     const changed =
-      force ||
       this._fadeT < 1 ||
       Math.abs(this.wetness - (this._lastWet ?? -1)) > 0.004 ||
       Math.abs(this.windSpeed - (this._lastWind ?? -1)) > 0.05;
-    if (!changed) return;
+    // Listeners do real work on this (the sky re-solves its lighting); a fade must
+    // not turn into one broadcast per frame.
+    if (!force && (!changed || this._elapsed - this._lastPublish < 1 / 6)) return;
+    this._lastPublish = this._elapsed;
     this._lastWet = this.wetness;
     this._lastWind = this.windSpeed;
     // NOTE: `weather:changed` is consumed by Sky (coverage/cirrus/haze/wind) and by
@@ -810,6 +845,11 @@ class Weather {
     }
     this.strikes.length = 0;
     this.thunderQueue.length = 0;
+    // Materials keep our chained onBeforeCompile for their lifetime, so the uniform
+    // must stop pointing at a texture we are about to free.
+    this.wetMask.uniforms.wxShelterMap.value = null;
+    this.wetMask.uniforms.wxShelterCfg.value.x = 0;
+    this.wetMask.enabled = false;
     this.ctx.scene?.remove(this.group);
     this.precip.dispose();
     this.atmos.dispose();

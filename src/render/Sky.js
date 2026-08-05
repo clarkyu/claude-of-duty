@@ -689,9 +689,21 @@ class Sky {
     this.sunDiscScale = 1200.0;
     this.moonDiscScale = 0.9;
     this.groundAlbedo = new THREE.Color(0.11, 0.105, 0.096);
-    this.coverage = 0.48;
+    /**
+     * Fair-weather cumulus with plenty of open sky between the cells.
+     *
+     * These are only the *defaults*, in force from init until `render/Weather.js`
+     * publishes a preset (it drives coverage / type / cirrus / haze from that point
+     * on). They still matter: they are what the very first frames and the initial
+     * environment cube are built from, and what the sky falls back to if weather is
+     * ever stubbed out again. 0.48 put roughly two thirds of the dome under cloud and,
+     * with the cirrus shell in front of all of it, read as thin overcast — the sky
+     * measured B:R 1.27 on the hero frame, i.e. almost white, with no blue for the
+     * warm facades to sit against.
+     */
+    this.coverage = 0.4;
     this.cloudType = 0.5;
-    this.cirrusAmount = 0.34;
+    this.cirrusAmount = 0.2;
     this.starBrightness = 0.55;
     this.haze = 1.0;
     this.wind = new THREE.Vector2(7.5, 2.4); // m/s

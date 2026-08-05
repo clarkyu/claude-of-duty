@@ -55,6 +55,7 @@ export class LensOverlay {
         uHorizon: { value: 0.5 },
         uSpec: { value: new THREE.Color(0.75, 0.82, 1.0) },
         uHasDepth: { value: 0 },
+        uVignette: { value: new THREE.Vector2(0.55, 0.65) },
       },
       transparent: true,
       depthTest: false,
@@ -148,6 +149,9 @@ export class LensOverlay {
     u.uHasDepth.value = depthTex ? 1 : 0;
     const cam = ctx.camera;
     if (cam?.isPerspectiveCamera) u.uCam.value.set(cam.near, cam.far, 0.002, 12);
+    // Track whatever the lens pass is actually using, live.
+    const lens = ctx.pipeline?.lens;
+    if (lens) u.uVignette.value.set(lens.vignette ?? 0.55, lens.vignetteRoundness ?? 0.65);
 
     // No linear source to refract: the droplets would be black. Flash still works.
     const canRefract = !!sceneTex;
