@@ -162,10 +162,6 @@ function sample1(track, t) {
   return track[n - 1][1];
 }
 
-function scaleTrack(track, s) {
-  return track.map(([t, v]) => [t * s, v]);
-}
-
 /* ------------------------------- reload ----------------------------------- */
 
 const RELOAD_BASE = 2.1;
@@ -244,20 +240,25 @@ const RL_MAG_VIS = [
 
 /* ------------------------------- inspect ---------------------------------- */
 
+/**
+ * Inspect. Beat 1 (~0.65 s) is deliberately the money pose — the weapon rolled onto
+ * its left flank, pulled in toward the eye — because that is where the review
+ * screenshot lands. Beat 2 turns the receiver over, beat 3 is a chamber check.
+ */
 const IN_POS = [
   [0.0, [0, 0, 0]],
-  [0.62, [-0.03, 0.012, 0.062]],
-  [1.5, [-0.038, 0.004, 0.072]],
-  [2.3, [-0.008, -0.016, 0.058]],
-  [3.0, [0.004, -0.004, 0.03]],
+  [0.65, [-0.112, 0.035, -0.02]],
+  [1.55, [-0.126, 0.03, 0.0]],
+  [2.35, [-0.08, 0.0, 0.02]],
+  [3.05, [-0.03, 0.0, 0.02]],
   [3.6, [0, 0, 0]],
 ];
 const IN_ROT = [
   [0.0, [0, 0, 0]],
-  [0.62, [0.03, 0.66, -0.22]],
-  [1.5, [-0.16, 1.05, -0.48]],
-  [2.3, [0.34, 0.2, 0.72]],
-  [3.0, [0.08, -0.4, 0.18]],
+  [0.65, [0.06, 0.55, -0.34]],
+  [1.55, [-0.1, 0.92, -0.66]],
+  [2.35, [0.38, 0.22, 0.8]],
+  [3.05, [0.08, -0.3, 0.2]],
   [3.6, [0, 0, 0]],
 ];
 const IN_HAND_POS = [
@@ -481,7 +482,8 @@ export function createProcAnim(ctx) {
           { t: 0.64, name: 'magout' },
           { t: 1.18, name: 'magin' },
           { t: 1.6, name: 'seat' },
-          ...(empty ? [{ t: 2.28, name: 'boltrelease' }] : []),
+          // authored in the 2.1 s reference timeline; stretched with the clip
+          ...(empty ? [{ t: 1.99, name: 'boltrelease' }] : []),
         ],
         RELOAD_BASE
       );
@@ -606,7 +608,7 @@ export function createProcAnim(ctx) {
         magVisible = sample1(tr.mv, t) > 0.5;
         if (actionEmpty && t > RELOAD_BASE * 0.94) {
           // Bolt release: the support hand slaps the catch and the carrier runs home.
-          const u = clamp01((t - RELOAD_BASE * 0.94) / (RELOAD_BASE * 0.26));
+          const u = clamp01((t - RELOAD_BASE * 0.94) / (RELOAD_BASE * 0.06));
           handPos.set(-0.06 * Math.sin(u * Math.PI), 0.03 * Math.sin(u * Math.PI), 0.05 * Math.sin(u * Math.PI));
           handRot.set(0.2 * Math.sin(u * Math.PI), -0.3 * Math.sin(u * Math.PI), 0);
         }
@@ -767,18 +769,23 @@ export function createProcAnim(ctx) {
         n.dustCover.rotation.z = -n.dustCover.userData.o * 1.9;
       }
       if (n.trigger) {
-        const pull = Math.max(triggerPull, action === 'melee' ? 0 : 0);
-        n.trigger.rotation.x = pull * 0.2;
-        n.trigger.position.z = pull * 0.0022;
+        n.trigger.rotation.x = triggerPull * 0.2;
+        n.trigger.position.z = triggerPull * 0.0022;
       }
-      if (n.boltCatch) n.boltCatch.rotation.x = (chamberOpen ? 0.16 : 0) + (action === 'reload' ? 0 : 0);
+      // Bolt catch is pressed up while the carrier is locked back, and thumbed down
+      // on the release beat of an empty reload.
+      if (n.boltCatch) {
+        const rel = action === 'reload' && actionEmpty ? clamp01((actionT / actionLen - 0.76) * 6) : 0;
+        n.boltCatch.rotation.x = (chamberOpen ? 0.16 : 0) - rel * 0.3;
+      }
       if (n.selector) n.selector.rotation.x = (R.fireModeIndex ?? 0) * -0.5;
 
       // Magazine.
       magSeat.step(d, 0);
       if (n.magazine) {
         n.magazine.visible = magVisible;
-        n.magazine.position.set(magPos.x, magPos.y + magSeat.x * 0.004, magPos.z);
+        const magBase = n.magazine.userData.magBase || 0;
+        n.magazine.position.set(magPos.x, magBase + magPos.y + magSeat.x * 0.004, magPos.z);
         _e.set(magRot.x, magRot.y, magRot.z, 'YXZ');
         n.magazine.quaternion.setFromEuler(_e);
       }

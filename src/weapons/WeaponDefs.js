@@ -87,7 +87,7 @@ export const WEAPON_DEFS = {
     spread: AR_SPREAD,
 
     recoil: {
-      unit: 0.0031, // radians per pattern unit
+      unit: 0.0102, // radians of peak aim climb per pattern unit
       vertical: 0.0212, // camera kick hint for CameraRig
       horizontal: 0.0094,
       back: 0.023,
@@ -137,13 +137,13 @@ export const WEAPON_DEFS = {
     handling: 1.0,
 
     view: {
-      hip: { pos: [0.1235, -0.1085, -0.163], rot: [0.014, -0.062, 0.031] },
-      adsEyeRelief: 0.108,
-      lowReady: { pos: [0.108, -0.152, -0.145], rot: [0.44, -0.1, 0.06] },
-      sprint: { pos: [0.128, -0.13, -0.115], rot: [0.13, -0.62, 0.34] },
-      tacSprint: { pos: [0.075, -0.2, -0.06], rot: [1.02, -0.5, 0.44] },
-      inspect: { pos: [0.055, -0.09, -0.075], rot: [0.06, 0.92, -0.22] },
-      melee: { pos: [0.2, -0.06, -0.09], rot: [-0.1, -1.0, 0.55] },
+      scale: 0.82,
+      hip: { pos: [0.128, -0.098, -0.395], rot: [0.02, 0.052, 0.052] },
+      adsEyeRelief: 0.1,
+      lowReady: { pos: [0.082, -0.152, -0.374], rot: [0.44, -0.06, 0.06] },
+      sprint: { pos: [0.096, -0.126, -0.35], rot: [0.16, 0.5, 0.36] },
+      tacSprint: { pos: [0.072, -0.148, -0.318], rot: [0.8, 0.58, 0.42] },
+      melee: { pos: [0.172, -0.056, -0.298], rot: [-0.1, -0.95, 0.55] },
       swayScale: 1.0,
       bobScale: 1.0,
     },
@@ -241,7 +241,7 @@ export const WEAPON_DEFS = {
     },
 
     recoil: {
-      unit: 0.0024,
+      unit: 0.0072,
       vertical: 0.0158,
       horizontal: 0.0112,
       back: 0.016,
@@ -286,13 +286,13 @@ export const WEAPON_DEFS = {
     handling: 1.22,
 
     view: {
-      hip: { pos: [0.118, -0.1015, -0.152], rot: [0.016, -0.07, 0.036] },
-      adsEyeRelief: 0.1,
-      lowReady: { pos: [0.104, -0.145, -0.135], rot: [0.46, -0.11, 0.07] },
-      sprint: { pos: [0.122, -0.122, -0.108], rot: [0.14, -0.66, 0.37] },
-      tacSprint: { pos: [0.07, -0.19, -0.055], rot: [1.06, -0.54, 0.47] },
-      inspect: { pos: [0.05, -0.085, -0.07], rot: [0.05, 0.98, -0.24] },
-      melee: { pos: [0.19, -0.055, -0.085], rot: [-0.12, -1.05, 0.58] },
+      scale: 0.84,
+      hip: { pos: [0.121, -0.094, -0.366], rot: [0.022, 0.056, 0.055] },
+      adsEyeRelief: 0.094,
+      lowReady: { pos: [0.08, -0.148, -0.346], rot: [0.46, -0.07, 0.07] },
+      sprint: { pos: [0.092, -0.122, -0.326], rot: [0.17, 0.53, 0.39] },
+      tacSprint: { pos: [0.068, -0.144, -0.296], rot: [0.84, 0.62, 0.45] },
+      melee: { pos: [0.166, -0.052, -0.28], rot: [-0.12, -1.0, 0.58] },
       swayScale: 1.18,
       bobScale: 1.1,
     },
@@ -390,7 +390,7 @@ export const WEAPON_DEFS = {
     },
 
     recoil: {
-      unit: 0.0072,
+      unit: 0.0205,
       vertical: 0.042,
       horizontal: 0.012,
       back: 0.041,
@@ -426,13 +426,13 @@ export const WEAPON_DEFS = {
     handling: 0.78,
 
     view: {
-      hip: { pos: [0.1315, -0.1155, -0.178], rot: [0.012, -0.056, 0.028] },
-      adsEyeRelief: 0.152,
-      lowReady: { pos: [0.115, -0.16, -0.155], rot: [0.42, -0.09, 0.055] },
-      sprint: { pos: [0.135, -0.138, -0.125], rot: [0.12, -0.58, 0.32] },
-      tacSprint: { pos: [0.082, -0.212, -0.07], rot: [0.98, -0.47, 0.42] },
-      inspect: { pos: [0.062, -0.1, -0.085], rot: [0.07, 0.88, -0.2] },
-      melee: { pos: [0.21, -0.07, -0.1], rot: [-0.09, -0.96, 0.52] },
+      scale: 0.8,
+      hip: { pos: [0.134, -0.106, -0.364], rot: [0.018, 0.048, 0.048] },
+      adsEyeRelief: 0.118,
+      lowReady: { pos: [0.088, -0.16, -0.338], rot: [0.42, -0.06, 0.055] },
+      sprint: { pos: [0.1, -0.134, -0.318], rot: [0.15, 0.47, 0.34] },
+      tacSprint: { pos: [0.076, -0.154, -0.29], rot: [0.76, 0.54, 0.4] },
+      melee: { pos: [0.176, -0.066, -0.272], rot: [-0.09, -0.92, 0.52] },
       swayScale: 0.82,
       bobScale: 0.9,
     },

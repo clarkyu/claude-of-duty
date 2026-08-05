@@ -11,13 +11,29 @@
  * is most of the reason a gun reads as machined metal rather than as a grey box.
  *
  * Exports
- *   makeWeaponMaterials(ctx)             -> material bag (see MATSPEC below)
- *   buildWeapon(ctx, def, mats, atts)    -> { root, nodes, meshes, tris, sight, muzzle }
- *   buildArms(ctx, mats, def)            -> { left, right, leftRig, rightRig }
- *   buildRedDot / buildScope / buildIrons / buildMuzzleDevice / buildForegrip
- *   makeBrassPool(ctx, mats, n)          -> { group, cases[] }
- *   makeMuzzleFlash(ctx)                 -> { group, set(intensity, seed) }
- *   G  (the geometry kit, exported for Attachments.js)
+ *   makeWeaponMaterials(ctx)          -> material bag keyed by MATSPEC below
+ *   buildWeapon(ctx, def, mats)       -> { root, nodes, meshes, tris }
+ *                                        nodes: bolt, charging, dustCover, trigger,
+ *                                        selector, boltCatch, magazine, follower,
+ *                                        railTop, muzzle, underbarrel, eject,
+ *                                        magwell, grip, foreEnd
+ *   buildArms(ctx, mats, def)         -> { left, right, leftRig, rightRig }
+ *   buildRedDot(ctx, mats, o)         -> { group, sight, reticle, reticleMat, glass,
+ *                                        kind:'reflex', axisY, planeZ, dotRad, zoom }
+ *   buildScope(ctx, mats, o)          -> { group, sight, image, imageMat, glass,
+ *                                        kind:'scope', axisY, zoom, eyeboxRadius }
+ *   buildIrons / buildMuzzleDevice / buildForegrip
+ *   makeBrassPool(ctx, mats, n, cal)  -> { group, cases[] }
+ *   makeMuzzleFlash(ctx, mats)        -> { group, mat, light, quads, jet }
+ *   G                                 the geometry kit, for Attachments.js
+ *
+ * Geometry kit (all metres, all indexed position/normal/uv so they merge cleanly):
+ *   boxG(w,h,d,chamfer,seg)     chamfered box; returns {main, edge}
+ *   plainBoxG(w,h,d,skip)       6 quads, for recesses and slots
+ *   extrudeG(section, opts)     extrude a 2D section along x|y|z, holes supported
+ *   latheG(profile, radial)     turned profile around Z, hard/soft normal breaks
+ *   sweepG(section, path)       sweep a 2D section along a polyline
+ *   capsuleY / lensG / discG / stippleG / railG / chamferPoly / rectSection
  *
  * Everything is metres. Weapon-local space: +X right, +Y up, **−Z down the bore**.
  * The origin sits on the bore axis at the rear face of the upper receiver.
@@ -585,6 +601,30 @@ function discG(r, z, sign, cols = 24, inner = 0) {
   return b.geom();
 }
 
+/**
+ * Capsule along +Y of total length `len` and radius `r`. Fingers want round
+ * cross-sections far more than they want bevelled corners, and a lathe gives that
+ * for a third of the triangles a chamfered box would cost.
+ */
+function capsuleY(r, len, radial = 8, capSeg = 2) {
+  const h = Math.max(1e-4, len * 0.5 - r);
+  const prof = [];
+  for (let i = 0; i <= capSeg; i++) {
+    const a = -Math.PI * 0.5 + (Math.PI * 0.5 * i) / capSeg;
+    prof.push([Math.max(1e-4, r * Math.cos(a)), -h + r * Math.sin(a)]);
+  }
+  prof.push([r, h]);
+  for (let i = 1; i <= capSeg; i++) {
+    const a = (Math.PI * 0.5 * i) / capSeg;
+    prof.push([Math.max(1e-4, r * Math.cos(a)), h + r * Math.sin(a)]);
+  }
+  const g = latheG(prof, radial, {});
+  const m = new THREE.Matrix4().makeRotationX(-Math.PI * 0.5);
+  if (g.main) g.main.applyMatrix4(m);
+  if (g.edge) g.edge.applyMatrix4(m);
+  return g;
+}
+
 /** Spherical cap — a lens surface. `bulge` is the sagitta; sign gives the facing. */
 function lensG(r, bulge, sign = 1, rings = 5, cols = 28) {
   const b = new Buf();
@@ -603,10 +643,11 @@ function lensG(r, bulge, sign = 1, rings = 5, cols = 28) {
       let nx = x - 0;
       let ny = y - 0;
       let nz = zz - cz;
+      // Outward from the sphere centre — that is the convex side for either facing.
       const l = Math.hypot(nx, ny, nz) || 1;
-      nx = (nx / l) * sign;
-      ny = (ny / l) * sign;
-      nz = (nz / l) * sign;
+      nx /= l;
+      ny /= l;
+      nz /= l;
       row.push(b.v(x, y, zz, nx, ny, nz, x, y));
     }
     rows.push(row);
@@ -614,7 +655,7 @@ function lensG(r, bulge, sign = 1, rings = 5, cols = 28) {
   for (let i = 0; i < rings; i++) {
     for (let k = 0; k < cols; k++) {
       if (sign > 0) b.quad(rows[i][k], rows[i + 1][k], rows[i + 1][k + 1], rows[i][k + 1]);
-      else b.quad(rows[i][k], rows[i][k + 1], rows[i + 1][k + 1], rows[i + 1][k]);
+      else b.quad(rows[i][k + 1], rows[i + 1][k + 1], rows[i + 1][k], rows[i][k]);
     }
   }
   return b.geom();
@@ -821,6 +862,8 @@ const G = {
   Buf,
   mergeGeoms,
   boxG,
+  plainBoxG,
+  capsuleY,
   extrudeG,
   latheG,
   sweepG,
@@ -945,9 +988,9 @@ uniform float uBase;
 void main() {
   vec3 N = normalize( vWN );
   vec3 V = normalize( vWV );
-  float ndv = clamp( dot( N, V ), 0.0, 1.0 );
+  float ndv = clamp( abs( dot( N, V ) ), 0.0, 1.0 );
   float f = pow( 1.0 - ndv, 4.0 );
-  vec3 R = reflect( -V, N );
+  vec3 R = reflect( -V, dot( N, V ) < 0.0 ? -N : N );
   // A cheap two-lobe environment: the real IBL is fed in from Lighting each frame.
   vec3 env = mix( uGround, uSky, smoothstep( -0.3, 0.45, R.y ) );
   float spec = pow( max( dot( R, uSunDir ), 0.0 ), 260.0 );
@@ -1074,7 +1117,7 @@ void main() {
   // Ocular glass on top of the image.
   vec3 N = normalize( vWN );
   vec3 V = normalize( vWV );
-  float f = pow( 1.0 - clamp( dot( N, V ), 0.0, 1.0 ), 4.0 );
+  float f = pow( 1.0 - clamp( abs( dot( N, V ) ), 0.0, 1.0 ), 4.0 );
   img += uSky * f * 0.5 + uSunColor * f * 0.08;
 
   gl_FragColor = vec4( img, 1.0 );
@@ -1103,7 +1146,19 @@ uniform vec3 uColorA;
 uniform vec3 uColorB;
 uniform float uAmount;
 uniform float uSeed;
+uniform float uMode;   // 0 = star card, 1 = forward gas jet
 void main() {
+  if ( uMode > 0.5 ) {
+    // Jet: uv.y runs 0 at the crown to 1 at the tip.
+    float t = clamp( vUvF.y, 0.0, 1.0 );
+    float aj = uAmount * pow( 1.0 - t, 1.7 ) * ( 0.55 + 0.45 * sin( uSeed * 14.0 + t * 9.0 ) );
+    if ( aj < 0.004 ) discard;
+    vec3 cj = mix( uColorB, uColorA, 1.0 - t );
+    gl_FragColor = vec4( cj * aj * 6.0, aj );
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    return;
+  }
   vec2 p = vUvF * 2.0 - 1.0;
   float r = length( p );
   float ang = atan( p.y, p.x );
@@ -1201,6 +1256,7 @@ function makeOpticMaterials(ctx) {
       uColorB: { value: new THREE.Color(1.0, 0.42, 0.1) },
       uAmount: { value: 0.0 },
       uSeed: { value: 0.0 },
+      uMode: { value: 0.0 },
     },
   });
   void ctx;
@@ -1993,7 +2049,7 @@ function buildStock(sink, b) {
     sink.pair(pad, 'rubber', 'rubber', mCompose([0, -0.006, zR + 0.014], new THREE.Euler(-0.1, 0, 0)));
     for (let i = 0; i < 4; i++) {
       const groove = plainBoxG(bodyW * 1.0, 0.0022, 0.0026);
-      sink.pair(groove, 'rubber', 'rubber', mTrans(0, 0.018 - i * 0.014, zR + 0.019));
+      sink.pair(groove, 'rubber', 'rubber', mTrans(0, 0.018 - i * 0.014, zR + 0.0172));
     }
 
     if (S.cheek) {
@@ -2001,12 +2057,12 @@ function buildStock(sink, b) {
       const riserZ = zR - S.len * 0.28;
       const cheek = boxG(bodyW * 0.84, 0.017, S.len * 0.42, 0.006, 2);
       sink.pair(cheek, 'polymer', 'polymerEdge', mCompose(
-        [0, combY + 0.011, riserZ],
+        [0, combY + 0.0072, riserZ],
         new THREE.Euler(precision ? -0.05 : -0.03, 0, 0)
       ));
       const grip2 = boxG(bodyW * 0.7, 0.004, S.len * 0.3, 0.0015, 1);
       sink.pair(grip2, 'rubber', 'rubber', mCompose(
-        [0, combY + 0.02, riserZ],
+        [0, combY + 0.0158, riserZ],
         new THREE.Euler(precision ? -0.05 : -0.03, 0, 0)
       ));
       for (const s of [1, -1]) {
@@ -2018,7 +2074,7 @@ function buildStock(sink, b) {
           10
         );
         sink.pair(post, 'steelBright', 'steelBright', mCompose(
-          [s * bodyW * 0.28, combY - 0.002, riserZ + 0.03],
+          [s * bodyW * 0.28, combY - 0.004, riserZ + 0.03],
           new THREE.Euler(Math.PI * 0.5, 0, 0)
         ));
       }
@@ -2038,7 +2094,7 @@ function buildStock(sink, b) {
     );
     sink.pair(cup, 'phosphate', 'phosphateEdge', mCompose(
       [-bodyW * 0.5, -0.012, zA + 0.026],
-      new THREE.Euler(0, Math.PI * 0.5, 0)
+      new THREE.Euler(0, -Math.PI * 0.5, 0)
     ));
   }
 }
@@ -2349,12 +2405,12 @@ export function buildRedDot(ctx, mats, o = {}) {
   sink.add('anodisedEdge', discG(tubeR * 0.99, zB - 0.0015, 1, 22, glassR), mTrans(0, axisY, 0));
 
   // Hood ribs over the objective.
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     const rib = latheG(
       [
-        [tubeR * 1.03, zF + 0.002 + i * 0.0045, 'hard'],
-        [tubeR * 1.07, zF + 0.0035 + i * 0.0045, 'hard edge'],
-        [tubeR * 1.03, zF + 0.005 + i * 0.0045, 'hard'],
+        [tubeR * 1.01, zF + 0.003 + i * 0.007, 'hard'],
+        [tubeR * 1.045, zF + 0.0042 + i * 0.007, 'hard edge'],
+        [tubeR * 1.01, zF + 0.0055 + i * 0.007, 'hard'],
       ],
       22
     );
@@ -2386,8 +2442,8 @@ export function buildRedDot(ctx, mats, o = {}) {
       sink.pair(kn, 'anodisedEdge', 'anodisedEdge', new THREE.Matrix4().multiplyMatrices(mCompose(pos, rot), local));
     }
   };
-  turret(new THREE.Euler(Math.PI * 0.5, 0, 0), [0, axisY + tubeR * 0.86, 0.006]);
-  turret(new THREE.Euler(0, -Math.PI * 0.5, 0), [tubeR * 0.86, axisY, 0.006]);
+  turret(new THREE.Euler(-Math.PI * 0.5, 0, 0), [0, axisY + tubeR * 0.93, 0.006]);
+  turret(new THREE.Euler(0, Math.PI * 0.5, 0), [tubeR * 0.93, axisY, 0.006]);
   // Battery cap on the left.
   const cap = latheG(
     [
@@ -2398,7 +2454,7 @@ export function buildRedDot(ctx, mats, o = {}) {
     14,
     { capEnd: true }
   );
-  sink.pair(cap, 'anodised', 'anodisedEdge', mCompose([-tubeR * 0.9, axisY, -0.004], new THREE.Euler(0, Math.PI * 0.5, 0)));
+  sink.pair(cap, 'anodised', 'anodisedEdge', mCompose([-tubeR * 0.93, axisY, -0.004], new THREE.Euler(0, -Math.PI * 0.5, 0)));
 
   for (const m of sink.meshes(mats, 'reddot')) group.add(m);
 
@@ -2446,10 +2502,11 @@ export function buildRedDot(ctx, mats, o = {}) {
     glass: [gmat, rearMat],
     kind: 'reflex',
     axisY,
+    glassR,
     planeZ: zF + 0.012,
     // Apparent angular size of the dot core. A true 2 MOA dot is sub-pixel at any
     // sane render resolution; this is the size a real one *reads* as, glow included.
-    dotRad: o.dotRad ?? (o.ring ? 0.0052 : 0.0036),
+    dotRad: o.dotRad ?? (o.ring ? 0.0058 : 0.0042),
     zoom: 1.0,
     height: axisY,
   };
@@ -2499,7 +2556,7 @@ export function buildScope(ctx, mats, o = {}) {
       );
       sink.pair(scr, 'steelBright', 'steelBright', mCompose(
         [s * tubeR * 1.05, axisY - tubeR * 0.72, z],
-        new THREE.Euler(0, 0, s > 0 ? -0.9 : 0.9)
+        new THREE.Euler(-Math.PI * 0.5, 0, s > 0 ? -0.5 : 0.5)
       ));
     }
   }
@@ -2549,8 +2606,8 @@ export function buildScope(ctx, mats, o = {}) {
   }
   // Turrets.
   for (const [rot, pos] of [
-    [new THREE.Euler(Math.PI * 0.5, 0, 0), [0, axisY + tubeR * 0.9, zF + 0.062]],
-    [new THREE.Euler(0, -Math.PI * 0.5, 0), [tubeR * 0.9, axisY, zF + 0.062]],
+    [new THREE.Euler(-Math.PI * 0.5, 0, 0), [0, axisY + tubeR * 0.95, zF + 0.062]],
+    [new THREE.Euler(0, Math.PI * 0.5, 0), [tubeR * 0.95, axisY, zF + 0.062]],
   ]) {
     const t = latheG(
       [
@@ -2883,25 +2940,43 @@ function buildHand(mats, side, o = {}) {
   root.name = `hand:${side}`;
   const sink = new Sink();
 
-  const palmW = 0.084;
-  const palmL = 0.093;
-  const palmT = 0.031;
-  const palm = boxG(palmW, palmL, palmT, 0.011, 2);
-  sink.pair(palm, 'glove', 'glove', mTrans(0, palmL * 0.5, 0));
-  // Thenar (thumb muscle) pad and the heel of the hand.
-  const thenar = boxG(0.03, 0.05, 0.026, 0.011, 2);
-  sink.pair(thenar, 'glove', 'glove', mCompose([-s * 0.026, 0.03, -0.003], new THREE.Euler(0, 0, s * 0.1)));
+  const palmW = 0.079;
+  const palmL = 0.089;
+  const palmT = 0.029;
+  // A hand gripping a 48 mm tube is not a flat paddle: the metacarpal arch folds the
+  // knuckle block toward the palm. Two segments with a break between them is the
+  // cheapest thing that reads as a hand closing around something.
+  const bend = o.palmBend ?? 0.55;
+  const proxL = palmL * 0.55;
+  const distL = palmL * 0.45;
+  const prox = boxG(palmW, proxL, palmT, 0.011, 2);
+  sink.pair(prox, 'glove', 'glove', mTrans(0, proxL * 0.5, 0));
+  const thenar = boxG(0.03, 0.048, 0.026, 0.011, 2);
+  sink.pair(thenar, 'glove', 'glove', mCompose([-s * 0.026, 0.028, -0.003], new THREE.Euler(0, 0, s * 0.1)));
   const heel = boxG(palmW * 0.92, 0.024, palmT * 0.92, 0.01, 2);
   sink.pair(heel, 'glove', 'glove', mTrans(0, 0.006, -0.001));
-  // Knuckle pads on the back of the hand.
-  const backPad = boxG(palmW * 0.86, 0.05, 0.006, 0.0035, 2);
-  sink.pair(backPad, 'glovePad', 'glovePad', mTrans(0, palmL * 0.62, palmT * 0.5 - 0.001));
+
+  const knuckleNode = new THREE.Group();
+  knuckleNode.position.set(0, proxL, 0);
+  knuckleNode.rotation.x = -bend;
+  root.add(knuckleNode);
+  const knuckleM = worldRelativeTo(knuckleNode, root);
+  const dist = boxG(palmW * 0.97, distL, palmT * 0.9, 0.01, 2);
+  sink.pair(dist, 'glove', 'glove', new THREE.Matrix4().multiplyMatrices(knuckleM, mTrans(0, distL * 0.5, 0)));
+  // Knuckle pad on the back of the hand.
+  const backPad = boxG(palmW * 0.86, distL * 0.92, 0.006, 0.0035, 2);
+  sink.pair(
+    backPad,
+    'glovePad',
+    'glovePad',
+    new THREE.Matrix4().multiplyMatrices(knuckleM, mTrans(0, distL * 0.52, palmT * 0.45))
+  );
   // Cuff.
   const cuff = latheG(
     [
-      [0.036, -0.004, 'hard'],
-      [0.038, -0.016, 'hard edge'],
-      [0.037, -0.03],
+      [0.031, -0.004, 'hard'],
+      [0.0335, -0.016, 'hard edge'],
+      [0.0322, -0.03],
     ],
     16
   );
@@ -2916,7 +2991,7 @@ function buildHand(mats, side, o = {}) {
 
   const makeFinger = (f, curls, target, keyed) => {
     let node = new THREE.Group();
-    node.position.set(s * f.x, palmL - 0.004, 0.002);
+    node.position.set(s * f.x, distL - 0.003, 0.001);
     node.rotation.z = -s * f.splay;
     target.add(node);
     const joints = [node];
@@ -2924,7 +2999,7 @@ function buildHand(mats, side, o = {}) {
       const j = new THREE.Group();
       j.rotation.x = -curls[i];
       node.add(j);
-      const seg = boxG(f.r[i] * 2, f.len[i], f.r[i] * 1.86, f.r[i] * 0.82, 1);
+      const seg = capsuleY(f.r[i], f.len[i] + f.r[i] * 1.5, 8, 2);
       if (keyed) {
         const ss = new Sink();
         ss.pair(seg, 'glove', 'glove', mTrans(0, f.len[i] * 0.5, 0));
@@ -2956,8 +3031,7 @@ function buildHand(mats, side, o = {}) {
 
   const curl = o.curl ?? [1.05, 1.15, 0.75];
   const idxCurl = o.indexCurl ?? curl;
-  const holder = new THREE.Group();
-  root.add(holder);
+  const holder = knuckleNode;
 
   const indexJoints = makeFinger(FINGERS[0], idxCurl, holder, true);
   for (let i = 1; i < 4; i++) {
@@ -2968,7 +3042,7 @@ function buildHand(mats, side, o = {}) {
   // Thumb: two phalanges, rotated out of the palm plane.
   {
     const tn = new THREE.Group();
-    tn.position.set(-s * 0.036, 0.036, 0.006);
+    tn.position.set(-s * 0.036, 0.033, 0.006);
     tn.rotation.set(-(o.thumb?.[0] ?? 0.35), s * (o.thumbYaw ?? 0.55), s * (o.thumbRoll ?? -0.55));
     root.add(tn);
     let cur = tn;
@@ -2978,7 +3052,7 @@ function buildHand(mats, side, o = {}) {
       const j = new THREE.Group();
       j.rotation.x = -(o.thumb?.[i + 1] ?? 0.5);
       cur.add(j);
-      const seg = boxG(tr[i] * 2, tl[i], tr[i] * 1.86, tr[i] * 0.8, 1);
+      const seg = capsuleY(tr[i], tl[i] + tr[i] * 1.5, 8, 2);
       const mtx = worldRelativeTo(j, root);
       sink.pair(seg, 'glove', 'glove', new THREE.Matrix4().multiplyMatrices(mtx, mTrans(0, tl[i] * 0.5, 0)));
       const nxt = new THREE.Group();
@@ -3017,11 +3091,11 @@ function buildForearm(mats, side) {
   sink.pair(
     latheG(
       [
-        [0.036, 0.004, 'hard'],
-        [0.0405, -0.03],
-        [0.049, -0.11],
-        [0.055, -0.2],
-        [0.052, -0.235, 'hard'],
+        [0.0235, 0.002, 'hard'],
+        [0.0272, -0.024],
+        [0.0355, -0.072],
+        [0.0412, -0.14],
+        [0.0402, -0.18, 'hard'],
       ],
       16,
       { capEnd: true }
@@ -3034,10 +3108,10 @@ function buildForearm(mats, side) {
   sink.pair(
     latheG(
       [
-        [0.038, 0.006, 'hard'],
-        [0.0435, -0.006, 'hard edge'],
-        [0.0435, -0.03],
-        [0.0398, -0.038, 'hard edge'],
+        [0.0255, 0.004, 'hard'],
+        [0.0296, -0.008, 'hard edge'],
+        [0.0302, -0.03],
+        [0.0282, -0.04, 'hard edge'],
       ],
       16
     ),
@@ -3045,9 +3119,23 @@ function buildForearm(mats, side) {
     'sleeve',
     mCompose([0, 0, 0], new THREE.Euler(-Math.PI * 0.5, 0, 0), [1, 0.86, 1])
   );
-  // Strap detail.
-  const strap = boxG(0.078, 0.012, 0.006, 0.002, 1);
-  sink.pair(strap, 'glovePad', 'glovePad', mTrans(0, -0.052, s * 0.0));
+  // Cuff strap: a ring around the sleeve, not a slab stuck to one side.
+  const strapRing = latheG(
+    [
+      [0.0322, -0.046, 'hard'],
+      [0.0345, -0.05, 'hard edge'],
+      [0.0345, -0.062],
+      [0.0322, -0.066, 'hard edge'],
+    ],
+    14
+  );
+  sink.pair(
+    strapRing,
+    'glovePad',
+    'glovePad',
+    mCompose([0, 0, 0], new THREE.Euler(-Math.PI * 0.5, 0, 0), [1, 0.86, 1])
+  );
+  void s;
   for (const m of sink.meshes(mats, `arm_${side}`)) g.add(m);
   return g;
 }
@@ -3071,33 +3159,39 @@ export function buildArms(ctx, mats, def) {
   const rRig = new THREE.Group();
   rRig.name = 'rig:right';
   const right = buildHand(mats, 'right', {
-    curl: [1.26, 1.42, 0.78],
+    curl: [1.3, 1.46, 0.8],
     indexCurl: [0.12, 0.06, 0.04],
-    thumb: [0.5, 0.72, 0.55],
-    thumbYaw: 0.62,
-    thumbRoll: -0.5,
+    thumb: [0.46, 0.66, 0.5],
+    thumbYaw: 0.58,
+    thumbRoll: -0.46,
   });
   const rHand = new THREE.Group();
   rHand.add(right.root);
-  orientTo(rHand, [0.86, 0.42, -0.28], [-0.35, 0.12, -0.93]);
-  // Knuckles just off the front strap, on the right.
-  const gt = 0.36;
-  const gx = Math.sin(g.angle);
-  const gyd = -Math.cos(g.angle);
-  const px = 0;
-  const py = g.y + gyd * g.len * gt;
-  const pz = g.z + gx * g.len * gt;
-  const frontN = [0, -Math.sin(g.angle), -Math.cos(g.angle)];
-  const knuck = [
-    px + g.w * 0.36,
-    py + frontN[1] * (g.d * 0.5 + 0.008),
-    pz + frontN[2] * (g.d * 0.5 + 0.008),
+  // wrist -> knuckles runs forward and down along the grip; the back of the hand
+  // faces out to the right, which puts the index and thumb on top.
+  const rFinger = [-0.15, -0.45, -0.88];
+  orientTo(rHand, [0.9, 0.3, -0.3], rFinger);
+  // Palm on the rear-right of the grip, a third of the way down.
+  const gt = 0.3;
+  const palmR = [
+    g.w * 0.5 + 0.011,
+    g.y - Math.cos(g.angle) * g.len * gt + Math.sin(g.angle) * (g.d * 0.45),
+    g.z + Math.sin(g.angle) * g.len * gt + Math.cos(g.angle) * (g.d * 0.45),
   ];
-  rHand.position.set(knuck[0] + 0.0326, knuck[1] - 0.0112, knuck[2] + 0.0865);
+  rHand.position.set(
+    palmR[0] - 0.0465 * rFinger[0],
+    palmR[1] - 0.0465 * rFinger[1],
+    palmR[2] - 0.0465 * rFinger[2]
+  );
   rRig.add(rHand);
   const rArm = buildForearm(mats, 'right');
-  rArm.position.copy(rHand.position);
-  aimNode(rArm, [0.3, -0.56, 0.77]);
+  const rDir = [0.34, -0.68, 0.65];
+  rArm.position.set(
+    rHand.position.x + rDir[0] * 0.024,
+    rHand.position.y + rDir[1] * 0.024,
+    rHand.position.z + rDir[2] * 0.024
+  );
+  aimNode(rArm, rDir);
   rRig.add(rArm);
   out.right = right;
   out.rightRig = rRig;
@@ -3118,15 +3212,27 @@ export function buildArms(ctx, mats, def) {
   });
   const lHand = new THREE.Group();
   lHand.add(left.root);
-  orientTo(lHand, [-0.62, -0.72, -0.3], [0.8, -0.52, -0.3]);
+  // Palm on the lower-left of the handguard, fingers running down and across so the
+  // curl carries them under the tube and up the far side; index and thumb forward.
+  const lFinger = [0.58, -0.77, -0.3];
+  orientTo(lHand, [-0.8, -0.6, 0.0], lFinger);
   const hz = b.handguard.z0 * 0.55 + b.handguard.z1 * 0.45;
-  const rad = b.handguard.r + 0.0155;
-  const palmC = [-0.652 * rad, -0.758 * rad, hz];
-  lHand.position.set(palmC[0] - 0.0368, palmC[1] + 0.0239, palmC[2] + 0.0138);
+  const rad = b.handguard.r + 0.016;
+  const palmC = [-0.8 * rad, -0.6 * rad, hz];
+  lHand.position.set(
+    palmC[0] - 0.0465 * lFinger[0],
+    palmC[1] - 0.0465 * lFinger[1],
+    palmC[2] - 0.0465 * lFinger[2]
+  );
   lRig.add(lHand);
   const lArm = buildForearm(mats, 'left');
-  lArm.position.copy(lHand.position);
-  aimNode(lArm, [-0.32, -0.72, 0.62]);
+  const lDir = [-0.46, -0.83, 0.32];
+  lArm.position.set(
+    lHand.position.x + lDir[0] * 0.024,
+    lHand.position.y + lDir[1] * 0.024,
+    lHand.position.z + lDir[2] * 0.024
+  );
+  aimNode(lArm, lDir);
   lRig.add(lArm);
   out.left = left;
   out.leftRig = lRig;
@@ -3203,26 +3309,38 @@ export function makeMuzzleFlash(ctx, mats) {
     quads.push(q);
   }
   // A short forward jet so the flash has depth rather than reading as a sticker.
-  const jet = new THREE.Mesh(
-    latheG(
-      [
-        [0.001, 0.0, 'hard'],
-        [0.021, -0.03],
-        [0.014, -0.07],
-        [0.002, -0.1],
-      ],
-      10
-    ).main,
-    mat
-  );
+  // latheG's UVs are metre-space arc lengths, so remap v to 0..1 along the cone for
+  // the jet branch of the shader.
+  const jetGeo = latheG(
+    [
+      [0.001, 0.0, 'hard'],
+      [0.021, -0.03],
+      [0.014, -0.07],
+      [0.002, -0.1],
+    ],
+    10
+  ).main;
+  if (jetGeo) {
+    const pos = jetGeo.attributes.position;
+    const uv = jetGeo.attributes.uv;
+    for (let i = 0; i < pos.count; i++) uv.setXY(i, 0.5, clamp(-pos.getZ(i) / 0.1, 0, 1));
+    uv.needsUpdate = true;
+  }
+  const jetMat = mat.clone();
+  jetMat.uniforms = THREE.UniformsUtils.clone(mat.uniforms);
+  jetMat.uniforms.uMode.value = 1;
+  const jet = new THREE.Mesh(jetGeo, jetMat);
   jet.frustumCulled = false;
   jet.renderOrder = 19;
   group.add(jet);
-  group.visible = false;
+  // The group stays *visible* with the flash amount at zero. An invisible object is
+  // skipped by the renderer's light collection, so hiding it would drop the point
+  // light out of the scene and force every viewmodel material to recompile the first
+  // time a shot is fired — a multi-second hitch on a software rasteriser.
   const light = new THREE.PointLight(0xffb066, 0, 2.2, 2.0);
   light.position.set(0, 0, -0.02);
   group.add(light);
-  return { group, mat, light, quads, jet };
+  return { group, mat, jetMat, light, quads, jet };
 }
 
 export { G };

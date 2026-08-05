@@ -12,15 +12,21 @@
  *   • emits the gunplay events and hands the shot off to ballistics / FX
  *
  * Events emitted
- *   weapon:fire     {weapon, def, origin, dir, ads, shot, spread, ammo}
+ *   weapon:fire     {weapon, weaponId, def, origin, dir, ads, shot, spread, ammo,
+ *                    suppressed}
  *   weapon:reload   {weapon, stage}   stage: start|release|magout|magin|seat|
  *                                            boltrelease|end
- *   weapon:equip    {weapon, def}
- *   weapon:empty    {weapon}
- *   weapon:ammo     {ammo, reserve, magSize}
- *   weapon:firemode {mode}
- *   weapon:melee    {weapon}
+ *   weapon:equip    {weapon, weaponId, def, ammo}
+ *   weapon:empty    {weapon, dry}
+ *   weapon:ammo     {weapon, ammo, reserve, magSize, mode}
+ *   weapon:firemode {weapon, mode}
+ *   weapon:melee    {weapon, stage|damage}
  *   weapon:inspect  {weapon}
+ *
+ * On `weapon:fire` and `weapon:equip`, `weapon` is the live **weapon handle**:
+ * `{ id, name, def }` with a `toString()` that returns the id, so a consumer can use
+ * it as an object (`payload.weapon.def.recoil`) or as a string (`\`${payload.weapon}\``)
+ * without knowing which was meant. `weaponId` is always the plain id.
  *
  * Events consumed:  debug:pose, debug:cameraLock, quality:changed, entity:damage
  *
@@ -92,6 +98,7 @@ export default function createWeaponSystem(ctx) {
   const _axis = new THREE.Vector3();
   const _origin = new THREE.Vector3();
   const _col = new THREE.Color();
+  const _clear = new THREE.Color();
 
   /* picture-in-picture scope */
   const pip = {
@@ -125,6 +132,12 @@ export default function createWeaponSystem(ctx) {
       gun.add(w.root);
       gun.add(arms.leftRig);
       gun.add(arms.rightRig);
+      // Viewmodel scale. A 1:1 rifle simply does not fit a 60° viewmodel frustum at
+      // a believable arm's length; every shooter shrinks the viewmodel a little and
+      // pushes it out. The ADS solve reads the sight through this transform, so the
+      // sight line stays exact whatever the scale is.
+      const vs = def.view?.scale ?? 0.78;
+      gun.scale.setScalar(vs);
       gun.visible = false;
       rig.add(gun);
 
@@ -156,6 +169,11 @@ export default function createWeaponSystem(ctx) {
   function detach(inst, slot) {
     const f = inst.fitted[slot];
     if (!f) return;
+    // The reticle lives under the viewmodel root (see fit()), so it has to be pulled
+    // out by hand or it outlives the optic it belongs to.
+    const ret = f.api?.reticle;
+    if (ret?.parent) ret.parent.remove(ret);
+    ret?.geometry?.dispose?.();
     if (f.group?.parent) f.group.parent.remove(f.group);
     disposeTree(f.group);
     inst.fitted[slot] = null;
@@ -185,15 +203,60 @@ export default function createWeaponSystem(ctx) {
     }
     if (slot === 'muzzle') inst.muzzleTip = a.api?.tip || null;
     if (slot === 'magazine') {
-      const scale = ATTACHMENTS[id]?.magScale;
+      const k = ATTACHMENTS[id]?.magScale || 1;
       const magNode = inst.nodes.magazine;
-      if (magNode) magNode.scale.set(1, scale || 1, 1);
+      if (magNode) {
+        // Scale about the feed lips so a longer magazine grows downward instead of
+        // sinking into the magwell.
+        const yTop = inst.def.build.mag.yTop;
+        magNode.scale.set(1, k, 1);
+        magNode.userData.magBase = yTop * (1 - k);
+      }
     }
+  }
+
+  /**
+   * A def with the fitted attachments folded in. This is what goes out on
+   * `weapon:fire` and what CameraRig reads for its kick, so a suppressor or a brake
+   * changes how the camera behaves and not just the numbers on the HUD.
+   */
+  function buildEffectiveDef(inst) {
+    const st = inst.stats;
+    const r = inst.def.recoil;
+    const eff = {
+      ...inst.def,
+      magSize: st.magSize,
+      adsTime: st.adsTime,
+      zoom: st.zoom,
+      adsFovScale: st.zoom > 1.05 ? clamp(1 / st.zoom, 0.14, 0.95) : inst.def.adsFovScale,
+      muzzleVelocity: st.muzzleVelocity,
+      penetration: st.penetration,
+      moveSpeedScale: st.moveSpeedScale,
+      suppressed: st.suppressed,
+      recoil: {
+        ...r,
+        // CameraRig supplies the visual punch; the authored pattern (applied as an
+        // explicit impulse in shoot()) supplies the climb. Split so they sum sanely.
+        vertical: r.vertical * 0.52 * st.recoilV,
+        horizontal: r.horizontal * 0.6 * st.recoilH,
+        back: r.back * st.recoilV,
+      },
+    };
+    inst.effDef = eff;
+    inst.handle = {
+      id: inst.id,
+      name: inst.def.name,
+      def: eff,
+      toString() {
+        return inst.id;
+      },
+    };
   }
 
   function refitAll(inst) {
     for (const slot of SLOTS) fit(inst, slot);
     inst.stats = applyStats(inst.def, inst.attachments);
+    buildEffectiveDef(inst);
     const st = ammoState.get(inst.id);
     if (!st) {
       ammoState.set(inst.id, {
@@ -292,8 +355,14 @@ export default function createWeaponSystem(ctx) {
     hidden = false;
     cur.gun.visible = true;
     bindAnim(inst);
+    attachFlash();
     if (!opts.instant) anim?.swap(1);
-    ctx.bus?.emit?.('weapon:equip', { weapon: id, def: inst.def, ammo: ammoOf().ammo });
+    ctx.bus?.emit?.('weapon:equip', {
+      weapon: inst.handle,
+      weaponId: id,
+      def: inst.effDef,
+      ammo: ammoOf().ammo,
+    });
     emitAmmo();
     return inst;
   }
@@ -333,20 +402,22 @@ export default function createWeaponSystem(ctx) {
 
   function updateSightLocal(inst) {
     const sight = inst.fitted.optic?.sight;
+    const scale = inst.gun.scale.x || 1;
     if (!sight) {
-      _v.set(0, inst.def.build.sightHeight, -0.06);
+      _v.set(0, inst.def.build.sightHeight * scale, -0.06 * scale);
       anim.setSightLocal(_v);
       return;
     }
-    // Position of the optic's aim node in weapon-local space, taken with the rig at
-    // identity so the pose never feeds back into the ADS solve.
+    // Position of the optic's aim node in *rig* space (so the viewmodel scale is
+    // baked in), taken with the rig at identity so the pose never feeds back into
+    // the ADS solve.
     const savedP = rig.position.clone();
     const savedQ = rig.quaternion.clone();
     rig.position.set(0, 0, 0);
     rig.quaternion.identity();
-    inst.gun.updateWorldMatrix(true, true);
+    rig.updateWorldMatrix(true, true);
     _v.setFromMatrixPosition(sight.matrixWorld);
-    inst.gun.worldToLocal(_v);
+    rig.worldToLocal(_v);
     rig.position.copy(savedP);
     rig.quaternion.copy(savedQ);
     anim.setSightLocal(_v);
@@ -425,10 +496,13 @@ export default function createWeaponSystem(ctx) {
       _axis.add(_v2).normalize();
     }
 
-    // Recoil: authored pattern, so it can actually be learned.
+    // Recoil comes from two places on purpose. The authored pattern is the part the
+    // player learns and the part that moves the aim, so it goes in as an explicit
+    // impulse; CameraRig's own `weapon:fire` kick is the punch on top of it. The 62x
+    // converts a peak displacement into the velocity impulse its spring wants.
     const step = recoilStep(def, anim?.shotIndex ?? 0, ctx.rng);
     ctx.cameraRig?.addImpulse?.({
-      rot: [-step.y * 24 * stats.recoilV, step.x * 24 * stats.recoilH, 0],
+      rot: [-step.y * 62 * stats.recoilV, step.x * 62 * stats.recoilH, 0],
       space: 'local',
     });
 
@@ -441,8 +515,11 @@ export default function createWeaponSystem(ctx) {
     fireFX();
 
     const payload = {
-      weapon: curId,
-      def,
+      // `weapon` is the live weapon handle: it carries `.id`, `.def` (attachment
+      // folded) and stringifies to the id, so consumers can treat it either way.
+      weapon: cur.handle,
+      weaponId: curId,
+      def: cur.effDef,
       origin: _origin.clone(),
       dir: _axis.clone(),
       ads: adsN > 0.5,
@@ -455,7 +532,7 @@ export default function createWeaponSystem(ctx) {
 
     try {
       ctx.ballistics?.fire?.(payload.origin, payload.dir, {
-        ...def,
+        ...cur.effDef,
         muzzleVelocity: stats.muzzleVelocity,
         penetration: stats.penetration,
         damageAt: (m) => damageAt(def, m / Math.max(0.2, stats.damageRangeScale)),
@@ -466,8 +543,12 @@ export default function createWeaponSystem(ctx) {
       warnOnce('ballistics.fire threw', err);
     }
     try {
-      muzzleWorld(_v);
-      ctx.fx?.muzzle?.(_v, _axis, { weapon: curId, scale: def.class === 'dmr' ? 1.35 : 1, suppressed: !!stats.suppressed });
+      api.muzzleWorld(_v);
+      ctx.fx?.muzzle?.(_v, _axis, {
+        weapon: curId,
+        scale: def.class === 'dmr' ? 1.35 : def.class === 'smg' ? 0.85 : 1,
+        suppressed: !!stats.suppressed,
+      });
     } catch (err) {
       warnOnce('fx.muzzle threw', err);
     }
@@ -498,18 +579,24 @@ export default function createWeaponSystem(ctx) {
     }
   }
 
-  function fireFX() {
-    if (!flash || !api.localMuzzleFlash) return;
-    const tip = cur?.muzzleTip || cur?.nodes?.muzzle;
+  /** Keep the flash (and its point light) parented to whatever the muzzle is now. */
+  function attachFlash() {
+    if (!flash) return;
+    const tip = cur?.muzzleTip || cur?.nodes?.muzzle || null;
     if (tip && flash.group.parent !== tip) {
       flash.group.parent?.remove(flash.group);
       tip.add(flash.group);
     }
+  }
+
+  function fireFX() {
+    if (!flash || !api.localMuzzleFlash) return;
+    attachFlash();
     const supp = !!cur?.stats?.suppressed;
     flashT = supp ? 0.018 : 0.045;
     flashSeed = ctx.rng ? ctx.rng() : 0.5;
     flash.mat.uniforms.uSeed.value = flashSeed;
-    flash.group.visible = true;
+    if (flash.jetMat) flash.jetMat.uniforms.uSeed.value = flashSeed;
     flash.group.scale.setScalar((supp ? 0.34 : 1) * (cur?.def?.class === 'dmr' ? 1.3 : cur?.def?.class === 'smg' ? 0.82 : 1));
     for (let i = 0; i < flash.quads.length; i++) {
       flash.quads[i].rotation.z = flashSeed * 6.28 + (i / flash.quads.length) * Math.PI;
@@ -585,16 +672,27 @@ export default function createWeaponSystem(ctx) {
       optic.reticle.visible = false;
       return;
     }
+    // Where the collimated dot actually lands on the reticle plane.
+    _v2.copy(_axis).multiplyScalar(t);
+    // A real emitter only reaches your eye through the front element: once the dot
+    // walks past the glass aperture there is no light path left and it disappears.
+    const glassR = optic.glassR ?? 0.014;
+    const off = _v2.distanceTo(_v);
+    const aperture = clamp01(1 - (off - glassR * 0.72) / (glassR * 0.42));
+    if (aperture <= 0.002) {
+      optic.reticle.visible = false;
+      return;
+    }
     optic.reticle.visible = !hidden && !!cur?.gun?.visible;
-    optic.reticle.position.copy(_axis).multiplyScalar(t);
+    optic.reticle.position.copy(_v2);
     optic.reticle.quaternion.identity();
-    const dotRad = optic.dotRad ?? 0.0038;
+    const dotRad = optic.dotRad ?? 0.0042;
     const uSize = optic.reticleMat?.uniforms?.uSize?.value ?? 0.003;
     optic.reticle.scale.setScalar(clamp((dotRad * t) / Math.max(1e-5, uSize), 0.004, 4));
     if (optic.reticleMat) {
       const u = optic.reticleMat.uniforms;
       u.uJitter.value = Math.sin((ctx.time?.elapsed ?? 0) * 41.3) * 0.5 + 0.5;
-      u.uIntensity.value = 5.6 + 2.4 * clamp01(anim?.adsBlend ?? 0);
+      u.uIntensity.value = (5.6 + 3.2 * clamp01(anim?.adsBlend ?? 0)) * aperture;
     }
     // Reticle bleed onto the front element.
     for (const g of optic.glass || []) {
@@ -699,12 +797,17 @@ export default function createWeaponSystem(ctx) {
       const r = ctx.renderer;
       const prevTarget = r.getRenderTarget();
       const prevShadowAuto = r.shadowMap.autoUpdate;
+      const prevClear = r.getClearColor(_clear);
+      const prevAlpha = r.getClearAlpha();
+      // Shadow maps were already resolved by the main render this frame; re-rendering
+      // them for a 192px inset would be pure waste.
       r.shadowMap.autoUpdate = false;
       r.setRenderTarget(pip.rt);
       r.setClearColor(0x000000, 1);
       r.clear(true, true, false);
       r.render(ctx.scene, pip.cam);
       r.setRenderTarget(prevTarget);
+      r.setClearColor(prevClear, prevAlpha);
       r.shadowMap.autoUpdate = prevShadowAuto;
       optic.imageMat.uniforms.uPip.value = pip.rt.texture;
       optic.imageMat.uniforms.uUsePip.value = 1;
@@ -723,9 +826,10 @@ export default function createWeaponSystem(ctx) {
 
   function readIntent(dt) {
     if (poseMode) {
+      const prev = wantFire;
       wantFire = !!poseState?.firing;
       wantAds = !!poseState?.ads;
-      firePressedEdge = wantFire;
+      firePressedEdge = wantFire && !prev;
       return;
     }
     const input = ctx.input;
@@ -921,7 +1025,8 @@ export default function createWeaponSystem(ctx) {
       return cur
         ? {
             id: cur.id,
-            def: cur.def,
+            def: cur.effDef,
+            handle: cur.handle,
             ammo: ammoOf().ammo,
             reserve: ammoOf().reserve,
             magSize: cur.stats.magSize,
@@ -934,9 +1039,14 @@ export default function createWeaponSystem(ctx) {
       return curId;
     },
     get def() {
+      return cur?.effDef ?? null;
+    },
+    /** The unmodified catalogue entry, before attachments. */
+    get baseDef() {
       return cur?.def ?? null;
     },
-    get stats() {
+    /** The attachment-folded tuning view of the current weapon. */
+    get tuning() {
       return cur?.stats ?? null;
     },
     get ads() {
@@ -980,14 +1090,18 @@ export default function createWeaponSystem(ctx) {
     get fireModes() {
       return cur?.def?.fireModes?.slice() ?? [];
     },
+    /** Current cone half-angle in radians — what the HUD should size the reticle to. */
     get spread() {
       if (!cur) return 0;
-      return spreadOf(cur.def, {
-        ads: clamp01(anim?.adsRaw ?? 0),
+      const adsN = clamp01(anim?.adsRaw ?? 0);
+      const cone = spreadOf(cur.def, {
+        ads: adsN,
         bloom,
         moving: clamp01((ctx.player?.speed ?? 0) / 4.5),
         airborne: ctx.player?.isGrounded === false,
+        crouched: /crouch|prone|slide/.test(String(ctx.player?.stance ?? '')),
       });
+      return cone * (adsN > 0.5 ? cur.stats.spreadAds : cur.stats.spreadHip);
     },
     get bloom() {
       return bloom;
@@ -1063,6 +1177,7 @@ export default function createWeaponSystem(ctx) {
       cur.attachments = next;
       fit(cur, slot);
       cur.stats = applyStats(cur.def, cur.attachments);
+      buildEffectiveDef(cur);
       bindAnim(cur);
       const st = ammoOf();
       st.ammo = Math.min(st.ammo, cur.stats.magSize);
@@ -1087,13 +1202,16 @@ export default function createWeaponSystem(ctx) {
       return v;
     },
     damageAt: (m) => (cur ? damageAt(cur.def, m) : 0),
-    stats2() {
+    stats() {
       return {
         weapon: curId,
         tris: cur?.tris ?? 0,
         built: [...built.keys()],
         pip: pip.active,
         action: anim?.action ?? null,
+        ammo: ammoOf().ammo,
+        reserve: ammoOf().reserve,
+        ads: clamp01(anim?.adsBlend ?? 0),
       };
     },
   };
@@ -1171,6 +1289,18 @@ export default function createWeaponSystem(ctx) {
     update(dt) {
       if (!api.ready) return;
       const d = Number.isFinite(dt) ? clamp(dt, 0, 0.1) : 1 / 60;
+      // Age the muzzle flash *before* this frame's shot so a round fired now is drawn
+      // at full intensity on the frame it happens.
+      if (flashT > 0) {
+        flashT -= d;
+        const k = clamp01(flashT / 0.045);
+        if (flash) {
+          const amt = flashT > 0 ? k * k : 0;
+          flash.mat.uniforms.uAmount.value = amt;
+          if (flash.jetMat) flash.jetMat.uniforms.uAmount.value = amt;
+          flash.light.intensity = amt * 26;
+        }
+      }
       readIntent(d);
       if (cur) tickFiring(d);
       // Bloom recovery.
@@ -1181,19 +1311,6 @@ export default function createWeaponSystem(ctx) {
         bloom = Math.max(0, bloom - rec * d);
       }
       stepBrass(d);
-      if (flashT > 0) {
-        flashT -= d;
-        const k = clamp01(flashT / 0.045);
-        if (flash) {
-          flash.mat.uniforms.uAmount.value = k * k;
-          flash.light.intensity = k * k * 26;
-          if (flashT <= 0) {
-            flash.group.visible = false;
-            flash.mat.uniforms.uAmount.value = 0;
-            flash.light.intensity = 0;
-          }
-        }
-      }
     },
 
     lateUpdate(dt) {

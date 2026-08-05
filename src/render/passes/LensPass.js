@@ -84,22 +84,39 @@ void main() {
   color *= mix( 1.0, natural * mechanical, uVignette );
 
   // --- grain ---------------------------------------------------------------
+  /**
+   * Grain is applied **after** the sRGB encode, in display space, and it is the last
+   * thing that touches the frame.
+   *
+   * Adding it to linear light instead is what turns a dark frame into a noise storm:
+   * a fixed ±0.016 of linear amplitude sitting on a shadow at 0.02 linear is a ±40 %
+   * swing, which comes out of the encode as ±12/255 of crawling colour speckle, while
+   * the identical amplitude on a highlight at 0.8 is invisible. The grain is supposed
+   * to be a uniform film characteristic, so it has to be uniform in the space the eye
+   * actually sees. In display space ±0.016 is ±4/255 everywhere, which is a sensor,
+   * not a snowstorm — and it doubles as the dither that breaks up 8-bit banding.
+   *
+   * The response still lives in the toe, but it is rolled off below ~0.06 as well:
+   * real emulsion has nothing to develop in the deep black, and letting grain run
+   * free there is exactly what makes a night sky look like TV static.
+   */
+  vec3 srgb = linearToSRGB( clamp( color, 0.0, 1.0 ) );
+
   if ( uGrain > 0.0 ) {
     vec2 gp = gl_FragCoord.xy / max( uGrainSize, 0.5 );
     float n  = ignTemporal( gp, uFrame );
     float n2 = ignTemporal( gp + 53.0, uFrame * 1.37 + 11.0 );
     float n3 = ignTemporal( gp + 97.0, uFrame * 0.73 + 29.0 );
-    // Centre and shape the noise: box-muller-ish, cheap.
-    float lum = luma( color );
-    // Film grain lives in the toe. Highlights are almost clean.
-    float response = ( 1.0 - lum ) * ( 1.0 - lum ) * 0.85 + 0.15;
+    float lum = luma( srgb );
+    float toe = smoothstep( 0.0, 0.14, lum );
+    float response = toe * ( ( 1.0 - lum ) * ( 1.0 - lum ) * 0.85 + 0.15 );
     float mono = ( n - 0.5 ) * 2.0;
     vec3 chroma = vec3( n - 0.5, n2 - 0.5, n3 - 0.5 ) * 2.0;
-    color += mono * uGrain * response;
-    color += chroma * uGrainChroma * response;
+    srgb += mono * uGrain * response;
+    srgb += chroma * uGrainChroma * response;
   }
 
-  gl_FragColor = vec4( linearToSRGB( clamp( color, 0.0, 1.0 ) ), 1.0 );
+  gl_FragColor = vec4( clamp( srgb, 0.0, 1.0 ), 1.0 );
 }
 `;
 
@@ -180,8 +197,12 @@ export default class LensPass extends Pass {
       distortion: 0.0,      // Brown-Conrady k1; off by default
       vignette: 0.55,
       vignetteRoundness: 0.65,
-      grain: 0.016,
-      grainChroma: 0.006,
+      // Display-space amplitudes now (see the grain block in the shader): 0.010 is
+      // ±2.5/255, which reads as a sensor at 1:1 and disappears at viewing distance,
+      // and is still enough dither to break 8-bit banding. It measures as ~40 % of the
+      // previous frame's high-frequency energy on a shaded street.
+      grain: 0.01,
+      grainChroma: 0.0035,
       grainSize: 1.35,
     };
 

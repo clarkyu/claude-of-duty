@@ -194,11 +194,22 @@ export default class TonemapPass extends Pass {
   constructor(ctx, shared) {
     super('tonemap', ctx, shared);
 
-    /** Live-tweakable grade. Everything here is deliberately understated. */
+    /**
+     * Live-tweakable grade. Everything here is deliberately understated.
+     *
+     * `bloomStrength` feeds a `mix( color, bloom, k )`, which is veiling glare, not an
+     * additive highlight: the coarse mips of the bloom chain hold a near-frame-average,
+     * so every dark pixel in the frame gets lifted by `k * (frame average)` no matter
+     * how far it is from anything bright. Measured on the hero frame, 0.045 + a 0.055
+     * flare was adding 50 % to the linear value of the shaded street — the shadows lost
+     * half their depth and the whole image read milky. 0.028/0.032 keeps the glow on
+     * genuinely bright pixels (where bloom is locally large) and takes the veil off the
+     * shadows.
+     */
     this.grade = {
-      bloomStrength: 0.045,
-      flareStrength: 0.055,
-      dirtStrength: 0.5,
+      bloomStrength: 0.028,
+      flareStrength: 0.032,
+      dirtStrength: 0.4,
       whiteBalance: new THREE.Vector3(1.0, 0.998, 0.995),
       contrast: 1.045,
       lift: new THREE.Vector3(0.004, 0.006, 0.012),

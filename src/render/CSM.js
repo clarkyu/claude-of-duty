@@ -136,6 +136,14 @@ export class CascadedShadowMaps {
       uCsmSplits: { value: [] },
       uCsmParams: { value: [] },
       uCsmControl: { value: new THREE.Vector4(120, 165, 1, 1) },
+      /**
+       * Per-frame rotation offset for the PCF disc. Without it the disc rotation is a
+       * pure function of `gl_FragCoord`, so the dither pattern is *identical* every
+       * frame — TAA averages a constant and the noise survives every amount of warm-up.
+       * Advancing it on a golden-ratio sequence turns the same taps into a temporal
+       * multisample that TAA actually resolves.
+       */
+      uCsmJitter: { value: 0 },
     };
 
     this._splits = [];
@@ -234,8 +242,11 @@ export class CascadedShadowMaps {
   setQuality(tier, headless) {
     const before = `${this.pcss}|${this.pcfTaps}|${this.blockerTaps}`;
     if (headless) {
+      // The software rasteriser cannot afford a blocker search, but 6 taps on a
+      // one-texel disc is a visibly dithered edge; 8 plus the temporal rotation
+      // resolves cleanly for a few percent more cost.
       this.pcss = false;
-      this.pcfTaps = 6;
+      this.pcfTaps = 8;
       this.blockerTaps = 4;
       this.stagger = 1;
     } else {
@@ -436,6 +447,10 @@ export class CascadedShadowMaps {
       }
     }
 
+    // Golden-ratio rotation sequence: successive frames land far apart on the circle,
+    // so a handful of frames of TAA sees a well-spread set of PCF orientations.
+    this.uniforms.uCsmJitter.value = (this._staggerPhase * 0.61803398875) % 1;
+
     const far = splits[this.count];
     this.uniforms.uCsmControl.value.set(
       far * 0.82,
@@ -463,6 +478,7 @@ export class CascadedShadowMaps {
 uniform vec4 uCsmSplits[ ${n} ];   // x near, y far, z blend start, w texel (uv)
 uniform vec4 uCsmParams[ ${n} ];   // x const bias, y slope bias, z depth range (m), w ortho size (m)
 uniform vec4 uCsmControl;          // x fade start, y fade end, z tan(source radius), w intensity
+uniform float uCsmJitter;          // per-frame PCF rotation offset, 0..1
 
 ${glslDisc('COD_PCF_DISC', pcfPts)}
 ${glslDisc('COD_BLK_DISC', blkPts)}
@@ -478,7 +494,7 @@ float codCsmShadow( float viewDepth, vec3 nrmView, vec3 lightDirView ) {
 	float ndl = clamp( dot( normalize( nrmView ), lightDirView ), 0.0, 1.0 );
 	// Slope-scaled bias: grazing angles need far more of it than facing ones.
 	float slope = clamp( sqrt( max( 1.0 - ndl * ndl, 0.0 ) ) / max( ndl, 0.2 ), 0.0, 2.0 );
-	float ang = codShadowNoise( gl_FragCoord.xy ) * 6.2831853;
+	float ang = ( codShadowNoise( gl_FragCoord.xy ) + uCsmJitter ) * 6.2831853;
 	vec2 rot = vec2( cos( ang ), sin( ang ) );
 
 	float s = 1.0;

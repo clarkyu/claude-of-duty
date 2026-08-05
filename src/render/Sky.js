@@ -101,11 +101,23 @@ const SOLAR_NOON = 12.75;
 /**
  * Cinematic time warp. The sun still travels a real spherical path (so azimuth and
  * altitude stay consistent), but clock time is remapped so the review poses land on
- * the light they were art-directed for: 5.5 blue hour, 7.4 golden hour, 12 harsh
- * noon, 19.5 the moment of sunset, 21.5 full night.
+ * the light they were art-directed for: 5.5 blue hour, 6.6 low morning, 7.4 golden
+ * hour, 8.2 mid morning, 12 harsh noon, 19.5 the moment of sunset, 21.5 full night.
+ *
+ * **The morning keys are set by the level's own skyline, not by an almanac.** The map
+ * sits inside a backdrop ring of 20–23 m facades about 92 m out, and every block in
+ * between is 7–12 m tall. A receiver at eye height only sees the sun once
+ *   tan(altitude) > (occluder height - eye height) / distance,
+ * which for the 22.9 m ring works out at ~12.4 deg and for the nearest souk block at
+ * ~13.3 deg. Anything below that and the *entire* playable street is in shadow: the
+ * cascades are correct, there is simply no direct light in the level, the frame falls
+ * back to sky-only IBL (which is blue), auto-exposure rails at its gain ceiling and
+ * the whole image reads as a cold, underexposed night. 7.4 therefore maps to a
+ * ~15.7 deg sun — high enough to clear the skyline by a comfortable margin, still low
+ * enough that the air mass keeps the key warm and the shadows long.
  */
-const WARP_X = [0, 5.5, 7.4, 12, 19.5, 21.5, 24];
-const WARP_Y = [0, 5.94, 7.04, 12.4, 19.11, 20.45, 24];
+const WARP_X = [0, 5.5, 6.6, 7.4, 8.2, 12, 19.5, 21.5, 24];
+const WARP_Y = [0, 5.94, 7.2, 7.66, 7.97, 12.4, 19.11, 20.45, 24];
 
 /** Monotone cubic (Fritsch-Carlson) — smooth, and never folds the clock backwards. */
 function buildPchip(xs, ys) {

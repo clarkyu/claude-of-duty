@@ -81,6 +81,7 @@ uniform float uAperture;    // f-number
 uniform float uSensorHeight;// metres
 uniform float uMaxCoC;      // pixels, full-res
 uniform float uScreenHeight;
+uniform float uNearScale;   // 0 disables the near field entirely
 varying vec2 vUv;
 ${GLSL_LIB}
 ${GLSL_DEPTH}
@@ -105,8 +106,17 @@ void main() {
 
   float focus = texture2D( tFocus, vec2( 0.5 ) ).r;
   focus = focus > 0.0 ? focus : 8.0;
-  float d = sceneDepthLinear( vUv );
+  // **World depth only.** The viewmodel lives 30-50 cm from the sensor, so feeding it
+  // through the lens equation puts it at the CoC ceiling on every frame and smears the
+  // weapon — and, through the near-field gather, everything the weapon's silhouette
+  // touches. A real operator's eye is focused on the target, not on the handguard, and
+  // every shooter in the genre keeps the viewmodel resolved. The weapon therefore takes
+  // the CoC of whatever it occludes (~0 at a downrange focus) and stays sharp.
+  float d = worldDepthLinear( vUv );
   float coc = cocPixels( d, focus );
+  // Near field (coc > 0) is gated: at hip fire the camera is a deep-focus setup and
+  // anything the near gather does is, by definition, blur the player did not ask for.
+  if ( coc > 0.0 ) coc *= uNearScale;
   gl_FragColor = vec4( color, coc );
 }
 `;
@@ -241,13 +251,21 @@ export default class DOFPass extends Pass {
     /** Aim-down-sights opens the aperture and pulls focus. Driven by `weapon:ads`. */
     this.ads = false;
 
+    /**
+     * Hip-fire is deliberately near-pinhole. A 35 mm at f/5.6 focused 30 m downrange
+     * still throws ~4 px of blur onto anything at 2 m, and 4 px of half-res gather is
+     * plainly visible across a whole frame — the brief is that DOF must not be
+     * noticeable until the player aims. f/11 plus a 0.4 %-of-height CoC ceiling keeps
+     * the hip-fire frame sharp from ~2 m to infinity while leaving the *mechanism*
+     * intact, so ADS still racks focus properly at f/2.4.
+     */
     this.lens = {
       focalLength: 0.035, // 35 mm
-      aperture: 5.6,
+      aperture: 11.0,
       sensorHeight: 0.024,
       adsAperture: 2.4,
       adsFocalLength: 0.055,
-      maxCoCFraction: 0.012, // of screen height
+      maxCoCFraction: 0.004, // of screen height
       adsMaxCoCFraction: 0.026,
     };
 
@@ -284,6 +302,7 @@ export default class DOFPass extends Pass {
       uSensorHeight: { value: 0.024 },
       uMaxCoC: { value: 10 },
       uScreenHeight: { value: 1080 },
+      uNearScale: { value: 0 },
     };
     this.prepMat = this.own(postMaterial('dof:prepare', COC_PREPARE_FRAG, this.prepUniforms));
 
@@ -408,6 +427,11 @@ export default class DOFPass extends Pass {
     u.uAperture.value = ap;
     u.uSensorHeight.value = L.sensorHeight;
     u.uMaxCoC.value = maxCoCPx;
+    // The near gather composites *over* the sharp frame with its own coverage alpha, so
+    // even a 2 px CoC replaces those pixels wholesale. That is right for a rack focus
+    // and wrong for a run-and-gun frame, where the player's own weapon and the cover
+    // they are stood behind both sit inside a couple of metres. Off unless aiming.
+    u.uNearScale.value = this.ads ? 1 : 0;
     blit(renderer, this.prepMat, this.prepare);
 
     this.nearCoCMat.uniforms.tSrc.value = this.prepare.texture;

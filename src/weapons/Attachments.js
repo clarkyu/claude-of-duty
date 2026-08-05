@@ -34,7 +34,7 @@ export const ATTACHMENTS = {
     name: 'Back-up Irons',
     mount: 'railTop',
     build: (ctx, mats, def) => buildIrons(ctx, mats, { height: def.build.ironSightHeight }),
-    stats: { adsTime: 0.9, zoom: 1.0 },
+    stats: { adsTime: 0.9 },
   },
   reddot_kite: {
     id: 'reddot_kite',
@@ -42,7 +42,7 @@ export const ATTACHMENTS = {
     name: 'Kite RDS',
     mount: 'railTop',
     build: (ctx, mats) => buildRedDot(ctx, mats, { tubeR: 0.0182, glassR: 0.0142, length: 0.086, dotMoa: 2 }),
-    stats: { adsTime: 1.02, spreadAds: 0.94, zoom: 1.06 },
+    stats: { adsTime: 1.02, spreadAds: 0.94 },
   },
   reddot_halo: {
     id: 'reddot_halo',
@@ -51,7 +51,7 @@ export const ATTACHMENTS = {
     mount: 'railTop',
     build: (ctx, mats) =>
       buildRedDot(ctx, mats, { tubeR: 0.0205, glassR: 0.0168, length: 0.072, dotMoa: 3, ring: true, mountH: 0.011 }),
-    stats: { adsTime: 0.96, spreadAds: 0.97, zoom: 1.0 },
+    stats: { adsTime: 0.96, spreadAds: 0.97 },
   },
   scope_lynx4x: {
     id: 'scope_lynx4x',

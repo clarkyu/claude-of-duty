@@ -140,7 +140,18 @@ export default class AutoExposurePass extends Pass {
         // normalises, and `uAutoStrength` blends towards the fixed artistic exposure.
         uKey: { value: 0.22 },
         uMinGain: { value: 0.35 },
-        uMaxGain: { value: 2.2 },
+        /**
+         * A street canyon at golden hour meters at ~0.03-0.05 — most of the frame is
+         * in shade, and only the upper facades and the sky carry the key. That is
+         * 2-3 stops under the reference, so a 2.2x ceiling railed out and still left
+         * the frame a stop dark: the ceiling was tighter than the range of scenes the
+         * game actually contains, which turns "adaptation" into "permanently pinned".
+         * 3.2x covers the shaded-exterior case and still cannot normalise a night
+         * scene into daylight (uAutoStrength blends most of the way back to the
+         * artistic exposure, and the sky's own adaptLift has already compressed the
+         * day-to-night range before the frame ever reaches this pass).
+         */
+        uMaxGain: { value: 3.2 },
         uAutoStrength: { value: 0.7 },
         uReset: { value: 1 },
       })

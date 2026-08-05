@@ -326,7 +326,17 @@ class RenderPipeline {
     this.rtComp = hdr('hdr.composite', true);
     this.rtA = hdr('hdr.a', false);
     this.rtB = hdr('hdr.b', false);
-    this.rtLDR = ldr('ldr.a');
+    /**
+     * `rtLDR` holds the tonemapped, graded frame — display-referred but still **linear**
+     * (LensPass owns the sRGB encode, because the vignette and the chromatic
+     * aberration have to happen on linear light). Storing linear light in 8 bits is a
+     * banding factory: one code value is 1/255 = 0.0039 linear, which is sRGB 0.0637,
+     * i.e. the whole bottom 16/255 of the display range collapses into a single step.
+     * Every shadow in the frame comes back as visible steps. Half-float costs one more
+     * full-res RGBA16F buffer and removes the banding completely.
+     */
+    this.rtLDR = hdr('ldr.a', false);
+    // rtLDR2 is post-LensPass, so it is already sRGB-encoded: 8 bits is correct there.
     this.rtLDR2 = ldr('ldr.b');
 
     this.shared.tDepth.value = this.rtScene.depthTexture;
