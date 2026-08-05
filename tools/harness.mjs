@@ -101,6 +101,10 @@ export async function launch({ width = 1600, height = 900 } = {}) {
     viewport: { width, height },
     deviceScaleFactor: 1,
   });
+  // A single frame costs seconds on a software rasteriser, and page.screenshot()
+  // forces a fresh paint. Playwright's 30s default trips on every capture.
+  page.setDefaultTimeout(300000);
+  page.setDefaultNavigationTimeout(300000);
   return { browser, page };
 }
 
@@ -129,6 +133,6 @@ export async function capture(page, pose, outPath, { warm = null } = {}) {
     done += batch;
   }
   await page.evaluate(() => window.__COD.frame(1 / 60));
-  await page.screenshot({ path: outPath, type: 'png' });
+  await page.screenshot({ path: outPath, type: 'png', timeout: 300000, animations: 'disabled' });
   return page.evaluate(() => window.__COD.stats());
 }

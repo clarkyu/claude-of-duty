@@ -63,7 +63,7 @@ try {
   mkdirSync(resolve(ROOT, 'shots'), { recursive: true });
   const tmp = resolve(ROOT, 'shots', `.smoke${tag ? '-' + tag : ''}.png`);
   await page.evaluate(() => window.__COD.frame(1 / 60));
-  await page.screenshot({ path: tmp });
+  await page.screenshot({ path: tmp, timeout: 300000 });
   const buf = readFileSync(tmp);
   say(buf.length > 12000, `framebuffer is not blank (${(buf.length / 1024).toFixed(0)}KB png)`);
   try { unlinkSync(tmp); } catch { /* best effort */ }
