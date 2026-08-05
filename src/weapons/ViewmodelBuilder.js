@@ -1777,7 +1777,7 @@ function buildLower(sink, b) {
   sink.pair(lip, 'anodised', 'anodisedEdge', wellM);
 
   // Trigger guard: swept loop.
-  const tgSec = rectSection(0.0072, 0.0048, 0.0016, 2);
+  const tgSec = rectSection(0.0092, 0.0062, 0.0018, 2);
   const zA = b.grip.z + 0.006;
   const zB = M.z1 - 0.004;
   const yTop = L.yBot - 0.0005;
@@ -1948,69 +1948,94 @@ function buildStock(sink, b) {
     );
     sink.pair(hinge, 'phosphate', 'phosphateEdge', mCompose([0.021, -0.004, z0 + 0.012], new THREE.Euler(0, Math.PI * 0.5, 0)));
   } else {
+    // Side profile, extruded across — the only way to get a stock silhouette that
+    // reads as a stock: rising comb, dropped toe, sloped butt.
     const precision = S.style === 'precision';
-    const bodyW = precision ? 0.044 : 0.04;
-    const body = chamferPoly(
+    const bodyW = precision ? 0.046 : 0.041;
+    const zA = z0 + S.len * 0.2;
+    const zR = z1 - 0.014;
+    const combY = precision ? 0.036 : 0.029;
+    // Section for an 'x' extrusion is (y, z).
+    const prof = chamferPoly(
       [
-        [-bodyW * 0.5, -0.03],
-        [bodyW * 0.5, -0.03],
-        [bodyW * 0.5, 0.019],
-        [bodyW * 0.34, 0.026],
-        [-bodyW * 0.34, 0.026],
-        [-bodyW * 0.5, 0.019],
+        [0.006, zA],
+        [0.02, zA + 0.038],
+        [combY, zR - 0.055],
+        [combY * 0.94, zR],
+        [-0.037, zR],
+        [-0.043, zR - 0.058],
+        [-0.03, zA + 0.05],
+        [-0.02, zA],
       ],
-      0.005,
+      0.006,
       2
     );
-    sink.pair(
-      extrudeG(body, { axis: 'z', from: z0 + S.len * 0.24, to: z1 - 0.012 }),
-      'polymer',
-      'polymerEdge'
-    );
-    // Under-hook / sling slot.
-    const hook = boxG(bodyW * 0.72, 0.016, 0.03, 0.004, 2);
-    sink.pair(hook, 'polymer', 'polymerEdge', mCompose([0, -0.034, z0 + S.len * 0.42], new THREE.Euler(0.2, 0, 0)));
-    // Buttplate + rubber pad.
-    const plate = boxG(bodyW * 1.04, 0.072, 0.014, 0.005, 2);
-    sink.pair(plate, 'polymer', 'polymerEdge', mCompose([0, -0.004, z1 - 0.004], new THREE.Euler(-0.11, 0, 0)));
-    const pad = boxG(bodyW * 1.0, 0.07, 0.009, 0.004, 2);
-    sink.pair(pad, 'rubber', 'rubber', mCompose([0, -0.004, z1 + 0.006], new THREE.Euler(-0.11, 0, 0)));
-    if (S.cheek) {
-      const cheek = boxG(bodyW * 0.86, 0.019, S.len * 0.44, 0.006, 2);
-      sink.pair(cheek, 'polymer', 'polymerEdge', mCompose(
-        [0, 0.031, z0 + S.len * 0.6],
-        new THREE.Euler(precision ? -0.035 : -0.02, 0, 0)
+    sink.pair(extrudeG(prof, { axis: 'x', from: -bodyW * 0.5, to: bodyW * 0.5 }), 'polymer', 'polymerEdge');
+
+    // Lightening cut on both flanks — a recess, not a hole, like a real polymer stock.
+    for (const s of [1, -1]) {
+      const cut = boxG(0.006, 0.03, S.len * 0.34, 0.005, 2);
+      sink.pair(cut, 'polymer', 'polymerEdge', mCompose(
+        [s * (bodyW * 0.5 - 0.0018), -0.008, zR - S.len * 0.28],
+        new THREE.Euler(0.06, 0, 0)
       ));
-      // Riser posts.
+    }
+    // Sling slot through the toe.
+    const slot = plainBoxG(bodyW * 1.1, 0.009, 0.024);
+    sink.pair(slot, 'bore', 'bore', mTrans(0, -0.031, zR - 0.03));
+
+    // Buttplate + rubber recoil pad.
+    const plate = boxG(bodyW * 1.02, 0.07, 0.013, 0.005, 2);
+    sink.pair(plate, 'polymer', 'polymerEdge', mCompose([0, -0.006, zR + 0.004], new THREE.Euler(-0.1, 0, 0)));
+    const pad = boxG(bodyW * 0.98, 0.068, 0.01, 0.004, 2);
+    sink.pair(pad, 'rubber', 'rubber', mCompose([0, -0.006, zR + 0.014], new THREE.Euler(-0.1, 0, 0)));
+    for (let i = 0; i < 4; i++) {
+      const groove = plainBoxG(bodyW * 1.0, 0.0022, 0.0026);
+      sink.pair(groove, 'rubber', 'rubber', mTrans(0, 0.018 - i * 0.014, zR + 0.019));
+    }
+
+    if (S.cheek) {
+      // Adjustable riser sitting *on* the comb, with its posts showing.
+      const riserZ = zR - S.len * 0.28;
+      const cheek = boxG(bodyW * 0.84, 0.017, S.len * 0.42, 0.006, 2);
+      sink.pair(cheek, 'polymer', 'polymerEdge', mCompose(
+        [0, combY + 0.011, riserZ],
+        new THREE.Euler(precision ? -0.05 : -0.03, 0, 0)
+      ));
+      const grip2 = boxG(bodyW * 0.7, 0.004, S.len * 0.3, 0.0015, 1);
+      sink.pair(grip2, 'rubber', 'rubber', mCompose(
+        [0, combY + 0.02, riserZ],
+        new THREE.Euler(precision ? -0.05 : -0.03, 0, 0)
+      ));
       for (const s of [1, -1]) {
         const post = latheG(
           [
-            [0.0032, 0.0, 'hard'],
-            [0.0032, 0.016],
+            [0.0034, 0.0, 'hard'],
+            [0.0034, 0.014],
           ],
           10
         );
         sink.pair(post, 'steelBright', 'steelBright', mCompose(
-          [s * bodyW * 0.3, 0.021, z0 + S.len * 0.6],
+          [s * bodyW * 0.28, combY - 0.002, riserZ + 0.03],
           new THREE.Euler(Math.PI * 0.5, 0, 0)
         ));
       }
     }
-    // Adjustment lever under the tube.
-    const lever = boxG(0.01, 0.028, 0.026, 0.0025, 2);
-    sink.pair(lever, 'polymer', 'polymerEdge', mCompose([0, -0.036, z0 + S.len * 0.3], new THREE.Euler(0.25, 0, 0)));
-    // QD sling cup.
+    // Length-of-pull lever under the tube.
+    const lever = boxG(0.011, 0.026, 0.03, 0.003, 2);
+    sink.pair(lever, 'polymer', 'polymerEdge', mCompose([0, -0.036, zA + 0.03], new THREE.Euler(0.25, 0, 0)));
+    // QD sling cup on the left flank.
     const cup = latheG(
       [
-        [0.006, -0.002, 'hard'],
-        [0.006, 0.002],
-        [0.0042, 0.003, 'hard edge'],
+        [0.0062, -0.002, 'hard'],
+        [0.0062, 0.002],
+        [0.0044, 0.003, 'hard edge'],
       ],
       12,
       { capEnd: true }
     );
     sink.pair(cup, 'phosphate', 'phosphateEdge', mCompose(
-      [bodyW * 0.5, -0.012, z0 + S.len * 0.3],
+      [-bodyW * 0.5, -0.012, zA + 0.026],
       new THREE.Euler(0, Math.PI * 0.5, 0)
     ));
   }
@@ -2225,17 +2250,24 @@ function buildMagazine(group, followerNode, b, mats) {
   const fs = new Sink();
   const fol = boxG(M.w * 0.82, 0.006, M.d * 0.8, 0.0012, 1);
   fs.pair(fol, 'polymerEdge', 'polymerEdge');
+  // Top round in the stack: case head at the rear, bullet pointing down the bore.
+  const cr = M.w * 0.19;
+  const cl = M.d * 0.92;
   const rnd = latheG(
     [
-      [M.d * 0.19, -0.012, 'hard'],
-      [M.d * 0.19, 0.006],
-      [M.d * 0.15, 0.011],
-      [M.d * 0.06, 0.017],
+      [cr * 1.08, cl * 0.5, 'hard'],
+      [cr * 1.08, cl * 0.42, 'hard edge'],
+      [cr, cl * 0.36],
+      [cr, -cl * 0.06],
+      [cr * 0.78, -cl * 0.16, 'hard'],
+      [cr * 0.72, -cl * 0.3],
+      [cr * 0.42, -cl * 0.44],
+      [cr * 0.1, -cl * 0.5],
     ],
     12,
     { capStart: true }
   );
-  fs.pair(rnd, 'brass', 'brass', mCompose([0, 0.006, 0], new THREE.Euler(0, Math.PI * 0.5, 0)));
+  fs.pair(rnd, 'brass', 'brass', mTrans(0, 0.0062, 0));
   for (const m of fs.meshes(mats, 'follower')) followerNode.add(m);
   followerNode.position.set(0, M.yTop - 0.006, M.z);
 }
