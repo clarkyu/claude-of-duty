@@ -27,8 +27,21 @@
  * ── Occlusion ───────────────────────────────────────────────────────────────────
  * `weather/ShelterMap.js` bakes a top-down depth render of the level into a small
  * height field, uploaded as a half-float texture. Rain, splashes, ripples, motes and
- * the lens droplets all test it, so nothing falls through a roof and sheltered ground
- * stays dry — for one texture fetch instead of a raycast per particle.
+ * the lens droplets all test it, so nothing falls through a roof — for one texture
+ * fetch instead of a raycast per particle. `weather/WetnessMask.js` feeds the same
+ * field into the material library's wetness block so sheltered *surfaces* stay dry
+ * too; it is applied lazily, the first time water is actually on its way, because it
+ * costs a shader recompile that clear weather should never pay.
+ *
+ * ── Files ───────────────────────────────────────────────────────────────────────
+ *   weather/presets.js       the seven records and the cross-fade maths
+ *   weather/ShelterMap.js    the top-down bake: topAt / groundAt / openSky / exposure,
+ *                            plus the roof lips that drip and the cells that pool
+ *   weather/Precipitation.js rain, splashes, ripples, drips
+ *   weather/Atmospherics.js  motes, grit, ground mist, litter
+ *   weather/LensOverlay.js   droplets on the front element, heat haze, lightning flash
+ *   weather/WetnessMask.js   per-pixel "is this under a roof?" for wetness
+ *   weather/shaders.js       every GLSL string the above share
  *
  * ── Quality ─────────────────────────────────────────────────────────────────────
  * On `low` every particle system and the screen-space overlay are switched off, but
@@ -146,7 +159,7 @@ class Weather {
     this._tier = ctx.settings?.tier || 'high';
     this._headless = !!ctx.settings?.get?.('headless');
     this._elapsed = 0;
-    this._skyExposure = 1;
+    this.budget = { rain: 0, splash: 0, ripple: 0, drip: 0, motes: 0, grit: 0, mist: 0, litter: 0 };
   }
 
   /* ───────────────────────────────────────────────────────────────────── init */
@@ -221,9 +234,11 @@ class Weather {
     const cap = this.ctx.settings?.get?.('particleBudget') ?? 10000;
     const b = {};
     for (const k of Object.keys(src)) b[k] = Math.round(src[k] * scale);
-    // Never eat more than a third of the frame's particle allowance.
+    // The tier table is the real control; this is a backstop for anyone who lowers
+    // `particleBudget` by hand. Rain and grit are the only two counts big enough to
+    // matter, and both are pure vertex work — no simulation, no readback.
     const total = b.rain + b.grit;
-    const room = Math.max(600, cap * 0.9);
+    const room = Math.max(600, cap);
     if (total > room) {
       const f = room / total;
       b.rain = Math.round(b.rain * f);

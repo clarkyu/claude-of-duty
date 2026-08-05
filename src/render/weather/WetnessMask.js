@@ -32,6 +32,9 @@
 import * as THREE from 'three';
 
 /** The one line we rewrite, verbatim from materials/shaders/materialExtensions.js. */
+/** Materials patched per scan pass — one recompile each, so keep it small. */
+const PATCH_PER_SCAN = 4;
+
 const MARKER = 'float wet = codSat( uCodWetness * uCodWet.x );';
 const PATCHED = 'float wet = codSat( uCodWetness * uCodWet.x * wxSkyWet( vCodWPos, codWN ) );';
 
@@ -72,6 +75,7 @@ export class WetnessMask {
     this.skipped = 0;
     this._seen = new WeakSet();
     this._lastScan = -1e9;
+    this._backlog = true;
     this._warned = false;
     this.uniforms = {
       wxShelterMap: { value: null },
@@ -90,42 +94,71 @@ export class WetnessMask {
   }
 
   /**
-   * Walk both scenes and patch anything extended we have not seen. Throttled hard:
-   * this only ever needs to catch geometry that appeared since the last pass.
+   * Walk the world and patch what we have not seen yet — but only a few materials per
+   * pass.
+   *
+   * Patching changes the program cache key, so each one costs a shader recompile. Doing
+   * the whole scene in a single frame is a hitch you can feel the moment the rain
+   * starts; a handful every few frames spreads the same work across the couple of
+   * seconds the wetness takes to soak in anyway, and nothing is visibly dry-then-wet
+   * because the global wetness is still ramping the whole time. Once the backlog is
+   * clear the scan drops to a slow poll that only exists to catch geometry created
+   * later, like destruction fragments.
+   *
    * @param {number} frame
+   * @returns {number} materials patched this pass
    */
   scan(frame) {
     if (!this.enabled) return 0;
     if (!this.shelter?.ready) return 0;
-    // Every ~2 s at 60 fps. New materials (destruction fragments) are rare.
-    if (frame - this._lastScan < 120) return 0;
+    const interval = this._backlog ? 6 : 150;
+    if (frame - this._lastScan < interval) return 0;
     this._lastScan = frame;
     this.attachShelter();
 
     let n = 0;
+    let budget = PATCH_PER_SCAN;
     const visit = (obj) => {
+      if (budget <= 0) return;
       const m = obj.material;
       if (!m) return;
       if (Array.isArray(m)) {
-        for (const mm of m) n += this._patch(mm) ? 1 : 0;
-      } else {
-        n += this._patch(m) ? 1 : 0;
+        for (const mm of m) {
+          if (budget <= 0) break;
+          if (this._patch(mm)) {
+            n++;
+            budget--;
+          }
+        }
+      } else if (this._patch(m)) {
+        n++;
+        budget--;
       }
     };
     try {
+      // World only. The viewmodel lives in its own scene whose world space is not the
+      // level's, so a shelter lookup there would read a random street texel — the gun
+      // in your hands keeps the plain global wetness.
       this.ctx.scene?.traverse(visit);
-      this.ctx.viewScene?.traverse(visit);
     } catch (err) {
       this._warn(err);
     }
+    // Budget exhausted means there is almost certainly more waiting; come back soon.
+    this._backlog = budget <= 0;
     return n;
   }
 
   _patch(material) {
     if (!material || this._seen.has(material)) return false;
     this._seen.add(material);
-    // Only the material library's extended standard materials carry the wetness block.
-    if (!material.userData?.codExtended) {
+    // Only the material library's extended *surface* materials carry the wetness
+    // block. `extendDepthMaterial` sets the same flag on the shadow-caster companions,
+    // which have no wetness to mask — patching one would cost a recompile for nothing.
+    if (
+      !material.userData?.codExtended ||
+      material.isMeshDepthMaterial ||
+      material.isMeshDistanceMaterial
+    ) {
       this.skipped++;
       return false;
     }
@@ -150,8 +183,12 @@ export class WetnessMask {
         const frag = shader.fragmentShader;
         if (frag.indexOf(MARKER) < 0) return; // no wetness block; nothing to do
         let out = frag.replace(MARKER, () => PATCHED);
+        // Function replacements throughout: GLSL is full of characters that `$&`-style
+        // substitution would eat.
         const anchor = '\nvoid main() {';
-        out = out.includes(anchor) ? out.replace(anchor, `\n${PARS}\nvoid main() {`) : `${PARS}\n${out}`;
+        out = out.includes(anchor)
+          ? out.replace(anchor, () => `\n${PARS}\nvoid main() {`)
+          : `${PARS}\n${out}`;
         shader.fragmentShader = out;
         Object.assign(shader.uniforms, self.uniforms);
       } catch (err) {

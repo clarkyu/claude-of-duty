@@ -53,7 +53,10 @@ export class Atmospherics {
       renderOrder: 2905,
     });
     this.grit = this._buildMotes(budget.grit, 'grit', {
-      box: [30, 14, 30],
+      // Tighter than the motes on purpose: the same instance count in a smaller
+      // volume is what makes a dust storm read as dense rather than speckled, and
+      // beyond ~20 m the aerial perspective has swallowed everything anyway.
+      box: [21, 12, 21],
       size: 0.10,
       jitter: [1.5, 0.9],
       shaftBoost: 0.6,
@@ -279,8 +282,8 @@ export class Atmospherics {
         // Grit is carried, not suspended: it travels at most of the wind speed.
         u.uDrift.value.set(s.wind.x * 0.85, -0.35 - 0.4 * a, s.wind.z * 0.85);
         u.uJitter.value.set(0.6 + 1.6 * a, 0.5 + 0.7 * a);
-        u.uSize.value = 0.055 + 0.09 * a;
-        u.uOpacity.value = 0.10 + 0.30 * a;
+        u.uSize.value = 0.07 + 0.16 * a;
+        u.uOpacity.value = 0.10 + 0.34 * a;
         u.uColor.value.setRGB(s.fogColor[0], s.fogColor[1], s.fogColor[2]).multiplyScalar(0.85);
       }
     }

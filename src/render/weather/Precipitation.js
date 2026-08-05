@@ -106,16 +106,19 @@ export class Precipitation {
     this._built = true;
   }
 
-  /** Shelter uniforms live on two materials; re-point them after every bake. */
+  /**
+   * Re-point the rain shader at the current bake. A failed or absent bake leaves
+   * `uHasShelter` at 0, which makes the shader treat the whole world as open sky —
+   * rain everywhere is a far better failure mode than rain nowhere.
+   */
   attachShelter() {
     const s = this.shelter;
-    const tex = s?.texture || null;
+    const tex = s?.ready ? s.texture : null;
     const u = this.rainMat?.uniforms;
-    if (u) {
-      u.uShelter.value = tex;
-      u.uHasShelter.value = tex && s.ready ? 1 : 0;
-      if (s?.rect) u.uShelterRect.value.copy(s.rect);
-    }
+    if (!u) return;
+    u.uShelter.value = tex;
+    u.uHasShelter.value = tex ? 1 : 0;
+    if (s?.rect) u.uShelterRect.value.copy(s.rect);
   }
 
   _buildRain(count) {

@@ -115,7 +115,7 @@ export class LensOverlay {
     u.uDrops.value = this.wetLens;
     u.uRun.value = 0.25 + 1.4 * clamp(s.dropRun, 0, 1);
     u.uShimmer.value = clamp(s.shimmer, 0, 1);
-    u.uHorizon.value = s.horizon;
+    u.uHorizon.value = Number.isFinite(s.horizon) ? s.horizon : 0.5;
     if (s.specColor) u.uSpec.value.copy(s.specColor);
 
     const f = this.flashMat.uniforms;

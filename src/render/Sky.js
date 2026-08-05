@@ -1245,14 +1245,39 @@ class Sky {
     // Illuminated fraction of the lunar disc, from the sun-moon elongation.
     const elong = Math.acos(THREE.MathUtils.clamp(this.sunDirection.dot(this.moonDirection), -1, 1));
     const phase = 0.5 * (1 + Math.cos(Math.PI - elong));
-    this.moonIntensity = 0.062 * moonUp * night * phase;
+    /**
+     * **The moon has to ride the same adaptation curve as the sun.** `adaptLift` is an
+     * exposure, and the entire contract of this module is that one factor scales the
+     * sky radiance, the ambient, the IBL cube *and* the key together so the scene stays
+     * internally consistent. The sun gets it (`sunIntensity *= adaptLift` above); the
+     * moon was the one term that did not, so at full night the sky and the ambient were
+     * lifted 26x while the only directional light in the scene stayed at its raw
+     * physical 0.05. The result had no key at all: every facade was lit purely by
+     * residual blue Rayleigh skyglow and measured RGB (0, 4, 15) out of 255 — a
+     * saturated navy silhouette with a literally empty red channel, and 75 % of the
+     * frame under luma 20. The base is retuned so the lifted value lands where a
+     * moonlit key belongs rather than 26x where it used to sit.
+     */
+    const moonBase = 0.04 * moonUp * night * phase;
+    this.moonIntensity = moonBase * this.adaptLift;
     this.moonColor.setRGB(0.66, 0.74, 1.0);
 
+    /**
+     * Night floor. Airglow alone is faintly green and the residual Rayleigh term is
+     * deep blue; a *city* at night is neither. Sodium and LED spill is the dominant
+     * ambient in any inhabited night scene and it is warm, and it was already being
+     * drawn into the sky dome (`uPollutionColor`) while contributing nothing at all to
+     * surface lighting — the sky glowed orange over rooftops lit only in blue. Folding
+     * the same term into the ambient makes the two agree and gives the shadow side of a
+     * building a red channel to work with.
+     */
     const nightAmb = 0.0075 * night;
+    const poll = this.lightPollution * night;
+    const moonFill = this.moonIntensity * 0.02;
     this.ambientColor.setRGB(
-      ambR + nightAmb * 0.55 + this.moonIntensity * 0.25,
-      ambG + nightAmb * 0.72 + this.moonIntensity * 0.28,
-      ambB + nightAmb * 1.35 + this.moonIntensity * 0.4
+      ambR + nightAmb * 0.55 + poll * 0.95 + moonFill * 0.85,
+      ambG + nightAmb * 0.72 + poll * 0.55 + moonFill * 0.92,
+      ambB + nightAmb * 1.35 + poll * 0.24 + moonFill * 1.25
     );
 
     this.skyLuminance =

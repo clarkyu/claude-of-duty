@@ -97,12 +97,8 @@ export class ShelterMap {
       });
       this._rt.texture.name = 'weather.shelterDepth';
     }
-    if (!this._depthMat) {
-      this._depthMat = new THREE.MeshDepthMaterial({
-        depthPacking: THREE.RGBADepthPacking,
-        side: THREE.DoubleSide,
-      });
-    }
+    if (!this._depthMat) this._buildDepthMaterial();
+    if (!this._farScene) this._buildFarQuad();
 
     const near = 0.5;
     const far = maxY - minY;
@@ -151,11 +147,24 @@ export class ShelterMap {
       scene.overrideMaterial = this._depthMat;
       scene.background = null;
       renderer.shadowMap.autoUpdate = false;
-      renderer.autoClear = false;
       renderer.setRenderTarget(this._rt);
-      // White == depth 1 == nothing there.
-      renderer.setClearColor(0xffffff, 1);
-      renderer.clear(true, true, false);
+      renderer.autoClear = false;
+      /**
+       * The colour buffer is primed with a full-screen quad rather than a clear.
+       *
+       * Getting a known clear *colour* from outside the renderer is not reliable:
+       * `setClearColor` only stores the value, and three does not push it into
+       * `gl.clearColor` until `WebGLBackground.render()` runs inside `renderer.render()`.
+       * Clearing by hand therefore uses whatever the previous pass left in GL state,
+       * and this bake is exactly the kind of code where a silently wrong clear turns
+       * into "the entire level is indoors". A quad has no such dependency.
+       *
+       * The *depth* clear is safe to do normally — three only ever sets gl.clearDepth
+       * to 1 — and it has to happen, or the previous bake's depths would reject this
+       * one's geometry.
+       */
+      renderer.clear(false, true, false);
+      renderer.render(this._farScene, cam);
       renderer.render(scene, cam);
     } catch (err) {
       ok = false;
@@ -184,28 +193,118 @@ export class ShelterMap {
     const top = new Float32Array(n);
     const range = far - near;
     let hits = 0;
+    let pinned = 0;
+    // Nothing in the level is legally above its own bounds. A readback that decodes
+    // to a sky full of rooftops is a broken readback, whatever broke it — a failed
+    // clear, a lost render target, or the depth inversion silently not applying.
+    const ceiling = maxY - 10.5;
     for (let i = 0; i < n; i++) {
-      const d = unpackDepth(this._buf, i * 4);
-      if (d >= 0.99985) {
+      // Stored inverted (see _buildDepthMaterial): 0 == nothing here.
+      const stored = unpackDepth(this._buf, i * 4);
+      if (stored <= 2e-4) {
         top[i] = EMPTY;
       } else {
-        top[i] = camY - (near + d * range);
+        top[i] = camY - (near + (1 - stored) * range);
         hits++;
+        if (top[i] > ceiling) pinned++;
       }
     }
     this.top = top;
+    // Kept for diagnostics: a bake that goes wrong goes wrong silently and globally,
+    // so it is worth being able to see what actually came back.
+    let sumA = 0;
+    for (let i = 3; i < this._buf.length; i += 4) sumA += this._buf[i];
+    this.lastBake = { n, hits, pinned, empty: n - hits, meanAlpha: sumA / n, camY, near, far };
     if (hits < n * 0.02) {
       // Nothing was in front of the camera — an empty scene, not a real bake.
       console.warn('[weather] shelter bake saw no geometry; occlusion disabled');
       return false;
     }
+    if (pinned > n * 0.5) {
+      // Better no occlusion (rain everywhere) than total occlusion (rain nowhere).
+      console.warn(
+        `[weather] shelter bake decoded ${((pinned / n) * 100) | 0}% of the map above the ` +
+          'level ceiling; occlusion disabled'
+      );
+      return false;
+    }
 
     this._buildGround();
+    this._floorTop();
     this._uploadTextures();
     this._findDripEdges();
     this._findPuddleCells();
     this.ready = true;
     return true;
+  }
+
+  /**
+   * `MeshDepthMaterial` with one line changed: it stores **1 - depth** instead of
+   * depth.
+   *
+   * This is the safety property the whole system rests on. Stored 0 has to mean "no
+   * roof". A render target that was never written, a clear that silently used the
+   * wrong colour, a readback that fails half way — all of those hand back zeros, and
+   * with three's normal packing zeros decode as "a solid ceiling half a metre under
+   * the bake camera", i.e. the entire level is indoors and not one raindrop falls.
+   * Inverted, zeros decode as the bottom of the volume, which is filtered out as
+   * empty: the failure mode becomes rain everywhere, which is merely wrong rather
+   * than catastrophic.
+   */
+  _buildDepthMaterial() {
+    const mat = new THREE.MeshDepthMaterial({
+      depthPacking: THREE.RGBADepthPacking,
+      side: THREE.DoubleSide,
+    });
+    mat.name = 'weather:shelterDepth';
+    mat.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        'gl_FragColor = packDepthToRGBA( fragCoordZ );',
+        () => 'gl_FragColor = packDepthToRGBA( 1.0 - fragCoordZ );'
+      );
+    };
+    // Programs are cached globally by key: without this we would be handed (or hand
+    // out) a stock shadow-caster's depth program and the inversion would vanish.
+    mat.customProgramCacheKey = () => 'weather:shelterDepth:inverted';
+    this._depthMat = mat;
+  }
+
+  /**
+   * The topmost surface can never be *below* the walkable floor. Anything that decodes
+   * that way — a texel the bake missed, or one that landed on the far plane because the
+   * street is a hair outside the depth range — is snapped up to the floor.
+   *
+   * This is what makes the height field mean one simple thing everywhere: "the surface
+   * rain lands on at (x, z)". Open street, and it is the road; under an awning, and it
+   * is the awning. `_findDripEdges`, `_findPuddleCells`, the rain shader's occlusion
+   * test and the splash placement all read it that way, and none of them has to carry
+   * a special case for a bake that came back imperfect.
+   */
+  _floorTop() {
+    const top = this.top;
+    const ground = this.ground;
+    if (!top || !ground) return;
+    for (let i = 0; i < top.length; i++) {
+      const g = ground[i];
+      if (top[i] === EMPTY || top[i] < g) top[i] = g;
+    }
+  }
+
+  /** A full-screen quad that writes the "nothing here" value — see above, that is 0. */
+  _buildFarQuad() {
+    const mat = new THREE.ShaderMaterial({
+      name: 'weather:shelterFar',
+      // Positions are already in clip space; the camera is irrelevant.
+      vertexShader: 'void main() { gl_Position = vec4( position.xy, 0.0, 1.0 ); }',
+      fragmentShader: 'void main() { gl_FragColor = vec4( 0.0 ); }',
+      depthTest: false,
+      depthWrite: false,
+    });
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+    quad.frustumCulled = false;
+    this._farScene = new THREE.Scene();
+    this._farScene.add(quad);
+    this._farQuad = quad;
   }
 
   /**
@@ -329,27 +428,36 @@ export class ShelterMap {
     const ground = this.ground;
     const out = [];
     const stride = Math.max(3, Math.round(res / 90));
-    for (let j = stride; j < res - stride; j += stride) {
+    scan: for (let j = stride; j < res - stride; j += stride) {
       for (let i = stride; i < res - stride; i += stride) {
         const k = j * res + i;
         if (top[k] === EMPTY) continue;
         const gy = ground[k];
         if (top[k] - gy > 0.6) continue; // under a roof
-        let lower = 0;
+        let higher = 0;
+        let sum = 0;
         let flat = true;
         for (let o = 0; o < 4; o++) {
           const ii = i + (o === 0 ? stride : o === 1 ? -stride : 0);
           const jj = j + (o === 2 ? stride : o === 3 ? -stride : 0);
           const ng = ground[jj * res + ii];
-          if (ng > gy + 0.02) lower++;
+          sum += ng;
+          if (ng > gy + 0.02) higher++;
           if (Math.abs(ng - gy) > 0.55) flat = false;
         }
-        if (!flat || lower < 2) continue;
+        if (!flat) continue;
+        // Water gathers where it cannot run off: a local dip, or dead-flat ground.
+        // Demanding a strict local minimum finds nothing at all on asphalt, which is
+        // flat to within a millimetre over a metre — so accept "not the high point"
+        // as well, which still rejects the crown of a cambered road and keeps the
+        // gutters.
+        if (higher < 1 && gy > sum * 0.25 + 0.012) continue;
         out.push({
           x: this.minX + ((i + 0.5) / res) * this.sizeX,
           y: gy,
           z: this.maxZ - ((j + 0.5) / res) * this.sizeZ,
         });
+        if (out.length >= 2000) break scan;
       }
     }
     this.puddleCells = out;
@@ -410,6 +518,10 @@ export class ShelterMap {
   dispose() {
     this._rt?.dispose();
     this._depthMat?.dispose();
+    this._farQuad?.geometry?.dispose();
+    this._farQuad?.material?.dispose();
+    this._farScene = null;
+    this._farQuad = null;
     this.texture?.dispose();
     this.groundTexture?.dispose();
     this._rt = null;

@@ -338,7 +338,11 @@ void main() {
 	vec3 toCam = cameraPosition - centre;
 	float dist = length( toCam );
 	toCam /= max( dist, 1e-4 );
-	vec3 side = normalize( cross( vec3( 0.0, 1.0, 0.0 ), toCam ) );
+	// Cylindrical billboard: a falling bead always hangs vertically. Looking straight
+	// down at one collapses the cross product, so fall back to a fixed axis.
+	vec3 side = cross( vec3( 0.0, 1.0, 0.0 ), toCam );
+	float sl = length( side );
+	side = sl > 1e-4 ? side / sl : vec3( 1.0, 0.0, 0.0 );
 
 	vec3 pos = centre
 		+ side * ( ( uv.x - 0.5 ) * aTune.z * 0.9 )
@@ -579,6 +583,14 @@ varying vec2  vUv;
 varying float vFade;
 varying float vSeed;
 
+/** Walkable floor height at a world xz, or the fallback outside the bake. */
+float mistGroundAt( vec2 wxz, float fallback ) {
+	if ( uHasGround < 0.5 ) return fallback;
+	vec2 guv = ( wxz - uGroundRect.xy ) * uGroundRect.zw;
+	if ( guv.x < 0.0 || guv.x > 1.0 || guv.y < 0.0 || guv.y > 1.0 ) return fallback;
+	return texture2D( uGround, guv ).r;
+}
+
 void main() {
 	vUv = uv;
 	vSeed = aSeed.w;
@@ -587,11 +599,18 @@ void main() {
 	xz = mod( xz + uBox.xz, uBox.xz * 2.0 ) - uBox.xz;
 	vec2 wxz = uAnchor.xz + xz;
 
-	float g = uAnchor.y - 1.7;
-	if ( uHasGround > 0.5 ) {
-		vec2 guv = ( wxz - uGroundRect.xy ) * uGroundRect.zw;
-		if ( guv.x > 0.0 && guv.x < 1.0 && guv.y > 0.0 && guv.y < 1.0 ) g = texture2D( uGround, guv ).r;
-	}
+	float fallback = uAnchor.y - 1.7;
+	float g = mistGroundAt( wxz, fallback );
+
+	// Mist settles: it is thick in the dips and thin on the high ground. Four taps at
+	// 7 m give the local relief, which is what decides where it collects.
+	float around = 0.25 * (
+		mistGroundAt( wxz + vec2(  7.0, 0.0 ), g ) +
+		mistGroundAt( wxz + vec2( -7.0, 0.0 ), g ) +
+		mistGroundAt( wxz + vec2( 0.0,  7.0 ), g ) +
+		mistGroundAt( wxz + vec2( 0.0, -7.0 ), g )
+	);
+	float hollow = mix( 0.30, 1.0, smoothstep( -0.15, 0.7, around - g ) );
 
 	float s = uSize * ( 0.6 + 0.8 * aSeed.y );
 	float lift = 0.25 + 0.55 * aSeed.y + 0.12 * sin( uTime * 0.21 + aSeed.w * 27.0 );
@@ -610,6 +629,7 @@ void main() {
 	// Fade hard at both ends of the range: near, so it never fills the lens; far,
 	// so it dissolves into the analytic aerial mist instead of ending in a line.
 	vFade = uIntensity
+		* hollow
 		* smoothstep( 2.0, 7.0, dist )
 		* ( 1.0 - smoothstep( uBox.x * 0.5, uBox.x * 0.95, dist ) );
 
