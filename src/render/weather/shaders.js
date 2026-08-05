@@ -48,6 +48,17 @@ float wFbm2( vec2 p ) {
 	for ( int i = 0; i < 4; i++ ) { s += a * wNoise2( p ); p *= 2.03; a *= 0.5; }
 	return s;
 }
+
+/**
+ * The screen-space passes composite onto the *already sRGB-encoded* default
+ * framebuffer, but sample the pipeline's linear display-referred buffer. Getting
+ * this transfer wrong is the difference between a droplet that disappears and one
+ * that reads as a grey blob, so it is spelled out rather than approximated with 2.2.
+ */
+vec3 wLinearToSRGB( vec3 c ) {
+	c = max( c, vec3( 0.0 ) );
+	return mix( c * 12.92, 1.055 * pow( c, vec3( 0.41666 ) ) - 0.055, step( 0.0031308, c ) );
+}
 `;
 
 /** Shelter-map sampling. Needs `uShelter`, `uShelterRect`, `uHasShelter`. */
@@ -756,7 +767,40 @@ void main() {
 	// Water on glass loses a little light and adds a specular pip.
 	vec3 col = scene * 0.94 + uSpec * spec * 0.55;
 
-	gl_FragColor = vec4( col, clamp( mask, 0.0, 1.0 ) );
+	gl_FragColor = vec4( wLinearToSRGB( col ), clamp( mask, 0.0, 1.0 ) );
+}
+`;
+
+/* ══════════════════════════════════════════════════════════════════ lightning ══ */
+
+/**
+ * The flash itself is a real light (see Weather.lightning()), so this pass only adds
+ * what a light cannot: the sky and the air between you and the strike lighting up.
+ * Additive, so the vignette, grain and grade underneath all survive it.
+ */
+// language=GLSL
+export const FLASH_FRAG = /* glsl */ `
+precision highp float;
+
+uniform vec3  uColor;
+uniform float uAmount;
+uniform vec2  uOrigin;   // screen-space position of the bolt
+uniform float uSpread;   // 0 = tight glow at the bolt, 1 = whole sky
+
+varying vec2 vUv;
+
+${W_COMMON}
+
+void main() {
+	if ( uAmount <= 0.0005 ) discard;
+	vec2 d = ( vUv - uOrigin ) * vec2( 1.0, 0.62 );
+	// A bright core where the bolt is, falling off into a broad sky-wide lift.
+	float core = exp( -dot( d, d ) * mix( 26.0, 2.2, uSpread ) );
+	float wide = 0.28 + 0.42 * uSpread;
+	// Sky-side bias: the flash comes from above, so the top of the frame gets more.
+	float sky = 0.55 + 0.75 * smoothstep( 0.15, 0.95, vUv.y );
+	float a = ( core * 0.85 + wide ) * sky * uAmount;
+	gl_FragColor = vec4( wLinearToSRGB( uColor * a ), 1.0 );
 }
 `;
 
@@ -779,4 +823,5 @@ export default {
   MIST_FRAG,
   LENS_VERT,
   LENS_FRAG,
+  FLASH_FRAG,
 };

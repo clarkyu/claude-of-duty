@@ -194,7 +194,31 @@ export default class VelocityPass extends Pass {
     this._prevViewProj.copy(prevVP);
     this._curViewProj.copy(curVP);
     this.uniforms.uPrevViewProj.value.copy(prevVP);
-    this.uniforms.uInvViewProj.value.copy(curVPJittered).invert();
+    /**
+     * **Both ends of the reprojection must be un-jittered.**
+     *
+     * The obvious-looking thing is to unproject with the matrix the depth buffer was
+     * actually rendered with (`curVPJittered`), because that is geometrically exact for
+     * the sample the rasteriser took. It is also wrong for TAA, and it is the single
+     * most expensive kind of wrong: with a *completely static* camera it makes the
+     * recovered world point sit on the jittered ray rather than the pixel-centre ray,
+     * so reprojecting it through the un-jittered previous matrix returns
+     * `uv - currentJitter` instead of `uv`. Velocity is then not zero but the Halton
+     * offset itself — about half a pixel, in a different direction every frame.
+     *
+     * TAA history is an estimate of the converged value *at pixel centres*, so it must
+     * be fetched at `uv` when nothing moved. Fetching it half a pixel away instead
+     * resamples the history through a bicubic filter every single frame; at a 0.96
+     * feedback that is a low-pass filter applied ~25 times per second to an image that
+     * never gets a chance to reconverge. The frame goes soft and *stays* soft no matter
+     * how long it is left to settle — which is exactly what a 48-frame warm-up showed.
+     *
+     * Using the un-jittered matrix here costs a sub-pixel lateral error in the
+     * unprojected position (second order in jitter x parallax, i.e. invisible) and
+     * gives an exactly-zero motion vector for static geometry under a static camera,
+     * which is what every consumer of this buffer assumes.
+     */
+    this.uniforms.uInvViewProj.value.copy(curVP).invert();
 
     renderer.setRenderTarget(this.target);
     renderer.setClearColor(0x000000, 1);
