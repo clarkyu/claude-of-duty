@@ -16,13 +16,18 @@
  *   3. a berm that rises 2.6 m outside the play space, closing the map visually without
  *      an invisible wall doing all the work.
  *
+ * Cells within 3.2 m of a building footprint are tessellated 2x2, and within 1.6 m
+ * 3x3, purely so the baked vertex AO has somewhere to put the contact shadow: at a
+ * flat 1 m grid the darkening where a wall meets the ground is a metre wide and the
+ * building reads as hovering.
+ *
  * Collision is four `heightfield` colliders (the storm channel strip is deliberately
  * left uncovered so the channel is enterable) carrying **per-face surface tags**, so a
  * footstep on asphalt sounds different from one on dirt with no extra work anywhere
  * else in the engine.
  */
 import * as THREE from 'three';
-import { clamp, clamp01, fbm2, lerp, smoothstep, valueNoise2 } from './kit/geom.js';
+import { clamp01, fbm2, lerp, smoothstep, valueNoise2 } from './kit/geom.js';
 import { GROUND, GROUND_VOIDS, BOUNDS } from './LevelData.js';
 
 const CORE = { x0: -56, z0: -52, x1: 52, z1: 58 };
@@ -123,9 +128,17 @@ export class Terrain {
       const n1 = fbm2(x * 0.07 + 2.4, z * 0.07 - 5.1, 3);
       const n2 = valueNoise2(x * 0.42, z * 0.42);
       out[0] = clamp01(0.22 + n1 * 0.5 + (up ? 0 : 0.25) + n2 * 0.12);
-      // Sand drift: the g channel drives the dirt material's second layer.
-      out[1] = clamp01((fbm2(x * 0.022 - 9.2, z * 0.022 + 3.3, 3) - 0.42) * 2.6);
-      out[2] = up ? clamp01(0.1 + Math.pow(clamp01(fbm2(x * 0.06 + 31, z * 0.06 - 17, 3) * 1.25), 2.2)) : 0;
+      // The g channel drives every ground material's second layer: sand drifting
+      // over dirt, aggregate showing through broken asphalt, silt over paving. Two
+      // octaves on purpose — a 45 m drift so whole streets read differently, and a
+      // 12 m wear patch so no single stretch of road is uniform.
+      const drift = fbm2(x * 0.022 - 9.2, z * 0.022 + 3.3, 3);
+      const wear = fbm2(x * 0.085 + 21.4, z * 0.085 - 13.9, 3);
+      out[1] = clamp01((drift - 0.44) * 2.2 + (wear - 0.54) * 1.9);
+      // b = standing water. Thresholded hard: a puddle is a patch, and a whole
+      // street at half-wet just reads as a uniform sheen that kills the albedo
+      // variation everything else here is working to create.
+      out[2] = up ? clamp01(0.04 + Math.pow(clamp01((fbm2(x * 0.06 + 31, z * 0.06 - 17, 3) - 0.52) * 2.9), 1.6)) : 0;
     };
   }
 
@@ -177,6 +190,25 @@ export class Terrain {
       return `terrain_${dx}${dz}`;
     };
 
+    /**
+     * Baked vertex occlusion can only darken where there are vertices. At 1 m the
+     * gradient where a wall meets the ground is a metre wide, which reads as the
+     * building hovering. Cells close to a facade are therefore split 2x2 or 3x3 so
+     * the contact shadow tightens to ~30 cm without paying for it map-wide.
+     */
+    const refineOf = (cx, cz) => {
+      let d = Infinity;
+      for (let fi = 0; fi < this.footprints.length; fi++) {
+        const r = this.footprints[fi].rect;
+        const dx = Math.max(r[0] - cx, 0, cx - r[2]);
+        const dz = Math.max(r[1] - cz, 0, cz - r[3]);
+        const dd = dx > dz ? dx : dz; // Chebyshev: bands follow the facade, not a disc
+        if (dd < d) d = dd;
+        if (d <= 0) break;
+      }
+      return d < 1.6 ? 3 : d < 3.2 ? 2 : 1;
+    };
+
     for (let j = 0; j < rows; j++) {
       for (let i = 0; i < cols; i++) {
         const reg = cellRegion[j * cols + i];
@@ -193,7 +225,29 @@ export class Terrain {
         const h10 = cellH[o + 1];
         const h11 = cellH[o + 2];
         const h01 = cellH[o + 3];
-        mb.quad([x0, h00, z0], [x1, h10, z0], [x1, h11, z1], [x0, h01, z1], [0, 1, 0]);
+        const nSub = refineOf(x0 + CELL * 0.5, z0 + CELL * 0.5);
+        if (nSub === 1) {
+          mb.quad([x0, h00, z0], [x1, h10, z0], [x1, h11, z1], [x0, h01, z1], [0, 1, 0]);
+        } else {
+          // Bilinear over the cell's four corner heights keeps the sub-quads exactly
+          // coplanar with what the 1 m version would have been — no cracks, no seams.
+          const hAt = (u, v) => lerp(lerp(h00, h10, u), lerp(h01, h11, u), v);
+          for (let sj = 0; sj < nSub; sj++) {
+            for (let si = 0; si < nSub; si++) {
+              const u0 = si / nSub;
+              const u1 = (si + 1) / nSub;
+              const v0 = sj / nSub;
+              const v1 = (sj + 1) / nSub;
+              mb.quad(
+                [x0 + CELL * u0, hAt(u0, v0), z0 + CELL * v0],
+                [x0 + CELL * u1, hAt(u1, v0), z0 + CELL * v0],
+                [x0 + CELL * u1, hAt(u1, v1), z0 + CELL * v1],
+                [x0 + CELL * u0, hAt(u0, v1), z0 + CELL * v1],
+                [0, 1, 0]
+              );
+            }
+          }
+        }
 
         // Risers where we sit above a neighbour (kerbs, plaza upstand, yard edges).
         const riser = (ni, nj, ax, ay, az, bx, by, bz, nrm) => {
@@ -260,8 +314,11 @@ export class Terrain {
           heights[j * nx + i] = this.baseHeight(x, z) + lift + (r ? this.crownAt(r, x, z) : 0);
         }
       }
-      // Per-face surface tags: two triangles per cell, row-major like the shape.
-      const faces = new Array((nx - 1) * (nz - 1) * 2);
+      // Per-face surface tags. Shapes.heightfield reports faceIndex as
+      // (row * nx + col) * 2 + triangle, so the table is sized nx*nz*2, not
+      // (nx-1)*(nz-1)*2 — undersizing it silently made the array grow and put every
+      // tag in the wrong cell.
+      const faces = new Array(nx * nz * 2).fill('dirt');
       for (let j = 0; j < nz - 1; j++) {
         for (let i = 0; i < nx - 1; i++) {
           const s = this.surfaceAt(x0 + (i + 0.5) * step, z0 + (j + 0.5) * step);
@@ -285,11 +342,14 @@ export class Terrain {
       });
     }
     // The far apron: one big flat slab well below grade so nothing can fall forever.
+    // Tagged so the nav builder can tell it apart from a real floor — it used to be
+    // picked as "the lowest standable surface" in every single nav cell.
     this.colliders.push({
       type: 'box',
       pos: { x: 0, y: -12, z: 0 },
       halfExtents: { x: 200, y: 6, z: 200 },
       surface: 'dirt',
+      tag: 'killfloor',
       occlude: false,
     });
   }

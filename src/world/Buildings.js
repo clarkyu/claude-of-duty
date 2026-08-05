@@ -7,10 +7,11 @@
  * awnings, signage, downpipes and stairs off it.
  *
  * Two deliberate choices:
- *   • **Every building is authored twice** — once in full at LOD 0 and once as a
- *     six-box shell at LOD 1. The shell is generated, not decimated, so it is a dozen
- *     boxes rather than a re-run of the detailed pass; beyond 62 m that is all the
- *     silhouette you can resolve anyway.
+ *   • **Every building is authored three times** — in full at LOD 0, as a two-tone
+ *     shell with a parapet at LOD 1, and as a single silhouette box at LOD 2. The
+ *     shells are generated, not decimated, so each is a dozen boxes rather than a
+ *     re-run of the detailed pass; past ~60 m that is all you can resolve anyway, and
+ *     past ~130 m the whole far half of the map collapses to a handful of draws.
  *   • **Adjacent buildings never share a palette key.** `unitWalls` gives a terrace a
  *     different paint per shop unit, and the descriptors alternate stucco / plaster /
  *     brick around each junction, so no two facades that meet in a frame match.
@@ -19,8 +20,8 @@
  * (two storeys, arcade, mezzanine, two stair cores) and the Motor Works.
  */
 import * as THREE from 'three';
-import { clamp, clamp01, hash2, hash3, lerp } from './kit/geom.js';
-import { wallRun, addPillar, addDownpipe, lowWall, wallFrame } from './kit/Walls.js';
+import { clamp, hash2, hash3, lerp } from './kit/geom.js';
+import { wallRun, addPillar, addDownpipe, lowWall } from './kit/Walls.js';
 import { stairs, railing, ladder, crate, crateStack } from './kit/Stairs.js';
 import { roofDeck, parapet, pitchedRoof, balcony, awning, canopy, roofClutter } from './kit/Roofs.js';
 import { signBoard } from './kit/Street.js';
@@ -110,31 +111,64 @@ export function buildBuilding(bat, def, rng) {
 
   /* ── floor slabs ─────────────────────────────────────────────────────── */
   const floorMat = def.interior ? 'int.tile' : 'struct.concrete';
+  /**
+   * Split [a0,a1] x [b0,b1] into the rectangles left after removing `hole`. Up to
+   * four strips, so a floor can carry a double-height void without the slab, its
+   * collider and its ceiling all having to be authored by hand.
+   */
+  const minus = (a0, b0, a1, b1, hole) => {
+    if (!hole) return [[a0, b0, a1, b1]];
+    const [hx0, hz0, hx1, hz1] = hole;
+    if (hx1 <= a0 || hx0 >= a1 || hz1 <= b0 || hz0 >= b1) return [[a0, b0, a1, b1]];
+    const cx0 = Math.max(a0, hx0);
+    const cz0 = Math.max(b0, hz0);
+    const cx1 = Math.min(a1, hx1);
+    const cz1 = Math.min(b1, hz1);
+    return [
+      [a0, b0, a1, cz0],
+      [a0, cz1, a1, b1],
+      [a0, cz0, cx0, cz1],
+      [cx1, cz0, a1, cz1],
+    ].filter((r) => r[2] - r[0] > 0.05 && r[3] - r[1] > 0.05);
+  };
+
   for (let i = 0; i < ys.length; i++) {
     const y = ys[i];
     if (i === ys.length - 1) break;
     const th = i === 0 ? 0.3 : 0.26;
-    bat.b(i === 0 ? floorMat : 'struct.concrete').box(
-      [(x0 + x1) * 0.5, y - th * 0.5 + (i === 0 ? 0.05 : 0), (z0 + z1) * 0.5],
-      [(x1 - x0) * 0.5 - (i === 0 ? 0 : t * 0.4), th * 0.5, (z1 - z0) * 0.5 - (i === 0 ? 0 : t * 0.4)],
-      { chamfer: 0.01 }
-    );
-    bat.box(
-      (x0 + x1) * 0.5,
-      y - th * 0.5 + (i === 0 ? 0.05 : 0),
-      (z0 + z1) * 0.5,
-      (x1 - x0) * 0.5,
-      th * 0.5,
-      (z1 - z0) * 0.5,
-      i === 0 ? 'ceramic' : 'concrete'
-    );
+    const inset = i === 0 ? 0 : t * 0.4;
+    const hole = def.floorVoid && def.floorVoid.level === i ? def.floorVoid.rect : null;
+    const cy = y - th * 0.5 + (i === 0 ? 0.05 : 0);
+    for (const [a0, b0, a1, b1] of minus(x0 + inset, z0 + inset, x1 - inset, z1 - inset, hole)) {
+      bat
+        .b(i === 0 ? floorMat : 'struct.concrete')
+        .box([(a0 + a1) * 0.5, cy, (b0 + b1) * 0.5], [(a1 - a0) * 0.5, th * 0.5, (b1 - b0) * 0.5], { chamfer: 0.01 });
+    }
+    // The collider follows the full footprint at ground level (the plinth wants a
+    // continuous floor) but respects the void above it.
+    for (const [a0, b0, a1, b1] of minus(x0, z0, x1, z1, hole)) {
+      bat.box((a0 + a1) * 0.5, cy, (b0 + b1) * 0.5, (a1 - a0) * 0.5, th * 0.5, (b1 - b0) * 0.5, i === 0 ? 'ceramic' : 'concrete');
+    }
     // Ceiling underside for upper floors so the storey below is not open sky.
     if (i > 0) {
-      bat.b('int.plaster').box(
-        [(x0 + x1) * 0.5, y - th - 0.03, (z0 + z1) * 0.5],
-        [(x1 - x0) * 0.5 - t * 0.4, 0.03, (z1 - z0) * 0.5 - t * 0.4],
-        { chamfer: 0 }
-      );
+      for (const [a0, b0, a1, b1] of minus(x0 + t * 0.4, z0 + t * 0.4, x1 - t * 0.4, z1 - t * 0.4, hole)) {
+        bat
+          .b('int.plaster')
+          .box([(a0 + a1) * 0.5, y - th - 0.03, (b0 + b1) * 0.5], [(a1 - a0) * 0.5, 0.03, (b1 - b0) * 0.5], { chamfer: 0 });
+      }
+    }
+    // Edge beam and nosing all the way round the void, so the cut reads as built.
+    if (hole) {
+      const eb = bat.b('struct.concreteClean');
+      const [hx0, hz0, hx1, hz1] = hole;
+      eb.box([(hx0 + hx1) * 0.5, cy - 0.06, hz0 + 0.11], [(hx1 - hx0) * 0.5 + 0.22, th * 0.5 + 0.06, 0.13], { chamfer: 0.02 });
+      eb.box([(hx0 + hx1) * 0.5, cy - 0.06, hz1 - 0.11], [(hx1 - hx0) * 0.5 + 0.22, th * 0.5 + 0.06, 0.13], { chamfer: 0.02 });
+      eb.box([hx0 + 0.11, cy - 0.06, (hz0 + hz1) * 0.5], [0.13, th * 0.5 + 0.06, (hz1 - hz0) * 0.5], { chamfer: 0.02 });
+      eb.box([hx1 - 0.11, cy - 0.06, (hz0 + hz1) * 0.5], [0.13, th * 0.5 + 0.06, (hz1 - hz0) * 0.5], { chamfer: 0.02 });
+      railing(bat, hx0, hz0, hx1, hz0, y, { height: 1.02, mat: 'metal.rust', style: 'baluster' });
+      railing(bat, hx1, hz1, hx0, hz1, y, { height: 1.02, mat: 'metal.rust', style: 'baluster' });
+      railing(bat, hx0, hz1, hx0, hz0, y, { height: 1.02, mat: 'metal.rust', style: 'baluster' });
+      railing(bat, hx1, hz0, hx1, hz1, y, { height: 1.02, mat: 'metal.rust', style: 'baluster' });
     }
   }
 
@@ -178,6 +212,24 @@ export function buildBuilding(bat, def, rng) {
         const start = { x: s.x0 + ((s.x1 - s.x0) * u0) / s.len, z: s.z0 + ((s.z1 - s.z0) * u0) / s.len };
         const end = { x: s.x0 + ((s.x1 - s.x0) * u1) / s.len, z: s.z0 + ((s.z1 - s.z0) * u1) / s.len };
 
+        // Every facade gets its own UV phase. UVs are generated from world position,
+        // so without this two walls that meet at a corner — and two buildings that
+        // share a recipe — show the identical crack in the identical place, which is
+        // the single most obvious "one texture, tiled" tell on a large flat surface.
+        // The offset is constant across one wall run, so the wall itself stays
+        // continuous and only the corner reads as a different patch of render.
+        const ph = hash3(Math.round(x0 * 3) + side, Math.round(z0 * 3), k + 1);
+        const ph2 = hash3(Math.round(z0 * 3) - side, Math.round(x0 * 3), k + 7);
+        bat.uvOffset = [ph * 6.37, ph2 * 4.91];
+
+        // Three material zones on every facade, which is what stops a wall reading
+        // as one extruded rectangle: a protruding plinth at splash-back height, a
+        // string course on every intermediate floor line, and the cornice on top.
+        const isTop = li === levels.length - 1;
+        const band =
+          def.stringCourse === false
+            ? null
+            : def.stringCourse || { h: 0.15, out: 0.07, mat: 'struct.concreteClean' };
         wallRun(bat, {
           x0: start.x,
           z0: start.z,
@@ -190,11 +242,12 @@ export function buildBuilding(bat, def, rng) {
           inner: def.inner || null,
           openings: blocked.concat(wins),
           plinth: li === 0 ? def.plinth : null,
-          cornice: li === levels.length - 1 ? def.cornice : null,
+          cornice: isTop ? def.cornice : band,
           glassMat: 'glass.window',
           windowStyle: null,
         });
       }
+      bat.uvOffset = [0, 0];
       // Vertical joint pilasters between shop units read as separate buildings.
       if (isSplitSide && nSeg > 1) {
         for (let k = 1; k < nSeg; k++) {
@@ -218,10 +271,12 @@ export function buildBuilding(bat, def, rng) {
     roofY = deck.y;
   } else if (roof.kind !== 'none') {
     const deck = roofDeck(bat, { x0, z0, x1, z1 }, top, { mat: roof.deck || 'struct.concrete', inset: t * 0.5 });
+    const gap = roofStairGap(def, deck.y);
     parapet(bat, { x0, z0, x1, z1 }, top, roof.parapet ?? 0.9, {
       mat: def.wall,
       copeMat: 'struct.concreteClean',
       thick: Math.min(0.28, t * 0.7),
+      gaps: gap ? [gap] : [],
     });
     roofY = deck.y;
   }
@@ -275,7 +330,7 @@ export function buildBuilding(bat, def, rng) {
     addDownpipe(bat, cx + sx * 0.09, cz + sz * 0.09, base + 0.02, top - 0.1, sx * 0.7, sz * 0.7, i % 2 ? 'metal.galv' : 'metal.rust');
   }
 
-  if (def.roofStair) buildRoofStair(bat, def, ys, roofY, rng);
+  if (def.roofStair) buildRoofStair(bat, def, ys, roofY);
   if (def.fireEscape) buildFireEscape(bat, def, ys, roofY);
   if (def.interior === 'market') buildMarketInterior(bat, def, ys, roofY, rng);
   if (def.interior === 'garage') buildGarageInterior(bat, def, ys, rng);
@@ -314,6 +369,28 @@ export function buildBuilding(bat, def, rng) {
       pm.box([(x0 + x1) * 0.5, top + ph * 0.5, z1 - 0.15], [(x1 - x0) * 0.5, ph * 0.5, 0.15], { chamfer: 0.03 });
       pm.box([x0 + 0.15, top + ph * 0.5, (z0 + z1) * 0.5], [0.15, ph * 0.5, (z1 - z0) * 0.5], { chamfer: 0.03 });
       pm.box([x1 - 0.15, top + ph * 0.5, (z0 + z1) * 0.5], [0.15, ph * 0.5, (z1 - z0) * 0.5], { chamfer: 0.03 });
+    }
+  }
+
+  /* ── LOD 2 silhouette ────────────────────────────────────────────────── */
+  // Beyond ~130 m the only thing that survives is the outline against the sky, so
+  // this is one box per building in one material: the whole far half of the map
+  // collapses to a handful of draw calls.
+  bat.lod = 2;
+  {
+    const ph = roof.kind === 'pitch' ? 0 : (roof.parapet ?? 0.9) * 0.6;
+    bat
+      .b(shellMat)
+      .box(
+        [(x0 + x1) * 0.5, (base + top + ph) * 0.5, (z0 + z1) * 0.5],
+        [(x1 - x0) * 0.5, (top + ph - base) * 0.5, (z1 - z0) * 0.5],
+        { chamfer: 0.08 }
+      );
+    if (roof.kind === 'pitch') {
+      pitchedRoof(bat, { x0, z0, x1, z1 }, top, roof.pitch ?? 0.34, {
+        mat: roof.mat || 'roof.shingle',
+        overhang: 0.2,
+      });
     }
   }
   bat.lod = 0;
@@ -407,53 +484,90 @@ function buildRuin(bat, def, rng) {
 
 /* ------------------------------------------------------- vertical access */
 
-function buildRoofStair(bat, def, ys, roofY, rng) {
+/**
+ * External roof stair: one straight service flight running *along* the facade, a top
+ * landing that bridges the parapet, and a gap cut in the parapet where it lands.
+ *
+ * It has to run along the wall, not out from it: a flight perpendicular to the facade
+ * needs 14 m of clear ground, and the buildings that carry one front a 4 m alley.
+ * `roofStairGap()` returns the parapet gap so the caller can pass it to `parapet()`.
+ */
+const RSTAIR = { rise: 0.19, run: 0.263, width: 1.15, pad: 1.5 }; // 35.8 deg service stair
+
+/** Where the flight starts and ends along its facade — shared by the geometry and the gap. */
+function roofStairSpan(def, roofY) {
   const t = def.thick ?? 0.4;
   const s = sideLine(def.rect, def.roofStair.side, t);
-  const u = def.roofStair.u;
-  const p = sidePoint(def.rect, def.roofStair.side, t, u, t * 0.5 + 0.1);
-  const total = roofY - (def.base ?? 0);
-  const rise = 0.178;
-  const steps = Math.max(4, Math.round(total / rise / 2));
-  const flightYaw = s.yaw + Math.PI / 2;
-  const first = stairs(bat, {
+  const steps = Math.max(6, Math.round(Math.max(1, roofY - (def.base ?? 0)) / RSTAIR.rise));
+  const L = steps * RSTAIR.run;
+  const u0 = clamp(def.roofStair.u, 0.5, Math.max(0.5, s.len - L - RSTAIR.pad));
+  return { s, steps, L, u0, uTop: Math.min(s.len - 0.8, u0 + L + 0.75) };
+}
+
+function buildRoofStair(bat, def, ys, roofY) {
+  const t = def.thick ?? 0.4;
+  const side = def.roofStair.side;
+  const base = def.base ?? 0;
+  const { rise, run, width } = RSTAIR;
+  const { s, steps, L, u0, uTop } = roofStairSpan(def, roofY);
+  const off = t * 0.5 + 0.08 + width * 0.5;
+  const p = sidePoint(def.rect, side, t, u0, off);
+  const yawAlong = Math.atan2(-(s.z1 - s.z0), s.x1 - s.x0);
+
+  const flight = stairs(bat, {
     x: p.x,
-    y: def.base ?? 0,
+    y: base,
     z: p.z,
-    yaw: flightYaw,
-    width: 1.35,
+    yaw: yawAlong,
+    width,
     steps,
     rise,
-    run: 0.29,
+    run,
     mat: 'struct.concrete',
+    nosingMat: 'struct.concreteClean',
     railing: 'right',
+    railMat: 'metal.rust',
   });
-  // Landing.
+
+  // Top landing: from the head of the flight back across the parapet line onto the
+  // deck, so the last step actually delivers you somewhere.
+  const deck = sidePoint(def.rect, side, t, uTop, -t * 0.5 - 0.55);
+  const land = sidePoint(def.rect, side, t, uTop, off * 0.2);
   const lm = bat.b('struct.concrete');
-  const cs = Math.cos(flightYaw);
-  const sn = Math.sin(flightYaw);
-  const lx = first.topX + cs * 0.75;
-  const lz = first.topZ - sn * 0.75;
-  lm.box([lx, first.topY - 0.09, lz], [1.05, 0.09, 1.05], { chamfer: 0.02 });
-  bat.box(lx, first.topY - 0.09, lz, 1.05, 0.12, 1.05, 'concrete');
-  railing(bat, lx - cs * 0.9 + sn * 0.9, lz + sn * 0.9 + cs * 0.9, lx + cs * 0.9 + sn * 0.9, lz - sn * 0.9 + cs * 0.9, first.topY, {
-    height: 1.0,
-    mat: 'metal.rust',
-  });
-  const second = stairs(bat, {
-    x: lx + cs * 0.8,
-    y: first.topY,
-    z: lz - sn * 0.8,
-    yaw: flightYaw + Math.PI,
-    width: 1.35,
-    steps: Math.max(3, Math.round((roofY - first.topY) / rise)),
-    rise,
-    run: 0.29,
-    mat: 'struct.concrete',
-    railing: 'left',
-  });
-  void second;
-  void rng;
+  lm.box([(deck.x + land.x) * 0.5, roofY - 0.1, (deck.z + land.z) * 0.5], [
+    Math.abs(deck.x - land.x) * 0.5 + width * 0.5,
+    0.1,
+    Math.abs(deck.z - land.z) * 0.5 + width * 0.5,
+  ], { chamfer: 0.02 });
+  bat.box(
+    (deck.x + land.x) * 0.5,
+    roofY - 0.1,
+    (deck.z + land.z) * 0.5,
+    Math.abs(deck.x - land.x) * 0.5 + width * 0.5,
+    0.14,
+    Math.abs(deck.z - land.z) * 0.5 + width * 0.5,
+    'concrete'
+  );
+  // Guard rail across the outboard edge of the landing.
+  const g0 = sidePoint(def.rect, side, t, Math.min(s.len - 0.2, uTop + 0.7), off + width * 0.5);
+  const g1 = sidePoint(def.rect, side, t, Math.min(s.len - 0.2, uTop + 0.7), -t * 0.5 - 0.4);
+  railing(bat, g0.x, g0.z, g1.x, g1.z, roofY, { height: 1.05, mat: 'metal.rust' });
+  void ys;
+  void L;
+  return { flight, uTop };
+}
+
+/** The parapet span the roof stair lands through, in `parapet()`'s own side/u frame. */
+function roofStairGap(def, roofY) {
+  if (!def.roofStair) return null;
+  const { uTop } = roofStairSpan(def, roofY);
+  // parapet() walks its own ring: 0 = z0 edge, 1 = x1, 2 = z1, 3 = x0, and every one
+  // of them runs opposite to the matching sideLine, hence `full - u`.
+  const side = def.roofStair.side;
+  const parSide = [2, 1, 0, 3][side];
+  const full = side === 0 || side === 2 ? def.rect[2] - def.rect[0] : def.rect[3] - def.rect[1];
+  const uc = full - uTop;
+  return { side: parSide, u0: uc - 1.1, u1: uc + 1.1 };
 }
 
 function buildFireEscape(bat, def, ys, roofY) {
@@ -498,13 +612,27 @@ function buildMarketInterior(bat, def, ys, roofY, rng) {
   const g = ys[0];
   const mez = ys[1];
 
-  // Column grid.
+  // Column grid. The east range stands in the double-height void, so those columns
+  // run the full height to the roof beam — stopping them at the (missing) first
+  // floor would leave a column ending in mid-air right down the interior sight line.
   const colX = [x0 + 4.6, x0 + 13.2];
   const colZ = [z0 + 4.4, z0 + 11.8, z0 + 19.2];
+  const voidX0 = def.floorVoid ? def.floorVoid.rect[0] : Infinity;
   for (const cx of colX) {
+    const tall = cx > voidX0;
     for (const cz of colZ) {
-      addPillar(bat, cx, cz, g, mez - 0.28, 0.62, { mat: 'struct.concreteClean', round: true, segments: 14 });
+      addPillar(bat, cx, cz, g, tall ? roofY - 0.34 : mez - 0.28, tall ? 0.68 : 0.62, {
+        mat: 'struct.concreteClean',
+        round: true,
+        segments: 14,
+      });
     }
+  }
+  // A transfer beam across the heads of the tall columns, so the roof visibly lands
+  // on something instead of floating over an eight-metre room.
+  if (def.floorVoid) {
+    const bm = bat.b('struct.concreteClean');
+    bm.box([x0 + 13.2, roofY - 0.5, (z0 + z1) * 0.5], [0.3, 0.34, (z1 - z0) * 0.5 - t], { chamfer: 0.025 });
   }
   // Upper-floor columns, thinner.
   for (const cx of colX) {
@@ -514,16 +642,14 @@ function buildMarketInterior(bat, def, ys, roofY, rng) {
     }
   }
 
-  // Mezzanine slab over the west half, with an edge beam and railing.
+  // The first floor is cut away over the east half (see `floorVoid` in LevelData),
+  // so the deck that survives over the west half IS the mezzanine — it does not need
+  // a second slab of its own, which is what used to sit here z-fighting the real one.
+  // All that is added is a tiled finish over the concrete and the edge nosing.
   const mx1 = x0 + 9.2;
-  bat.b('int.tile').box([(x0 + mx1) * 0.5, mez - 0.15, (z0 + z1) * 0.5], [(mx1 - x0) * 0.5, 0.15, (z1 - z0) * 0.5 - t * 0.4], {
-    chamfer: 0.015,
+  bat.b('int.tile').box([(x0 + mx1) * 0.5, mez - 0.005, (z0 + z1) * 0.5], [(mx1 - x0) * 0.5 - 0.02, 0.02, (z1 - z0) * 0.5 - t * 0.45], {
+    chamfer: 0.01,
   });
-  bat.b('struct.concreteClean').box([mx1 - 0.13, mez - 0.26, (z0 + z1) * 0.5], [0.14, 0.26, (z1 - z0) * 0.5 - t * 0.4], {
-    chamfer: 0.02,
-  });
-  bat.box((x0 + mx1) * 0.5, mez - 0.2, (z0 + z1) * 0.5, (mx1 - x0) * 0.5, 0.2, (z1 - z0) * 0.5 - t * 0.4, 'ceramic');
-  railing(bat, mx1, z0 + t, mx1, z1 - t, mez, { height: 1.02, mat: 'metal.rust', style: 'baluster' });
 
   // Stair core: ground -> mezzanine, tucked against the north wall.
   const f1 = stairs(bat, {
@@ -665,9 +791,13 @@ export function buildMinaret(bat, m) {
   bat.b('metal.galv').cylinder([x, capY, z], [x, capY + 0.9, z], 0.055, 6);
   bat.box(x, base + height * 0.5, z, radius * 0.85, height * 0.5, radius * 0.85, 'concrete');
 
-  bat.lod = 1;
-  bat.b('wall.sand').cylinder([x, base, z], [x, galleryY, z], radius * 0.92, 8, { radius2: radius * 0.7 });
-  bat.b('wall.bone').cylinder([x, galleryY, z], [x, capY, z], radius * 0.66, 8, { radius2: radius * 0.2 });
+  // The minaret is the map's orientation landmark; it has to survive to the far LOD
+  // or it pops out of the skyline from the opposite corner.
+  for (const l of [1, 2]) {
+    bat.lod = l;
+    bat.b('wall.sand').cylinder([x, base, z], [x, galleryY, z], radius * 0.92, l === 1 ? 8 : 6, { radius2: radius * 0.7 });
+    bat.b('wall.bone').cylinder([x, galleryY, z], [x, capY, z], radius * 0.66, l === 1 ? 8 : 6, { radius2: radius * 0.2 });
+  }
   bat.lod = 0;
 }
 
@@ -741,8 +871,11 @@ export function buildFuelStation(bat, f, rng) {
   bat.b('int.tile').box([(k[0] + k[2]) * 0.5, 0.03, (k[1] + k[3]) * 0.5], [(k[2] - k[0]) * 0.5, 0.06, (k[3] - k[1]) * 0.5], {
     chamfer: 0.01,
   });
-  // Crate stack that lets you mantle from the kiosk roof onto the canopy deck.
-  crateStack(bat, k[0] - 1.4, k[1] + 1.2, 0, 2.0, 0.2, rng);
+  // The climb: crates on the forecourt to 2.7 m (mantle onto the 3.2 m kiosk roof),
+  // then a pallet stack on that roof to 4.3 m, which puts the 5.28 m canopy deck one
+  // mantle away. Both steps are ~1 m, which is what the movement code can take.
+  crateStack(bat, k[0] - 1.4, k[1] + 1.2, 0, 2.7, 0.2, rng);
+  crateStack(bat, k[0] + 1.6, k[3] - 1.4, kh + 0.05, kh + 1.15, -0.35, rng);
   bat.lod = 1;
   bat.b('metal.paintCream').box(
     [(c.x0 + c.x1) * 0.5, c.y - c.thick * 0.5, (c.z0 + c.z1) * 0.5],
@@ -759,18 +892,57 @@ export function buildFuelStation(bat, f, rng) {
 export function buildBackdrop(bat, def) {
   const [x0, z0, x1, z1] = def.rect;
   const h = def.h;
-  {
-    bat.lod = 0;
-    bat.b(def.wall).box([(x0 + x1) * 0.5, h * 0.5, (z0 + z1) * 0.5], [(x1 - x0) * 0.5, h * 0.5, (z1 - z0) * 0.5], {
-      chamfer: 0.08,
-    });
-    bat.b('struct.concreteClean').box([(x0 + x1) * 0.5, h + 0.35, (z0 + z1) * 0.5], [(x1 - x0) * 0.5 + 0.12, 0.35, (z1 - z0) * 0.5 + 0.12], {
-      chamfer: 0.05,
-    });
+  const cx = (x0 + x1) * 0.5;
+  const cz = (z0 + z1) * 0.5;
+  const hx = (x1 - x0) * 0.5;
+  const hz = (z1 - z0) * 0.5;
+  const seed = Math.round(x0 * 0.37 + z0 * 0.71);
+  bat.lod = 0;
+  // These blocks are 60-140 m out and 30 m wide. At 1:1 metre UVs the stucco tile
+  // repeats every ~2.5 m across that face and reads as patterned wallpaper, which is
+  // exactly what the eye picks up on a distant flat plane. Stretching the texture 3x
+  // costs nothing here — none of that detail is resolvable at this range.
+  bat.uvScale = 0.32;
+  bat.uvOffset = [seed * 1.7, seed * 0.9];
+
+  bat.b(def.wall).box([cx, h * 0.5, cz], [hx, h * 0.5, hz], { chamfer: 0.08 });
+  bat.b('struct.concreteClean').box([cx, h + 0.35, cz], [hx + 0.12, 0.35, hz + 0.12], { chamfer: 0.05 });
+
+  // A skyline is silhouette, and a row of identical rectangles is the one shape that
+  // reads as scenery. Each block gets a setback tower, a stair housing and a couple
+  // of tanks, all authored straight into the far LOD — a handful of boxes each, and
+  // it is the difference between "a city behind the map" and "grey cardboard".
+  const t1 = hash2(seed, 3);
+  const t2 = hash2(seed + 11, 7);
+  const t3 = hash2(seed + 23, 13);
+  if (t1 > 0.28) {
+    const sh = h * (0.22 + t1 * 0.38);
+    const sx = hx * (0.42 + t2 * 0.26);
+    const sz = hz * (0.42 + t3 * 0.26);
+    const ox = (t2 - 0.5) * (hx - sx) * 1.4;
+    const oz = (t3 - 0.5) * (hz - sz) * 1.4;
+    bat.b(def.wall).box([cx + ox, h + sh * 0.5, cz + oz], [sx, sh * 0.5, sz], { chamfer: 0.08 });
+    bat.b('struct.concreteClean').box([cx + ox, h + sh + 0.3, cz + oz], [sx + 0.14, 0.3, sz + 0.14], { chamfer: 0.05 });
   }
+  // Stair / lift housing and water tanks on the main deck.
+  bat.b('struct.concrete').box([cx - hx * 0.55, h + 1.5, cz + hz * 0.4], [1.9, 1.5, 1.8], { chamfer: 0.06 });
+  const tk = bat.b('metal.galv');
+  for (let i = 0; i < 3; i++) {
+    const f = (i + 0.6) / 3.6;
+    const tx = lerp(x0 + 2.5, x1 - 2.5, hash3(seed, i, 5));
+    const tz = lerp(z0 + 2.5, z1 - 2.5, f);
+    tk.cylinder([tx, h + 0.7, tz], [tx, h + 2.7, tz], 0.85 + hash3(seed, i, 9) * 0.4, 8);
+    tk.box([tx, h + 0.35, tz], [1.0, 0.35, 1.0], { chamfer: 0.05 });
+  }
+  // Shallow pilaster ribs break the flat wall without costing a texture lookup.
+  const rb = bat.b('struct.concreteClean');
+  for (let x = x0 + 4; x < x1 - 2; x += 7.5) {
+    rb.box([x, h * 0.5, z1 + 0.14], [0.5, h * 0.5, 0.16], { chamfer: 0.05 });
+    rb.box([x, h * 0.5, z0 - 0.14], [0.5, h * 0.5, 0.16], { chamfer: 0.05 });
+  }
+
   // Window rhythm as flat quads only — these blocks are 60-140 m out, where two
   // triangles per window is already more than the silhouette can resolve.
-  bat.lod = 0;
   const mb = bat.b('glass.window');
   for (let y = 2.6; y < h - 1.4; y += 3.2) {
     for (let x = x0 + 2.4; x < x1 - 1.8; x += 3.6) {
@@ -778,6 +950,8 @@ export function buildBackdrop(bat, def) {
       mb.quad([x - 0.6, y - 0.8, z0 - 0.04], [x - 0.6, y + 0.8, z0 - 0.04], [x + 0.6, y + 0.8, z0 - 0.04], [x + 0.6, y - 0.8, z0 - 0.04], [0, 0, -1]);
     }
   }
+  bat.uvScale = 1;
+  bat.uvOffset = [0, 0];
 }
 
 export default { buildBuilding, buildMinaret, buildFuelStation, buildBackdrop, sideLine, sidePoint };

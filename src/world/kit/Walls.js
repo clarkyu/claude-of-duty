@@ -82,15 +82,22 @@ export function wallRun(bat, o) {
   const seed = Math.round(o.x0 * 7.13 + o.z0 * 3.71);
 
   const openings = (o.openings || [])
-    .map((op) => ({
-      u: op.u,
-      w: op.w ?? 1.1,
-      h: op.h ?? 1.5,
-      sill: op.sill ?? 0.95,
-      type: op.type || 'window',
-      style: op.style || null,
-      arch: !!op.arch,
-    }))
+    .map((op) => {
+      const type = op.type || 'window';
+      // A doorway with a default sill is a doorway you cannot walk through: the
+      // pier code fills the space under `sill` with solid, colliding mass. Anything
+      // you are meant to pass through starts at the floor unless it says otherwise.
+      const grounded = type === 'door' || type === 'gate' || type === 'hole' || type === 'arch';
+      return {
+        u: op.u,
+        w: op.w ?? 1.1,
+        h: op.h ?? 1.5,
+        sill: op.sill ?? (grounded ? 0 : 0.95),
+        type,
+        style: op.style || null,
+        arch: !!op.arch,
+      };
+    })
     .filter((op) => op.u - op.w * 0.5 > 0.02 && op.u + op.w * 0.5 < L - 0.02)
     .sort((a, b) => a.u - b.u);
 
@@ -139,8 +146,36 @@ export function wallRun(bat, o) {
     const pout = pl.out ?? 0.045;
     const pmat = pl.mat || 'struct.concrete';
     if (ph > 0.05 && ph < H) {
+      // The plinth is a band of *mass*, so it has to stop at every opening that
+      // reaches the floor. One box the full length of the wall would put a
+      // walk-through slab across the bottom of every doorway and archway.
+      let spans = [[0, L]];
+      for (const op of openings) {
+        if (op.sill > 0.05) continue;
+        const a = op.u - op.w * 0.5 - pout;
+        const b = op.u + op.w * 0.5 + pout;
+        const next = [];
+        for (const [s0, s1] of spans) {
+          if (b <= s0 || a >= s1) {
+            next.push([s0, s1]);
+            continue;
+          }
+          if (a > s0) next.push([s0, a]);
+          if (b < s1) next.push([b, s1]);
+        }
+        spans = next;
+      }
       bat.upTo(pmat, 0, (mb) => {
-        mb.box([L * 0.5, ph * 0.5, 0], [L * 0.5 + pout, ph * 0.5, half + pout], { chamfer: 0.02 });
+        for (const [s0, s1] of spans) {
+          if (s1 - s0 < 0.03) continue;
+          // Only the free ends of a span get the outward overhang, so the plinth
+          // returns cleanly into the reveal instead of floating past it.
+          const e0 = s0 <= 0.001 ? pout : 0;
+          const e1 = s1 >= L - 0.001 ? pout : 0;
+          mb.box([(s0 - e0 + s1 + e1) * 0.5, ph * 0.5, 0], [(s1 + e1 - s0 + e0) * 0.5, ph * 0.5, half + pout], {
+            chamfer: 0.02,
+          });
+        }
       });
     }
   }
@@ -316,13 +351,14 @@ export function addDoorFurniture(bat, frame, op, cfg) {
   });
 
   if (op.type === 'gate') {
-    // Roller shutter: corrugated slats, part raised.
-    const raise = 0.15 + r * 0.55;
+    // Roller shutter, rolled up far enough that what you can see matches what you can
+    // walk through: there is no collider here, so a shutter drawn across head height
+    // would be a lie the nav grid does not tell.
     bat.upTo('roof.corrugated', 0, (mb) => {
       const z = half - 0.09;
       const top = y1 - 0.05;
-      const bot = op.sill + h * raise;
-      if (top > bot + 0.05) mb.box([u, (top + bot) * 0.5, z], [w * 0.5 - 0.03, (top - bot) * 0.5, 0.03], { chamfer: 0.01 });
+      const bot = Math.min(top - 0.05, op.sill + 2.15 + r * 0.55);
+      if (top > bot + 0.06) mb.box([u, (top + bot) * 0.5, z], [w * 0.5 - 0.03, (top - bot) * 0.5, 0.03], { chamfer: 0.01 });
       mb.box([u, top + 0.14, z + 0.05], [w * 0.5 + 0.06, 0.14, 0.11], { chamfer: 0.02 });
     });
     bat.upTo('metal.rust', 0, (mb) => {
@@ -340,8 +376,11 @@ export function addDoorFurniture(bat, frame, op, cfg) {
     mb.box([u, y1 - 0.05, z], [w * 0.5, 0.05, 0.045], { chamfer: 0.008 });
   });
 
-  // The leaf itself, hinged open by a few degrees so the doorway reads as passable.
-  const swing = (r - 0.5) * 0.9;
+  // The leaf, hinged wide open — 55 to 90 degrees — so a doorway you can walk through
+  // looks like one. One door in six is simply gone, which is most of the "lived in"
+  // read a row of identical openings otherwise loses.
+  if (r < 0.17) return;
+  const swing = 0.95 + r * 0.65;
   const cs = Math.cos(swing);
   const sn = Math.sin(swing);
   const hx = u - w * 0.5 + 0.06;

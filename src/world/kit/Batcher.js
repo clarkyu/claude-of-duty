@@ -45,6 +45,9 @@ export class Batcher {
     this.colorFn = null;
     this.uvRot = 0;
     this.uvOffset = [0, 0];
+    /** < 1 stretches the texture over more metres — used to kill the visible tile
+     *  repeat on the distant backdrop, where the detail is unresolvable anyway. */
+    this.uvScale = 1;
   }
 
   /* -------------------------------------------------------------- authoring */
@@ -61,6 +64,7 @@ export class Batcher {
     mb.colorFn = this.colorFn;
     mb.uvRot = this.uvRot;
     mb.uvOffset = this.uvOffset;
+    mb.uvScale = this.uvScale;
     return mb;
   }
 
@@ -109,6 +113,10 @@ export class Batcher {
    */
   collider(desc) {
     if (!desc) return null;
+    // Collision belongs to the world, not to a level of detail. Several kit modules
+    // (pitched roofs, decks) are re-authored into the LOD-1/2 shells and would
+    // otherwise register the same volume two or three times.
+    if (this.lod > 0 && desc.force !== true) return null;
     const c = { group: 1, ...desc };
     this.colliders.push(c);
     this.colliderSink?.push(c);
@@ -250,6 +258,10 @@ export class Batcher {
       if (mesh.geometry?.boundingBox) bb.union(mesh.geometry.boundingBox);
     }
     if (!bb.isEmpty()) bb.getCenter(c);
+    // THREE.LOD measures to the district *centre*. A 50 m long terrace would drop to
+    // its shell while the near end is still 25 m from the camera, so every switch
+    // distance is pushed out by the district's own radius.
+    const radius = bb.isEmpty() ? 0 : bb.getSize(new THREE.Vector3()).length() * 0.5;
 
     const lod = new THREE.LOD();
     lod.name = this.name;
@@ -262,7 +274,8 @@ export class Batcher {
       groups[l].position.copy(c).negate();
       groups[l].matrixAutoUpdate = false;
       groups[l].updateMatrix();
-      lod.addLevel(groups[l], dist[l] ?? l * 60);
+      const d = dist[l] ?? l * 60;
+      lod.addLevel(groups[l], d > 0 ? d + radius : 0);
     }
     return lod;
   }

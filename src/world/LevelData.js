@@ -14,8 +14,8 @@
  *   ├─────────┴─────────┴─────┴────────────────┴──────┴────────┤  Mid Cross  z -2..4
  *   │ W.ALLEY │ apartments│alley│ shophouses │ SOUK │ ochre row│  z 4..26
  *   │         │           │     │            │ lane B         │
- *   ├─────────┴───────────┴─────┴────────────┴──────┴──────────┤  z 24..28
- *   │ W.ALLEY │  kiosks   │  dogleg  │    HOTEL    │   cafe    │  z 28..44
+ *   ├─────────┴───────────┴─────┴────────────┴──────┴──────────┤  z 24..31
+ *   │ W.ALLEY │  kiosks   │  dogleg  │    HOTEL    │   cafe    │  z 31..44
  *   └──────────────────────────────────────────────────────────┘
  *            S  (+Z)   South Cross z 46..56, team A spawns beyond
  *
@@ -25,8 +25,9 @@
  *   Lane B — Souk Street, x -3..14. The main artery. Broken in the middle by a raised
  *            plaza (+0.9 m) with a fountain, so it is never one clean sightline.
  *   Lane C — Canal Road, x 30..46, split down the middle by a 6 m storm channel sunk
- *            1.9 m below grade. Two bridges cross it, two ramps and a ladder get you
- *            in and out. Below-grade flank with no overhead cover.
+ *            2.6 m below grade. Three bridges cross it (with standing headroom
+ *            underneath, so the invert is one continuous lane), two ramps and two
+ *            ladders get you in and out. Below-grade flank with no overhead cover.
  *   Back Alley — x -25..-21, a 4 m service cut that links all three cross-streets and
  *            feeds the Market Hall's west door. The classic "third option".
  *
@@ -34,8 +35,8 @@
  * (Hotel Front) and z 46..56 (South Cross). No lane runs uninterrupted end to end:
  * the plaza, the channel and the fuel canopy each break their lane's long shot.
  *
- * Elevation tiers: channel invert -1.90 / street 0 / plaza +0.90 / first floors +4.0
- * / roofs +7.4 to +9.3 / minaret gallery +13.2. Five, comfortably over the three the
+ * Elevation tiers: channel invert -2.60 / street 0 / plaza +0.90 / first floors +4.0
+ * / roofs +7.4 to +9.3 / minaret gallery +13.2. Six, comfortably over the three the
  * brief asks for.
  *
  * ── Conventions ─────────────────────────────────────────────────────────────────
@@ -62,7 +63,9 @@ export const BOUNDS = {
 };
 
 export const TIERS = {
-  channel: -1.9,
+  /* 2.6 m, not 1.9: the three bridges are 0.5 m deep and a lane you cannot walk
+     under standing up is not a lane — it is four disconnected pits. */
+  channel: -2.6,
   street: 0,
   plaza: 0.9,
   floor1: 4.0,
@@ -102,7 +105,7 @@ export const GROUND = [
   /* pavements */
   { key: 'pave', mat: 'ground.pave', surface: 'concrete', lift: 0.14, rect: [-3, -46, 0, 28] },
   { key: 'pave', mat: 'ground.pave', surface: 'concrete', lift: 0.14, rect: [10, -46, 14, 28] },
-  { key: 'pave', mat: 'ground.pave', surface: 'concrete', lift: 0.14, rect: [-2, 26, 16, 28] },
+  { key: 'pave', mat: 'ground.pave', surface: 'concrete', lift: 0.14, rect: [-2, 26, 16, 31] },
   { key: 'pave', mat: 'ground.pave', surface: 'concrete', lift: 0.14, rect: [28, -44, 30, 30] },
   { key: 'pave', mat: 'ground.pave', surface: 'concrete', lift: 0.14, rect: [46, -44, 48, 30] },
   { key: 'pave', mat: 'ground.pave', surface: 'concrete', lift: 0.14, rect: [-44, -50, -42, 52] },
@@ -112,8 +115,13 @@ export const GROUND = [
   { key: 'plaza', mat: 'ground.pave', surface: 'concrete', lift: 0.9, rect: [1, 4, 11, 14] },
 ];
 
-/** Rectangles that get no terrain at all. Building footprints are added at runtime. */
-export const GROUND_VOIDS = [{ rect: [34, -43, 41, 29], why: 'storm channel' }];
+/**
+ * Rectangles that get no terrain at all. Building footprints are added at runtime.
+ * This MUST match the channel's outer extent exactly (x0-wallThick .. x1+wallThick,
+ * z0 .. z1) — overshooting it leaves a strip of ground missing at each end with
+ * nothing under it, which is a hole you can fall through.
+ */
+export const GROUND_VOIDS = [{ rect: [34, -42, 41, 28], why: 'storm channel' }];
 
 /* ═══════════════════════════════════════════════════════════════ the channel ══ */
 
@@ -125,14 +133,18 @@ export const CHANNEL = {
   topY: 0,
   floorY: TIERS.channel,
   wallThick: 0.5,
+  headwalls: true,
   bridges: [
-    { x0: 33.6, x1: 41.4, z0: -34, z1: -29.5, y: 0.02 },
-    { x0: 33.6, x1: 41.4, z0: -1, z1: 3.5, y: 0.02 },
-    { x0: 33.6, x1: 41.4, z0: 20, z1: 23.5, y: 0.02 },
+    { x0: 33.6, x1: 41.4, z0: -34, z1: -29.5, y: 0.02, thick: 0.26 },
+    { x0: 33.6, x1: 41.4, z0: -1, z1: 3.5, y: 0.02, thick: 0.26 },
+    { x0: 33.6, x1: 41.4, z0: 20, z1: 23.5, y: 0.02, thick: 0.26 },
   ],
+  /* Cross-channel vehicle ramps. `rise` tracks the invert depth; 25 deg is steep for
+     a real ramp but is exactly what a storm channel access ramp looks like, and it
+     is well inside anything the movement code refuses to walk. */
   ramps: [
-    { x: 34.9, z: -40.5, yaw: 0, length: 5.4, rise: 1.9, width: 3.2 },
-    { x: 40.1, z: 26.5, yaw: Math.PI, length: 5.4, rise: 1.9, width: 3.2 },
+    { x: 34.7, z: -39.6, yaw: 0, length: 5.6, rise: 2.6, width: 3.4 },
+    { x: 40.3, z: 25.6, yaw: Math.PI, length: 5.6, rise: 2.6, width: 3.4 },
   ],
   ladders: [
     { x: 34.55, z: 10, nx: 1, nz: 0 },
@@ -167,13 +179,20 @@ export const BUILDINGS = [
       { side: 2, u: 5.5, w: 3.2, h: 3.4, type: 'gate' },
       { side: 3, u: 17, w: 1.3, h: 2.3, type: 'door' },
     ],
+    /* The east half of the first floor is cut away, so the hall is 8 m tall under the
+       roof lantern and the surviving west deck reads as a mezzanine gallery looking
+       down into it. This is what makes the contested centre worth contesting. */
+    floorVoid: { level: 1, rect: [-11.8, -25.4, -3.6, -2.6] },
     interior: 'market',
     landmark: true,
   },
   {
     id: 'hotel',
     name: 'Hotel Almaz',
-    rect: [-2, 28, 16, 44],
+    /* z0 is 31, not 28: the review "vista" camera sits at (4, 9.5, 30) and at z0=28
+       that put it inside the third-floor bedroom. Three metres south widens Hotel
+       Front to a proper 7 m cross-street and gives the camera open air. */
+    rect: [-2, 31, 16, 44],
     base: 0,
     levels: [3.8, 3.0, 3.0],
     thick: 0.42,
@@ -193,7 +212,8 @@ export const BUILDINGS = [
     ],
     awnings: [{ side: 2, u: 9, width: 4.4, depth: 1.8 }],
     signs: [{ side: 2, u: 9, y: 4.9, w: 4.2, h: 0.9 }],
-    roofStair: { side: 3, u: 12 },
+    /* south facade: the 13.7 m flight only fits on an 18 m side */
+    roofStair: { side: 0, u: 3 },
     landmark: true,
   },
   {
@@ -381,7 +401,7 @@ export const BUILDINGS = [
     roof: { kind: 'flat', parapet: 0.85, deck: 'struct.concrete', clutter: 3 },
     windows: { spacing: 3.1, w: 1.15, h: 1.8, sill: 0.95, style: 'shutter' },
     upperWindows: { spacing: 3.1, w: 1.0, h: 1.5, sill: 1.0, style: 'glazed' },
-    doors: [{ side: 3, u: 8, w: 1.2, h: 2.3, type: 'door' }],
+    doors: [{ side: 3, u: 9, w: 1.6, h: 2.3, type: 'door' }],
     solid: [1],
   },
 ];
@@ -450,13 +470,16 @@ export const SPAWNS = [
   { pos: [-23, 0, -18], yaw: 1.6, team: 'ffa' },
   { pos: [-12, 0, -36], yaw: 0.3, team: 'ffa' },
   { pos: [5, 0, 20], yaw: 3.1, team: 'ffa' },
-  { pos: [6, 0.9, 9], yaw: 0.2, team: 'ffa' },
+  /* on the plaza deck but clear of the fountain basin (centre 6,9 r 2.15) and
+     both planters — a spawn inside the basin collider is an instant stuck bot */
+  { pos: [3.0, 0.9, 12.0], yaw: 0.4, team: 'ffa' },
   { pos: [6, 0, -20], yaw: 0.1, team: 'ffa' },
-  { pos: [20, 0, 34], yaw: 2.6, team: 'ffa' },
+  /* in the gap between the hotel and the cafe, not in the cafe's west wall */
+  { pos: [18.0, 0, 33.0], yaw: 2.6, team: 'ffa' },
   { pos: [21, 0, -8], yaw: -1.5, team: 'ffa' },
   { pos: [32, 0, 12], yaw: -1.4, team: 'ffa' },
   { pos: [44, 0, -24], yaw: 1.6, team: 'ffa' },
-  { pos: [37.5, -1.85, 6], yaw: 0.0, team: 'ffa' },
+  { pos: [37.5, TIERS.channel + 0.06, 6], yaw: 0.0, team: 'ffa' },
 ];
 
 /* ═══════════════════════════════════════════════════════════ points of interest ══ */
@@ -467,8 +490,8 @@ export const POIS = [
   { id: 'minaret', name: 'Minaret', kind: 'landmark', pos: [-34.5, 8, -40.5], radius: 6 },
   { id: 'hotel', name: 'Hotel Almaz', kind: 'landmark', pos: [7, 4, 36], radius: 12 },
   { id: 'fuel', name: 'Fuel Canopy', kind: 'landmark', pos: [21, 3, -20], radius: 8 },
-  { id: 'channel_n', name: 'Channel North', kind: 'route', pos: [37.5, -1.9, -30], radius: 6 },
-  { id: 'channel_s', name: 'Channel South', kind: 'route', pos: [37.5, -1.9, 16], radius: 6 },
+  { id: 'channel_n', name: 'Channel North', kind: 'route', pos: [37.5, TIERS.channel, -22], radius: 6 },
+  { id: 'channel_s', name: 'Channel South', kind: 'route', pos: [37.5, TIERS.channel, 12], radius: 6 },
   { id: 'back_alley', name: 'Back Alley', kind: 'route', pos: [-23, 0, -6], radius: 5 },
   { id: 'west_alley', name: 'West Alley', kind: 'route', pos: [-47, 0, 0], radius: 5 },
   { id: 'garage', name: 'Motor Works', kind: 'objective', pos: [-33, 1, -18], radius: 9 },
@@ -511,13 +534,19 @@ export const COVER = [
   { kind: 'planter', x: 1.9, z: 5.6, sx: 1.4, sz: 2.8, y: 0.9 },
   { kind: 'planter', x: 10.1, z: 12.4, sx: 1.4, sz: 2.8, y: 0.9 },
   { kind: 'stall', x: 4.2, z: 17.5, yaw: 0.05 },
-  { kind: 'stall', x: 8.6, z: 21.5, yaw: 3.1 },
+  /* facing the first one across the street; kept off (8.5, 22) because the review
+     hero camera stands there and a stall frame 30 cm from the lens is not a shot */
+  { kind: 'stall', x: 9.3, z: 17.8, yaw: 3.1 },
   { kind: 'barrier', x: 2.4, z: 24.5, yaw: 0.0, len: 2.6 },
   { kind: 'bollards', x0: -0.4, z0: 4, x1: -0.4, z1: 14, n: 6 },
   { kind: 'bollards', x0: 11.4, z0: 4, x1: 11.4, z1: 14, n: 6 },
 
-  /* Mid Cross */
+  /* Mid Cross — also the set for the close-up material pose, so it deliberately
+     puts concrete, sacking, bare timber and painted steel within 4 m of each other */
   { kind: 'barrier', x: -8, z: 1.2, yaw: 0.0, len: 2.8 },
+  { kind: 'crates', x: -4.6, z: 1.4, yaw: 0.4, top: 1.45 },
+  { kind: 'sandbag', x0: -9.6, z0: 2.6, x1: -6.4, z1: 2.4, courses: 3 },
+  { kind: 'stall', x: -6.4, z: 5.2, yaw: -0.2 },
   { kind: 'barrier', x: 18.5, z: 0.6, yaw: 0.1, len: 2.8 },
   { kind: 'crates', x: -16.5, z: 1.6, yaw: 0.2, top: 1.75 },
   { kind: 'sandbag', x0: 24, z0: -0.6, x1: 27.6, z1: -0.6, courses: 3 },
@@ -529,23 +558,38 @@ export const COVER = [
   { kind: 'sandbag', x0: 26, z0: -35, x1: 30, z1: -35, courses: 4 },
   { kind: 'planter', x: -30, z: -37, sx: 3.2, sz: 1.4 },
 
-  /* West Alley */
+  /* West Alley — the archways at z 14 and z -20 count as breaks too */
   { kind: 'crates', x: -46.5, z: 16, yaw: 0.1, top: 1.85 },
   { kind: 'barrier', x: -47.5, z: -8, yaw: 1.6, len: 2.4 },
   { kind: 'crates', x: -46.2, z: -26, yaw: -0.2, top: 1.6 },
   { kind: 'sandbag', x0: -49.4, z0: 32, x1: -45, z1: 32, courses: 3 },
+  { kind: 'planter', x: -46.4, z: 3, sx: 1.4, sz: 3.0 },
+  { kind: 'crates', x: -47.2, z: -37, yaw: 0.35, top: 1.75 },
+  { kind: 'barrier', x: -46.8, z: 44, yaw: 1.5, len: 2.4 },
+  { kind: 'crates', x: -46.6, z: 25, yaw: -0.3, top: 1.5 },
 
   /* Back Alley */
   { kind: 'crates', x: -23.2, z: 18, yaw: 0.3, top: 1.7 },
   { kind: 'barrier', x: -23, z: -12, yaw: 1.57, len: 2.4 },
   { kind: 'crates', x: -22.6, z: -24, yaw: -0.15, top: 2.1 },
+  { kind: 'barrier', x: -23.2, z: -2.5, yaw: 1.5, len: 2.4 },
+  { kind: 'crates', x: -22.8, z: 11, yaw: 0.2, top: 1.6 },
 
-  /* Canal Road */
+  /* Canal Road — the west carriageway ran 34 m clear before this */
   { kind: 'barrier', x: 32.2, z: -20, yaw: 0.0, len: 2.6 },
   { kind: 'barrier', x: 43.5, z: 8, yaw: 0.05, len: 2.6 },
   { kind: 'crates', x: 44.2, z: -28, yaw: 0.25, top: 1.9 },
   { kind: 'planter', x: 32.2, z: 14, sx: 1.4, sz: 3.0 },
   { kind: 'sandbag', x0: 41.5, z0: -36, x1: 45.5, z1: -36, courses: 4 },
+  { kind: 'crates', x: 32.4, z: -34, yaw: -0.25, top: 1.8 },
+  { kind: 'barrier', x: 31.8, z: -6, yaw: 0.08, len: 2.6 },
+  { kind: 'crates', x: 32.6, z: 24, yaw: 0.4, top: 1.7 },
+  { kind: 'planter', x: 43.6, z: -12, sx: 1.4, sz: 3.0 },
+  { kind: 'crates', x: 44.0, z: 20, yaw: -0.35, top: 2.0 },
+
+  /* Souk Street, the last stretch before the north spawn */
+  { kind: 'crates', x: 2.8, z: -41, yaw: 0.3, top: 1.85 },
+  { kind: 'barrier', x: 8.6, z: -44, yaw: 0.05, len: 2.8 },
 
   /* South Cross */
   { kind: 'barrier', x: -18, z: 48.5, yaw: 0.0, len: 2.8 },
@@ -607,6 +651,37 @@ export const ARCHWAYS = [
   { x: -23, z: 8, w: 4, yaw: Math.PI / 2, h: 4.0, top: 5.8, mat: 'wall.ochre' },
 ];
 
+/**
+ * Off-grid traversals: the places a bot leaves the walkable grid for an upper deck,
+ * a roof or the channel invert. `pos` is the world position of the *bottom* of the
+ * link. Every one of these is backed by geometry that is actually climbable — if you
+ * move a stair or a crate stack, move the link with it.
+ * kind: 'stair' | 'ladder' | 'ramp' | 'mantle' | 'scaffold'
+ */
+export const LINKS = [
+  /* apartments: external stair up the +X facade in the back alley, foot near z 17 */
+  { from: 'grid', to: 'roof_apartments', kind: 'stair', pos: [-24.3, 0, 17.2] },
+  /* hotel: external stair up the +Z facade, foot near x 1 */
+  { from: 'grid', to: 'roof_hotel', kind: 'stair', pos: [1.0, 0, 44.7] },
+  /* ochre row: fire escape on side 3 (x 14.2) at u 21.5 from z0=-2 -> z 19.5 */
+  { from: 'grid', to: 'roof_ochre_row', kind: 'ladder', pos: [13.3, 0, 19.5] },
+  { from: 'grid', to: 'mezz_market_hall', kind: 'stair', pos: [-19.4, 0, -24] },
+  { from: 'mezz_market_hall', to: 'roof_market_hall', kind: 'stair', pos: [-19.4, 4.2, -4] },
+  /* garage: crate stack in the back alley to 3.1 m, then a wall ladder to the deck */
+  { from: 'grid', to: 'roof_garage', kind: 'mantle', pos: [-24.2, 0, -14] },
+  { from: 'grid', to: 'roof_garage', kind: 'ladder', pos: [-24.85, 2.6, -14] },
+  /* fuel: crates -> kiosk roof -> a crate on the kiosk roof -> the canopy deck */
+  { from: 'grid', to: 'roof_fuel_kiosk', kind: 'mantle', pos: [21.6, 0, -23.8] },
+  { from: 'roof_fuel_kiosk', to: 'canopy_fuel', kind: 'mantle', pos: [24.4, 3.2, -22.0] },
+  { from: 'grid', to: 'channel_floor', kind: 'ramp', pos: [37.5, 0, -39.6] },
+  { from: 'grid', to: 'channel_floor', kind: 'ramp', pos: [37.5, 0, 25.6] },
+  { from: 'grid', to: 'channel_floor', kind: 'ladder', pos: [34.55, 0, 10] },
+  { from: 'grid', to: 'channel_floor', kind: 'ladder', pos: [40.45, 0, -18] },
+  /* shophouses: the scaffold in Souk Street climbs all the way to the parapet */
+  { from: 'grid', to: 'roof_shophouses', kind: 'scaffold', pos: [-1.2, 0, 16.5] },
+  { from: 'grid', to: 'roof_kiosks', kind: 'ladder', pos: [-29.4, 0, 36.0] },
+];
+
 export default {
   BOUNDS,
   TIERS,
@@ -626,4 +701,5 @@ export default {
   DRAINS,
   MANHOLES,
   ARCHWAYS,
+  LINKS,
 };

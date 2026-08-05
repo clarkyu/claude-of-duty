@@ -208,6 +208,33 @@ export function drainageChannel(bat, o) {
       }
     });
   }
+
+  // Headwalls close the two ends. Without them the invert simply stops and the
+  // terrain, which is voided over the whole channel footprint, leaves a hole.
+  if (o.headwalls !== false) {
+    const hw = o.headThick ?? 0.55;
+    const ox0 = x0 - wallT;
+    const ox1 = x1 + wallT;
+    for (const [zc, sgn] of [
+      [z0 - hw * 0.5 + 0.05, -1],
+      [z1 + hw * 0.5 - 0.05, 1],
+    ]) {
+      bat.upTo(mat, 0, (mb) => {
+        mb.box([(ox0 + ox1) * 0.5, (floorY + topY) * 0.5, zc], [(ox1 - ox0) * 0.5, depth * 0.5, hw * 0.5], {
+          chamfer: 0.03,
+        });
+      });
+      bat.box((ox0 + ox1) * 0.5, (floorY + topY) * 0.5, zc, (ox1 - ox0) * 0.5, depth * 0.5, hw * 0.5, 'concrete');
+      bat.upTo('struct.concreteClean', 0, (mb) => {
+        const n = Math.max(1, Math.round((ox1 - ox0) / 1.1));
+        const sw = (ox1 - ox0) / n;
+        for (let i = 0; i < n; i++) {
+          mb.box([ox0 + sw * (i + 0.5), topY + 0.06, zc], [sw * 0.5 - 0.009, 0.06, hw * 0.5 + 0.05], { chamfer: 0.018 });
+        }
+      });
+      void sgn;
+    }
+  }
   return { x0, x1, z0, z1, y: floorY + 0.05 };
 }
 
@@ -339,15 +366,25 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
   });
   bat.upTo(opts.canvas || 'fabric.awning2', 0, (mb) => {
     const n = 6;
+    // Explicit up-normal: the canopy is the one surface here that sees nothing but
+    // sky, and an auto-computed normal from this winding points at the ground.
+    const sl = Math.hypot(d, 0.18) || 1;
+    const up = [0, d / sl, 0.18 / sl];
     for (let i = 0; i < n; i++) {
       const u0 = lerp(-w * 0.5, w * 0.5, i / n);
       const u1 = lerp(-w * 0.5, w * 0.5, (i + 1) / n);
       const s0 = Math.sin((i / n) * Math.PI) * 0.09;
       const s1 = Math.sin(((i + 1) / n) * Math.PI) * 0.09;
-      mb.quad([u0, h + 0.18 - s0, -d * 0.5], [u1, h + 0.18 - s1, -d * 0.5], [u1, h - s1, d * 0.5], [u0, h - s0, d * 0.5], null);
+      mb.quad([u0, h + 0.18 - s0, -d * 0.5], [u1, h + 0.18 - s1, -d * 0.5], [u1, h - s1, d * 0.5], [u0, h - s0, d * 0.5], up);
     }
     // Front valance.
-    mb.quad([-w * 0.5, h, d * 0.5], [w * 0.5, h, d * 0.5], [w * 0.5, h - 0.3, d * 0.52], [-w * 0.5, h - 0.32, d * 0.52], null);
+    mb.quad(
+      [-w * 0.5, h, d * 0.5],
+      [w * 0.5, h, d * 0.5],
+      [w * 0.5, h - 0.3, d * 0.52],
+      [-w * 0.5, h - 0.32, d * 0.52],
+      [0, 0.06, 0.998]
+    );
   });
   bat.upTo('wood.weathered', 0, (mb) => {
     mb.box([0, 0.88, d * 0.22], [w * 0.5 - 0.02, 0.045, d * 0.28], { chamfer: 0.012 });

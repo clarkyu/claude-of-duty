@@ -280,20 +280,26 @@ export function awning(bat, o) {
   });
   bat.upTo(o.mat || 'fabric.awning', 0, (mb) => {
     const n = 7;
+    // An awning is an up-facing surface, so its normal has to be authored. Left to
+    // the cross product of the quad's own edges it comes out pointing at the ground
+    // and the fabric renders black under an open sky.
+    const sl = Math.hypot(d, drop) || 1;
+    const up = [0, d / sl, drop / sl];
     // Slight scallop between the arms so the fabric is not a plane.
     for (let i = 0; i < n; i++) {
       const u0 = lerp(-w * 0.5, w * 0.5, i / n);
       const u1 = lerp(-w * 0.5, w * 0.5, (i + 1) / n);
       const sag = Math.sin(((i + 0.5) / n) * Math.PI) * 0.035;
-      mb.quad([u0, 0, 0], [u1, 0, 0], [u1, -drop - sag, d], [u0, -drop - sag, d], null);
+      mb.quad([u0, 0, 0], [u1, 0, 0], [u1, -drop - sag, d], [u0, -drop - sag, d], up);
     }
     // Valance hanging off the front bar.
+    const face = [0, 0.1, 0.995];
     for (let i = 0; i < n; i++) {
       const u0 = lerp(-w * 0.5, w * 0.5, i / n);
       const u1 = lerp(-w * 0.5, w * 0.5, (i + 1) / n);
       const s0 = 0.2 + Math.sin((i / n) * Math.PI * 3.1) * 0.045;
       const s1 = 0.2 + Math.sin(((i + 1) / n) * Math.PI * 3.1) * 0.045;
-      mb.quad([u0, -drop, d], [u1, -drop, d], [u1, -drop - s1, d + 0.01], [u0, -drop - s0, d + 0.01], null);
+      mb.quad([u0, -drop, d], [u1, -drop, d], [u1, -drop - s1, d + 0.01], [u0, -drop - s0, d + 0.01], face);
     }
   });
   bat.pop();
@@ -347,7 +353,17 @@ export function canopy(bat, o) {
     });
     bat.box(cx, (o.baseY ?? 0) + (y - th) * 0.5, cz, 0.26, (y - th - (o.baseY ?? 0)) * 0.5, 0.26, 'metal');
   }
-  bat.box((x0 + x1) * 0.5, y - th * 0.5, (z0 + z1) * 0.5, (x1 - x0) * 0.5, th * 0.5, (z1 - z0) * 0.5, 'metal');
+  // The collider has to reach the *visible* deck (y + 0.08), not the slab soffit, or
+  // the player stands 8 cm inside the surface they can see.
+  bat.box(
+    (x0 + x1) * 0.5,
+    y - th * 0.5 + 0.04,
+    (z0 + z1) * 0.5,
+    (x1 - x0) * 0.5 + 0.05,
+    th * 0.5 + 0.04,
+    (z1 - z0) * 0.5 + 0.05,
+    'metal'
+  );
 }
 
 /** Roof clutter: AC condensers, vents, a water tank, satellite dishes. */

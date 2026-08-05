@@ -46,8 +46,35 @@ export const PALETTE = {
   'brick.paintedBlue': { m: 'brick_painted', o: { vertexColors: true, grime: 1.2 }, tint: 0x8fa2ab },
 
   /* ── ground ─────────────────────────────────────────────────────────── */
-  'ground.road': { m: 'asphalt', o: { vertexColors: true, grime: 0.7, puddleLevel: 0.5 } },
-  'ground.pave': { m: 'sidewalk_paving', o: { vertexColors: true, grime: 0.9, puddleLevel: 0.45 } },
+  /* Made ground blends a second material through the vertex-colour green channel:
+     asphalt breaking back to its aggregate base, paving silted over with dirt. The
+     blend is height-aware, so it fills the joints and the low spots first — which is
+     what stops 100 x 100 m of road reading as one tiled texture. */
+  'ground.road': {
+    m: 'asphalt',
+    o: {
+      vertexColors: true,
+      grime: 0.7,
+      puddleLevel: 0.5,
+      layer: 'gravel',
+      layerAmount: 0.0,
+      layerCavityBias: 0.85,
+      layerContrast: 1.9,
+      layerRepeat: 1.35,
+    },
+  },
+  'ground.pave': {
+    m: 'sidewalk_paving',
+    o: {
+      vertexColors: true,
+      grime: 0.9,
+      puddleLevel: 0.45,
+      layer: 'dirt_packed',
+      layerAmount: 0.0,
+      layerCavityBias: 0.9,
+      layerContrast: 1.7,
+    },
+  },
   'ground.dirt': {
     m: 'dirt_packed',
     o: { vertexColors: true, layer: 'sand', layerAmount: 0.0, layerCavityBias: 0.0, grime: 0.5, puddleLevel: 0.55 },

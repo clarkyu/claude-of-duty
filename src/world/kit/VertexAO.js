@@ -344,6 +344,7 @@ export function bakeOcclusion(field, pos, nrm, occ, opts = {}) {
   const samples = opts.samples ?? 12;
   const maxDist = field.maxDist;
   const strength = opts.strength ?? 1;
+  const gamma = opts.gamma ?? 1;
   const bias = opts.bias ?? 0.035;
   const dirs = cosineHemisphere(samples);
   const cache = opts.cache || new Map();
@@ -427,7 +428,12 @@ export function bakeOcclusion(field, pos, nrm, occ, opts = {}) {
         }
       }
     }
-    const value = Math.min(1, (sum / samples) * strength);
+    // `gamma` < 1 lifts the mid-range: a raw hit fraction of 0.45 at the foot of a
+    // wall is a real 45 % of the hemisphere gone, but linear it reads as a faint
+    // smudge. The open-ground floor (~0.02) barely moves, so this darkens contacts
+    // without greying out the map.
+    const raw = sum / samples;
+    const value = Math.min(1, (gamma === 1 ? raw : Math.pow(raw, gamma)) * strength);
     cache.set(key, value);
     occ[vi] = value;
   }

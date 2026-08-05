@@ -360,35 +360,105 @@ export class MeshBuilder {
   /**
    * Generic prism from a bottom ring to a top ring (same length, matching order).
    * Wedges, tapered plinths, sloped coping and kerb returns all come from this.
+   *
+   * Orientation is solved geometrically rather than by trusting the caller's winding:
+   * the solid's centroid is computed first and **every** face normal — both caps and
+   * all n sides — is flipped to point away from it. Ring order therefore does not
+   * matter, which is the only way a kit with fifty call sites stays correct. Pass
+   * `{ inward: true }` for the one shape that wants the opposite (the inside face of
+   * a basin or a trough).
+   *
+   * (Two bugs this replaces, both of which were live across the whole map: the side
+   * quads took their normal from `p1-p0 × p2-p0`, which for the clockwise-from-above
+   * rings the kit authors points *into* the solid, so every kerb upstand, coping
+   * return, cornice face and jersey-barrier flank was backface-culled; and the bottom
+   * cap read a shared scratch vector that `triangle()` had already overwritten, so it
+   * got whatever the last cap triangle's un-normalised cross product happened to be.)
    */
   prism(bottom, top, opts) {
     const n = bottom.length;
     if (n < 3 || top.length !== n) return this;
-    if (opts?.cap !== false) {
-      // Cap normals point away from the opposite ring, whatever the winding was.
-      let bx = 0;
-      let by = 0;
-      let bz = 0;
-      let tx = 0;
-      let ty = 0;
-      let tz = 0;
-      for (let i = 0; i < n; i++) {
-        bx += bottom[i][0];
-        by += bottom[i][1];
-        bz += bottom[i][2];
-        tx += top[i][0];
-        ty += top[i][1];
-        tz += top[i][2];
-      }
-      _v0.set((tx - bx) / n, (ty - by) / n, (tz - bz) / n);
-      if (_v0.lengthSq() < 1e-12) _v0.set(0, 1, 0);
-      _v0.normalize();
-      this.poly(top, [_v0.x, _v0.y, _v0.z]);
-      this.poly(bottom.slice().reverse(), [-_v0.x, -_v0.y, -_v0.z]);
+    const sign = opts?.inward ? -1 : 1;
+
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (let i = 0; i < n; i++) {
+      cx += bottom[i][0] + top[i][0];
+      cy += bottom[i][1] + top[i][1];
+      cz += bottom[i][2] + top[i][2];
     }
+    cx /= 2 * n;
+    cy /= 2 * n;
+    cz /= 2 * n;
+
+    /** Newell normal of a ring, oriented away from (cx,cy,cz). */
+    const ringNormal = (ring) => {
+      let nx = 0;
+      let ny = 0;
+      let nz = 0;
+      let mx = 0;
+      let my = 0;
+      let mz = 0;
+      for (let i = 0; i < n; i++) {
+        const a = ring[i];
+        const b = ring[(i + 1) % n];
+        nx += (a[1] - b[1]) * (a[2] + b[2]);
+        ny += (a[2] - b[2]) * (a[0] + b[0]);
+        nz += (a[0] - b[0]) * (a[1] + b[1]);
+        mx += a[0];
+        my += a[1];
+        mz += a[2];
+      }
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (len < 1e-12) return null;
+      nx /= len;
+      ny /= len;
+      nz /= len;
+      const dot = nx * (mx / n - cx) + ny * (my / n - cy) + nz * (mz / n - cz);
+      return dot < 0 ? [-nx, -ny, -nz] : [nx, ny, nz];
+    };
+
+    if (opts?.cap !== false) {
+      const tn = ringNormal(top);
+      if (tn) this.poly(top, [tn[0] * sign, tn[1] * sign, tn[2] * sign]);
+      const bn = ringNormal(bottom);
+      if (bn) this.poly(bottom, [bn[0] * sign, bn[1] * sign, bn[2] * sign]);
+    }
+
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
-      this.quad(bottom[i], bottom[j], top[j], top[i], null);
+      const p0 = bottom[i];
+      const p1 = bottom[j];
+      const p2 = top[j];
+      const p3 = top[i];
+      const ex = p1[0] - p0[0];
+      const ey = p1[1] - p0[1];
+      const ez = p1[2] - p0[2];
+      const rx = p3[0] - p0[0];
+      const ry = p3[1] - p0[1];
+      const rz = p3[2] - p0[2];
+      let nx = ey * rz - ez * ry;
+      let ny = ez * rx - ex * rz;
+      let nz = ex * ry - ey * rx;
+      let len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (len < 1e-12) {
+        // Degenerate rise (the two rings coincide on this edge): fall back to the
+        // other diagonal so a zero-height skirt still gets a sane normal.
+        nx = ey * (p2[2] - p0[2]) - ez * (p2[1] - p0[1]);
+        ny = ez * (p2[0] - p0[0]) - ex * (p2[2] - p0[2]);
+        nz = ex * (p2[1] - p0[1]) - ey * (p2[0] - p0[0]);
+        len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (len < 1e-12) continue;
+      }
+      nx /= len;
+      ny /= len;
+      nz /= len;
+      const mx = (p0[0] + p1[0] + p2[0] + p3[0]) * 0.25 - cx;
+      const my = (p0[1] + p1[1] + p2[1] + p3[1]) * 0.25 - cy;
+      const mz = (p0[2] + p1[2] + p2[2] + p3[2]) * 0.25 - cz;
+      const out = nx * mx + ny * my + nz * mz < 0 ? -sign : sign;
+      this.quad(p0, p1, p2, p3, [nx * out, ny * out, nz * out]);
     }
     return this;
   }
