@@ -901,6 +901,7 @@ class Lighting {
     this._scanFrame = -999;
     this._fitFrame = -1;
     this._envDirty = true;
+    this._envBudget = 4;
     this._envTimer = 0;
     this._shValid = false;
     this._probeCount = 0;
@@ -968,6 +969,12 @@ class Lighting {
       if (e && Number.isFinite(e.hours)) this.timeOfDay = e.hours;
       this._syncFromSky(false);
       this._envDirty = true;
+      this._envBudget = 4;
+    });
+    // A screenshot pose re-stages the sun, so grant a fresh convergence budget.
+    on('debug:pose', () => {
+      this._envDirty = true;
+      this._envBudget = 4;
     });
     on('quality:changed', ({ tier }) => {
       try {
@@ -2010,8 +2017,20 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
     this._syncFromSky(false);
 
     this._envTimer += d;
-    if (this._envDirty && this._envTimer > (this.headless ? 0.05 : 0.4)) {
+    // The IBL rebuild is a GGX prefilter over the whole roughness chain — cheap on a
+    // GPU, brutal on a software rasteriser. Sky emits `sky:env` as its clouds drift,
+    // so an unbounded dirty flag means rebuilding every few frames forever: measured
+    // as 10-21s spikes every second or third frame at 1280x720, against a 10-65ms
+    // steady state, which is what made screenshot capture impossible.
+    //
+    // Headless converges on a budget instead. A pose change grants a few rebuilds so
+    // the environment settles to the new sun, then the flag is ignored until the sun
+    // actually moves. Interactive keeps the timer, where the cost is affordable and
+    // drifting cloud light genuinely should feed back into the IBL.
+    const budgeted = this.headless && this._envBudget <= 0;
+    if (this._envDirty && !budgeted && this._envTimer > (this.headless ? 0.12 : 0.4)) {
       this._envTimer = 0;
+      if (this.headless) this._envBudget--;
       try {
         this._rebuildIBL(false);
       } catch (err) {
