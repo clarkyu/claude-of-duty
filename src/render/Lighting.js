@@ -112,6 +112,11 @@ export function kelvinToLinearRGB(kelvin, target = new THREE.Color()) {
   return target.setRGB(r * k, g * k, b * k);
 }
 
+/** `[[x,y],…]` -> a GLSL vec2 argument list, for a `vec2[ n ]( … )` constructor. */
+function discPoints(pts) {
+  return pts.map(([x, y]) => `vec2(${x.toFixed(6)},${y.toFixed(6)})`).join(',');
+}
+
 /** Deterministic 1-D value noise with smooth interpolation — for light flicker. */
 function valueNoise1(x, seed) {
   const i = Math.floor(x);
@@ -147,7 +152,10 @@ uniform mat4 uInvProj;
 uniform mat4 uProj;
 uniform vec3 uSunView;
 uniform vec4 uParams;   // x ray length (m), y thickness (m), z bias (m), w depth normaliser
+uniform vec4 uAo;       // x radius (m), y strength, z power, w normal bias
 varying vec2 vUv;
+
+const vec2 COD_AO_DISC[ COD_AO_TAPS ] = vec2[ COD_AO_TAPS ]( COD_AO_POINTS );
 
 float codHash( vec2 p ) {
 	return fract( 52.9829189 * fract( dot( p, vec2( 0.06711056, 0.00583715 ) ) ) );
@@ -164,6 +172,57 @@ vec2 packDist( float v ) {
 	v = clamp( v, 0.0, 1.0 ) * 255.0;
 	float a = floor( v );
 	return vec2( a / 255.0, v - a );
+}
+
+/**
+ * Short-range ambient occlusion, in the same pass and off the same depth buffer.
+ *
+ * This is the half of "grounding" the sun march cannot do. A contact shadow is a
+ * *directional* query — it only exists where N·L > 0 and the key light reaches — so
+ * in shade, indoors, or on a facade turned away from the sun it correctly returns
+ * "unoccluded" and every scaffolding leg, planter and bench floats. AO is the
+ * omnidirectional answer, it survives with no key light at all, and unlike the
+ * pipeline's post-composite GTAO it is fed straight back into the *indirect*
+ * lighting term inside the material, which is where the occlusion physically belongs.
+ *
+ * Alchemy-style estimator: each tap contributes by how far above the tangent plane
+ * it sits, attenuated by distance so a wall two metres behind cannot occlude.
+ */
+float codAmbientOcclusion( vec3 P, vec3 N, float dist, float jitter ) {
+
+	float radius = uAo.x;
+	// World radius -> uv radius. The perspective divide is the only thing that keeps
+	// the sample footprint constant in metres as the geometry recedes.
+	vec2 uvR = vec2( uProj[ 0 ][ 0 ], uProj[ 1 ][ 1 ] ) * ( radius / ( 2.0 * max( dist, 0.05 ) ) );
+	// A tiny AO kernel on distant geometry is pure noise; a huge one on a nearby
+	// surface costs bandwidth for nothing. Clamp the footprint in screen space.
+	uvR = clamp( uvR, vec2( 0.0015 ), vec2( 0.09 ) );
+
+	float ang = jitter * 6.2831853;
+	vec2 rot = vec2( cos( ang ), sin( ang ) );
+	float r2 = radius * radius;
+	float occ = 0.0;
+
+	for ( int k = 0; k < COD_AO_TAPS; k ++ ) {
+
+		vec2 s = COD_AO_DISC[ k ];
+		vec2 o = vec2( s.x * rot.x - s.y * rot.y, s.x * rot.y + s.y * rot.x ) * uvR;
+		vec2 uv = clamp( vUv + o, vec2( 0.0 ), vec2( 1.0 ) );
+		float sd = texture2D( tDepth, uv ).r;
+		if ( sd >= 0.999999 ) continue;      // sky occludes nothing
+
+		vec3 v = viewFromDepth( uv, sd ) - P;
+		float d2 = dot( v, v );
+		float nd = dot( N, v ) * inversesqrt( max( d2, 1e-8 ) );
+		// Range attenuation, and a normal bias so a flat floor never occludes itself.
+		occ += max( nd - uAo.w, 0.0 ) * ( r2 / ( r2 + d2 ) );
+
+	}
+
+	// 2/N: a fully enclosed point averages ~0.5 over a cosine-ish tap set.
+	float ao = 1.0 - occ * ( 2.0 / float( COD_AO_TAPS ) ) * uAo.y;
+	return pow( clamp( ao, 0.0, 1.0 ), uAo.z );
+
 }
 
 void main() {
@@ -184,11 +243,16 @@ void main() {
 	// trick the cascades use, and the reason a naive contact-shadow march looks awful.
 	vec3 N = normalize( cross( dFdx( P ), dFdy( P ) ) );
 	if ( dot( N, P ) > 0.0 ) N = - N;
+
+	float jitter = codHash( gl_FragCoord.xy );
+	float ao = codAmbientOcclusion( P, N, dist, jitter );
+
 	float ndl = dot( N, uSunView );
 	// Facing away from the key light: it is already fully shadowed by N·L, and any
-	// occlusion we found here would just double-darken the terminator.
+	// occlusion we found here would just double-darken the terminator. The AO term
+	// still ships — that is the whole point of computing it separately.
 	if ( ndl <= 0.05 ) {
-		gl_FragColor = vec4( 1.0, packed, 1.0 );
+		gl_FragColor = vec4( 1.0, packed, ao );
 		return;
 	}
 
@@ -196,7 +260,6 @@ void main() {
 	// resolve: a couple of decimetres, fading out along the ray so it can never
 	// become a long smear that fights the cascades.
 	float shadow = 1.0;
-	float jitter = codHash( gl_FragCoord.xy );
 	float rayLen = uParams.x * clamp( 1.0 + dist * 0.03, 1.0, 2.5 );
 	vec3 stepV = uSunView * ( rayLen / float( COD_CS_STEPS ) );
 	vec3 origin = P + N * ( 0.01 + dist * 0.003 );
@@ -223,7 +286,7 @@ void main() {
 
 	}
 
-	gl_FragColor = vec4( shadow, packed, 1.0 );
+	gl_FragColor = vec4( shadow, packed, ao );
 
 }
 `;
@@ -244,15 +307,32 @@ class ContactShadowPass {
     this.height = 1;
     this.rt = null;
 
+    /* Ambient occlusion, shipped in the alpha channel of the same buffer.
+       `aoRadius` is deliberately wider than the pipeline's GTAO (1.1 m) is allowed to
+       reach in practice at this resolution: this term is doing "object meets ground",
+       not "crevice detail", and 0.9 m is roughly a bench leg's worth of surroundings. */
+    this.aoTaps = 8;
+    this.aoRadius = 0.9;
+    this.aoStrength = 0.9;
+    this.aoPower = 1.35;
+    this.aoNormalBias = 0.035;
+    /** How much of the AO is allowed to bite the indirect term in the material. */
+    this.aoIndirect = 0.85;
+
     this.material = new THREE.ShaderMaterial({
       name: 'lighting:contactShadows',
-      defines: { COD_CS_STEPS: this.steps },
+      defines: {
+        COD_CS_STEPS: this.steps,
+        COD_AO_TAPS: this.aoTaps,
+        COD_AO_POINTS: discPoints(vogelDisc(this.aoTaps)),
+      },
       uniforms: {
         tDepth: { value: null },
         uInvProj: { value: new THREE.Matrix4() },
         uProj: { value: new THREE.Matrix4() },
         uSunView: { value: new THREE.Vector3(0, 1, 0) },
         uParams: { value: new THREE.Vector4(0.28, 0.55, 0.012, 140) },
+        uAo: { value: new THREE.Vector4(0.9, 0.9, 1.35, 0.035) },
       },
       vertexShader: CONTACT_VERT,
       fragmentShader: CONTACT_FRAG,
@@ -276,30 +356,42 @@ class ContactShadowPass {
     if (headless) {
       this.scale = 0.5;
       this.steps = 6;
+      this.aoTaps = 8;
     } else {
       switch (tier) {
         case 'low':
           this.scale = 0.5;
           this.steps = 6;
+          this.aoTaps = 6;
           break;
         case 'medium':
           this.scale = 0.5;
           this.steps = 10;
+          this.aoTaps = 10;
           break;
         case 'ultra':
           this.scale = 0.75;
           this.steps = 20;
+          this.aoTaps = 16;
           break;
         default:
           this.scale = 0.5;
           this.steps = 14;
+          this.aoTaps = 12;
           break;
       }
     }
+    let dirty = false;
     if (this.material.defines.COD_CS_STEPS !== this.steps) {
       this.material.defines.COD_CS_STEPS = this.steps;
-      this.material.needsUpdate = true;
+      dirty = true;
     }
+    if (this.material.defines.COD_AO_TAPS !== this.aoTaps) {
+      this.material.defines.COD_AO_TAPS = this.aoTaps;
+      this.material.defines.COD_AO_POINTS = discPoints(vogelDisc(this.aoTaps));
+      dirty = true;
+    }
+    if (dirty) this.material.needsUpdate = true;
     this.setSize(this.width, this.height);
   }
 
@@ -349,6 +441,7 @@ class ContactShadowPass {
     u.uSunView.value.copy(_dir);
     this.normDist = Math.min(camera.far, 300);
     u.uParams.value.set(this.rayLength, this.thickness, this.bias, this.normDist);
+    u.uAo.value.set(this.aoRadius, this.aoStrength, this.aoPower, this.aoNormalBias);
 
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;
@@ -707,6 +800,13 @@ class LightManager {
 /** Direction grid for the CPU SH projection. Fixed, so the result is reproducible. */
 const SH_PHI = 24;
 const SH_THETA = 12;
+
+/**
+ * Diffuse albedo of "everything below the horizon" for the one-bounce IBL term:
+ * an area-weighted mix of dark asphalt and warm stucco/terracotta facade. Spectral
+ * on purpose — see `_rebuildIBL`.
+ */
+const BOUNCE_ALBEDO = new THREE.Color(0.21, 0.175, 0.135);
 
 class Lighting {
   constructor(ctx) {
@@ -1153,20 +1253,35 @@ class Lighting {
      * chins, undersides of ledges, the bottom of a rifle — goes flat black and the
      * scene reads as CG.
      *
-     * The albedo here is doing double duty: it stands in for the sunlit *ground* and
-     * for the sunlit *facades* opposite, which in a street canyon are the larger of
-     * the two bounce sources. 0.16 is a plausible number for asphalt alone and it left
-     * shade lit almost purely by the zenith — measured B:R of 1.9 on the shaded street
-     * against 1.3 at the horizon, which is what read as a blue cast over everything
-     * that was not in direct sun. Dry sand, concrete and painted stucco all sit at
-     * 0.28-0.40, so 0.30 is if anything still conservative, and it puts warm light back
-     * into the shadows the way a real canyon does.
+     * Two things have to be right or this term quietly becomes the whole lighting rig.
+     *
+     * **Albedo is spectral, not scalar.** A grey 0.30 multiplied the sky's own
+     * (blue-dominant) irradiance as hard as it multiplied the sun's, so the "warm
+     * bounce" it was supposed to add came out *bluer* than the sky it was correcting.
+     * `BOUNCE_ALBEDO` is an area-weighted mix of asphalt (~0.10, neutral) and the
+     * sandy stucco / terracotta the facades are actually made of (~0.35, warm), which
+     * is what puts red back into the shadows without inventing brightness.
+     *
+     * **Only the *sunlit* part of the surroundings bounces sunlight.** The old term
+     * used the full solar irradiance, i.e. it assumed every square metre around the
+     * shading point was in direct sun. At a 16 deg sun in a 16 m canyon almost none of
+     * it is, and the result was a lower hemisphere 5x brighter than the sky: measured
+     * E(down) 0.75 against E(up) 0.49, so undersides were brighter than up-faces and
+     * every shadow was filled to within a stop of its own key. `litGround` is a crude
+     * elevation-driven stand-in for that fraction — 0 at the horizon, ~0.4 at golden
+     * hour, 1 at noon when the sun clears everything — and it is the difference
+     * between ambient that follows the sun and ambient that replaces it.
      */
     const sunUp = Math.max(this.sunDirection.y, 0);
-    const albedo = sky?.groundColor ? 0.3 : 0.26;
-    const gR = (albedo * (this.sunIntensity * sunUp * this.sunColor.r + eR)) / Math.PI;
-    const gG = (albedo * (this.sunIntensity * sunUp * this.sunColor.g + eG)) / Math.PI;
-    const gB = (albedo * (this.sunIntensity * sunUp * this.sunColor.b + eB * 0.95)) / Math.PI;
+    const open = clamp01((sunUp - 0.06) / 0.5);
+    const litGround = open * open * (3 - 2 * open);
+    const aR = BOUNCE_ALBEDO.r;
+    const aG = BOUNCE_ALBEDO.g;
+    const aB = BOUNCE_ALBEDO.b;
+    const sunE = this.sunIntensity * sunUp * litGround;
+    const gR = (aR * (sunE * this.sunColor.r + eR)) / Math.PI;
+    const gG = (aG * (sunE * this.sunColor.g + eG)) / Math.PI;
+    const gB = (aB * (sunE * this.sunColor.b + eB * 0.95)) / Math.PI;
 
     const basis = [];
     for (let i = 0; i < dirs.length; i++) {
@@ -1378,24 +1493,41 @@ vec3 codShIrradiance( vec3 nView ) {
 #define COD_CONTACT 1
 uniform sampler2D uCodContactMap;
 uniform mat4 uCodContactMtx;    // capture viewProj * current camera world
-uniform vec4 uCodContactParams; // x strength, y depth normaliser
+uniform vec4 uCodContactParams; // x sun strength, y depth normaliser, z AO strength
 
 /**
  * The buffer was marched against last frame's depth, so we reproject this fragment
  * into the frame it was captured in and reject the sample when the depths disagree —
  * otherwise disoccluded pixels drag a smear of stale occlusion behind moving geometry.
+ * Returns (sun contact shadow, ambient occlusion); (1, 1) whenever the sample cannot
+ * be trusted, so a rejection can only ever *remove* occlusion, never invent it.
  */
-float codContactShadow( vec3 viewPos ) {
-	if ( uCodContactParams.x <= 0.0 ) return 1.0;
+vec2 codContactSample( vec3 viewPos ) {
 	vec4 c = uCodContactMtx * vec4( viewPos, 1.0 );
-	if ( c.w <= 0.0 ) return 1.0;
+	if ( c.w <= 0.0 ) return vec2( 1.0 );
 	vec2 uv = c.xy / c.w * 0.5 + 0.5;
-	if ( uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 ) return 1.0;
+	if ( uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 ) return vec2( 1.0 );
 	vec4 t = texture2D( uCodContactMap, uv );
 	float stored = ( t.g + t.b * ( 1.0 / 255.0 ) ) * uCodContactParams.y;
 	float expect = c.w;
-	if ( abs( stored - expect ) > max( 0.08, expect * 0.02 ) ) return 1.0;
-	return mix( 1.0, t.r, uCodContactParams.x );
+	if ( abs( stored - expect ) > max( 0.08, expect * 0.02 ) ) return vec2( 1.0 );
+	return vec2( t.r, t.a );
+}
+
+float codContactShadow( vec3 viewPos ) {
+	if ( uCodContactParams.x <= 0.0 ) return 1.0;
+	return mix( 1.0, codContactSample( viewPos ).x, uCodContactParams.x );
+}
+
+/**
+ * Ambient occlusion for the *indirect* term. The sun contact shadow above only
+ * exists where the key light does; this is what keeps a bench leg attached to the
+ * pavement in open shade, at night, or indoors — the cases where the whole frame is
+ * IBL and an unoccluded SH lookup makes every object float.
+ */
+float codContactAO( vec3 viewPos ) {
+	if ( uCodContactParams.z <= 0.0 ) return 1.0;
+	return mix( 1.0, codContactSample( viewPos ).y, uCodContactParams.z );
 }
 `;
     }

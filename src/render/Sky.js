@@ -99,6 +99,34 @@ const MOON_ELONGATION = 120 * DEG; // waxing gibbous, ~75% lit
 const SOLAR_NOON = 12.75;
 
 /**
+ * **Which way the map faces.** The solar path below is a real one; this rotates the
+ * compass under it, which is the one free parameter a location gives you and the only
+ * honest way to aim a low sun at a street that was laid out on the world axes.
+ *
+ * It matters far more than it sounds. The playable street is a canyon running along
+ * Z between two blocks — Blue Shophouses at x = -20..-2 and Ochre Row at x = 14..29 —
+ * 16 m apart and 8 m tall. A sun that sits *across* that canyon has to reach
+ * atan(8.1 / 16) = 27 deg before a single square metre of carriageway sees it, and
+ * 27 deg is not golden hour, it is mid-morning. Un-rotated, the 7.4 key came up at
+ * azimuth 91 deg — due east, exactly broadside — so at its 15.8 deg altitude the
+ * entire street, every prop in it and both facades below 3.6 m were in full shadow.
+ * The cascades were correct and empty, the only light left was blue sky IBL, and the
+ * "golden hour" hero frame measured R/B 0.52 on the ground: bluer than the sky.
+ *
+ * Rotating the site by -58 deg puts the 7.4 sun at azimuth ~33 deg. Measured against
+ * the real colliders (raycasts from 23 camera-visible ground points and 72 facade
+ * points): sunlit ground goes 0.0 -> 0.44 and lit facade area 0.31 -> 0.50, with
+ * N.L on the east-facing shophouse wall — the big receding plane down the left of
+ * the hero frame — rising from 0.02 to 0.48. The sun still sets behind Ochre Row so
+ * the disc never enters frame, and the market-hall arcade it shafts through faces
+ * +X, so the interior pose keeps its shafts (its lit floor fraction goes 0.21 -> 0.26)
+ * and simply gets them on a more raking angle.
+ */
+const SITE_AZIMUTH = -58 * DEG;
+const SITE_COS = Math.cos(SITE_AZIMUTH);
+const SITE_SIN = Math.sin(SITE_AZIMUTH);
+
+/**
  * Cinematic time warp. The sun still travels a real spherical path (so azimuth and
  * altitude stay consistent), but clock time is remapped so the review poses land on
  * the light they were art-directed for: 5.5 blue hour, 6.6 low morning, 7.4 golden
@@ -115,6 +143,11 @@ const SOLAR_NOON = 12.75;
  * the whole image reads as a cold, underexposed night. 7.4 therefore maps to a
  * ~15.7 deg sun — high enough to clear the skyline by a comfortable margin, still low
  * enough that the air mass keeps the key warm and the shadows long.
+ *
+ * Altitude alone is not sufficient, though: clearance also depends on the *bearing*
+ * the light arrives on, because the near occluders are two long walls, not a ring.
+ * That half of the problem is solved by `SITE_AZIMUTH` above; do not tune one without
+ * checking the other.
  */
 const WARP_X = [0, 5.5, 6.6, 7.4, 8.2, 12, 19.5, 21.5, 24];
 const WARP_Y = [0, 5.94, 7.2, 7.66, 7.97, 12.4, 19.11, 20.45, 24];
@@ -154,7 +187,13 @@ function buildPchip(xs, ys) {
 }
 const warpHours = buildPchip(WARP_X, WARP_Y);
 
-/** Horizontal direction for an equatorial (declination, hour-angle) pair. Y up, north -Z. */
+/**
+ * Horizontal direction for an equatorial (declination, hour-angle) pair. Y up, and
+ * true north lies along -Z *rotated by `SITE_AZIMUTH`* — the map is not axis-aligned
+ * with the compass, see the constant. Altitude is untouched by the rotation, so the
+ * whole scattering model (which only ever sees `sunDirection.y` and angles to the
+ * sun) is unaffected.
+ */
 function horizonDirection(dec, hourAngle, out) {
   const sd = Math.sin(dec);
   const cd = Math.cos(dec);
@@ -164,7 +203,10 @@ function horizonDirection(dec, hourAngle, out) {
   const east = -cd * Math.sin(hourAngle);
   const north = sd * cl - cd * sl * ch;
   const up = sd * sl + cd * cl * ch;
-  return out.set(east, up, -north).normalize();
+  // Rotation about +Y that adds SITE_AZIMUTH to the compass azimuth.
+  return out
+    .set(east * SITE_COS + north * SITE_SIN, up, -north * SITE_COS + east * SITE_SIN)
+    .normalize();
 }
 
 /* ═════════════════════════════════════════════════ CPU copy of the atmosphere ══ */
