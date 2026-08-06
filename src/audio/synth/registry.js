@@ -142,13 +142,15 @@ export function buildRegistry() {
   add('grenade_throw', { bus: 'foley', send: 0.3, priority: 4, ref: 2, max: 40, build: X.grenadeThrow });
   add('grenade_bounce', { bus: 'impacts', send: 0.6, priority: 4, ref: 2, max: 60, cooldown: 0.03, build: X.grenadeBounce });
   add('whoosh', { bus: 'foley', send: 0.4, priority: 3, ref: 2, max: 50, build: X.whoosh });
+  // Weather already queues thunder behind its own speed-of-sound delay, so we
+  // must not add a second one.
   add('thunder', {
-    bus: 'ambience', tail: true, send: 1.2, priority: 8, occlude: false, ref: 60, max: 1200,
-    rolloff: 0.35, build: X.thunder,
+    bus: 'ambience', tail: true, send: 1.2, priority: 8, occlude: false, propagate: false,
+    ref: 60, max: 1200, rolloff: 0.35, build: X.thunder,
   });
   add('thunder_distant', {
-    bus: 'ambience', tail: true, send: 1.7, priority: 6, occlude: false, ref: 90, max: 1600,
-    rolloff: 0.3, build: X.thunder, params: { distant: true },
+    bus: 'ambience', tail: true, send: 1.7, priority: 6, occlude: false, propagate: false,
+    ref: 90, max: 1600, rolloff: 0.3, build: X.thunder, params: { distant: true },
   });
 
   /* ── ambience one-shots ──────────────────────────────────────────────────── */

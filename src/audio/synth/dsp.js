@@ -168,6 +168,7 @@ export function safeStart(node, t) {
 }
 
 export function safeStop(node, t) {
+  if (!node || typeof node.stop !== 'function') return;
   try {
     node.stop(Math.max(0, finite(t, 0)));
   } catch {

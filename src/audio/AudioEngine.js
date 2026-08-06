@@ -23,12 +23,28 @@
  * ── Per-voice path ──────────────────────────────────────────────────────────────
  * synth ▶ occlusion LP ▶ air-absorption LP ▶ gain ▶ HRTF panner ▶ bus
  *                                             └▶ send ▶ reverb
- *                                             └▶ tail ▶ slap-back taps ▶ bus
+ *       └▶ tailSend ▶ (shared) slap-back taps ▶ weapons bus + reverb
  *
  * Slap-back tap delays are not invented: every 0.4 s the engine fires a fan of
- * rays out of the listener and converts the hit distances into 2·d/c echo times.
- * A gunshot fired in the drainage channel therefore has different echoes from the
- * same gunshot fired on the plaza, because the geometry really is different.
+ * rays out of the listener and converts the hit distances into 2·d/c echo times,
+ * damped by the hardness of whatever the ray hit. A gunshot fired in the drainage
+ * channel therefore has different echoes from the same gunshot fired on the plaza,
+ * because the geometry really is different. The tap network is shared and retuned
+ * rather than rebuilt per shot: the echo pattern belongs to the room the listener
+ * is standing in, not to the gun.
+ *
+ * ── Files ───────────────────────────────────────────────────────────────────────
+ *   Reverb.js            procedural IRs + the A/B cross-fading convolver pair
+ *   synth/dsp.js         safe AudioParam automation, noise bank, envelope helpers
+ *   synth/Spatial.js     per-voice 3D chain, air absorption, occlusion raycasts
+ *   synth/registry.js    id -> definition catalogue and the unknown-id resolver
+ *   synth/Weapons.js     gunfire, suppressors, magazines, bolts
+ *   synth/Impacts.js     per-surface impacts, penetration, ricochet, flyby, brass,
+ *                        and every `breakSound` Destruction.js asks for
+ *   synth/Foley.js       footsteps, landings, slides, cloth and gear, hurt, death
+ *   synth/Explosions.js  ordnance, thunder, grenades, whooshes
+ *   synth/Ambience.js    the continuous weather-driven bed and its one-shots
+ *   synth/UI.js          hitmarkers, menu feedback, notifications
  *
  * ── Public API (ctx.audio) ──────────────────────────────────────────────────────
  *   play(id, opts)                 -> Voice | null      opts: {position, level,
@@ -61,7 +77,7 @@ import { Reverb, ZONE_SPECS } from './Reverb.js';
 import { NoiseBank, mulberry32, clamp, clamp01, lerp, gainNode, biquad, compressor,
   shaper, delayNode, stereoPan, rampTo, setAt, targetAt, cancel, hz, disconnect,
   safeStart, safeStop, dbToGain, finite, chain, rr } from './synth/dsp.js';
-import { Spatializer, setListenerPose, airCutoff } from './synth/Spatial.js';
+import { Spatializer, setListenerPose, makeHitOut } from './synth/Spatial.js';
 import { buildRegistry, resolveId } from './synth/registry.js';
 import { Ambience } from './synth/Ambience.js';
 
@@ -114,6 +130,8 @@ class AudioEngine {
     this.ac = null;
     this.buses = {};
     this.voices = [];
+    /** Voices still making sound. Dead-but-unreaped voices do not count. */
+    this._liveVoices = 0;
     this.registry = buildRegistry();
     this.listener = { x: 0, y: 1.7, z: 0 };
     this.forward = { x: 0, y: 0, z: -1 };
@@ -129,12 +147,17 @@ class AudioEngine {
     this._unsub = [];
     this._gestureBound = false;
     this._probe = { taps: [], ceiling: Infinity, mean: 24, open: 1, t: 0, zone: 'street' };
+    this._hitOut = makeHitOut(ctx);
+    /** Nodes fading out, disconnected once their fade has really elapsed. */
+    this._retired = [];
     this._probeTimer = 0;
     this._zoneTimer = 0;
     this._warned = new Set();
     this._masterMul = 1;
     this._time = 0;
-    this.stats = { voices: 0, spawned: 0, dropped: 0, zone: 'street', rays: 0 };
+    /** Shared material global — puddles, wet stone. Refreshed with the probe. */
+    this.wetness = 0;
+    this.stats = { voices: 0, pending: 0, spawned: 0, dropped: 0, zone: 'street', rays: 0 };
     this.maxVoices = 40;
     this.quality = ctx?.settings?.tier || 'high';
     this.busGains = {};
@@ -235,6 +258,8 @@ class AudioEngine {
     this.tinnitusGain = gainNode(ac, 0);
     this.tinnitusGain.connect(this.master);
     this._tinnitusNodes = null;
+
+    this._buildSlapback();
 
     this.ambience = new Ambience(ac, {
       nz: this.nz,
@@ -398,7 +423,7 @@ class AudioEngine {
 
     // Voice budget. A new sound only evicts an older one if it matters more.
     const prio = opts.priority ?? d.priority ?? 4;
-    if (this.voices.length >= this.maxVoices && !this._makeRoom(prio)) {
+    if (this._liveVoices >= this.maxVoices && !this._makeRoom(prio)) {
       this.stats.dropped++;
       return null;
     }
@@ -449,14 +474,8 @@ class AudioEngine {
       out = g;
     }
 
-    /* ── tail / slap-back network ──────────────────────────────────────────── */
-    let tailIn = null;
-    let tailNodes = null;
-    if ((opts.tail ?? d.tail) && this.quality !== 'low') {
-      const built = this._buildTail(bus, dist);
-      tailIn = built.input;
-      tailNodes = built.nodes;
-    }
+    /* ── tail / slap-back ──────────────────────────────────────────────────── */
+    const tailIn = (opts.tail ?? d.tail) && this.slap ? this.slap.input : null;
 
     /* ── the voice ─────────────────────────────────────────────────────────── */
     const tracked = [];
@@ -468,6 +487,7 @@ class AudioEngine {
       surface: opts.surface || d.surface,
       weaponClass: opts.weaponClass || d.weaponClass,
       suppressed: opts.suppressed ?? d.suppressed,
+      wetness: opts.wetness ?? this.wetness,
       level: clamp(finite(opts.level, 1) * finite(opts.volume, 1), 0, 4),
     };
 
@@ -486,10 +506,12 @@ class AudioEngine {
       probe: this._probe,
       track: (n) => { if (tracked.length < 64) tracked.push(n); },
       setSend: (v) => {
-        if (!chainObj?.sendGain) return;
+        if (!chainObj) return;
+        chainObj.baseSend = finite(v, 0);
+        if (!chainObj.sendGain) return;
         const dw = spatial ? clamp(0.35 + dist / 42, 0.35, 2.4) : 1;
         const occ = chainObj._occ?.send ?? 1;
-        setAt(chainObj.sendGain.gain, clamp(finite(v, 0) * dw * occ, 0, 4), t0);
+        setAt(chainObj.sendGain.gain, clamp(chainObj.baseSend * dw * occ, 0, 4), t0);
       },
     };
 
@@ -506,11 +528,10 @@ class AudioEngine {
       bus: busName,
       priority: prio,
       start: t0,
-      // Slap-back taps keep ringing for over a second after the synth has
-      // finished; reaping the delay lines early would chop the tail off.
-      end: end + 0.35 + (tailNodes ? 1.6 : 0),
+      // The slap-back taps are on a shared network, but the voice's own send
+      // node feeds them, so hold the voice open long enough for the last echo.
+      end: end + 0.35 + (tailIn ? 1.4 : 0),
       chain: chainObj,
-      tailNodes,
       tracked,
       position: chainObj.position,
       occlude: spatial && (opts.occlude ?? d.occlude) !== false && (end - t0) > 0.6,
@@ -518,8 +539,84 @@ class AudioEngine {
       stop: (fade = 0.05) => this._killVoice(voice, fade),
     };
     this.voices.push(voice);
+    this._liveVoices++;
     this.stats.spawned++;
     return voice;
+  }
+
+  /**
+   * The slap-back network: discrete echoes off the real geometry around the
+   * listener. It is built once and *retuned* from the enclosure probe rather
+   * than rebuilt per shot — the echo pattern is a property of the room the
+   * listener is standing in, not of the gun, so one shared network is both
+   * cheaper and more correct than one per voice.
+   */
+  _buildSlapback() {
+    if (this.slap) this._disposeSlapback();
+    const ac = this.ac;
+    const n = this.quality === 'ultra' ? 4 : this.quality === 'high' ? 3 : this.quality === 'medium' ? 2 : 0;
+    if (n === 0) {
+      this.slap = null;
+      return;
+    }
+    const input = gainNode(ac, 1);
+    const taps = [];
+    for (let i = 0; i < n; i++) {
+      const dl = delayNode(ac, 0.04 + i * 0.02, 1.3);
+      const lp = biquad(ac, 'lowpass', 5000, 0.7);
+      const hp = biquad(ac, 'highpass', 120, 0.7);
+      const g = gainNode(ac, 0);
+      // Alternate across the stereo field: reflections do not all come from one
+      // place, and a mono slap sounds like a delay pedal.
+      const pan = stereoPan(ac, (i % 2 === 0 ? 1 : -1) * (0.34 + 0.16 * i));
+      chain(input, dl, lp, hp, g, pan);
+      pan.connect(this.buses.weapons.input);
+      // Each echo also excites the reverb, which is what turns three discrete
+      // slaps into one continuous tail.
+      const rs = gainNode(ac, 0.55);
+      g.connect(rs);
+      if (this.reverb) rs.connect(this.reverb.input);
+      taps.push({ dl, lp, hp, g, pan, rs });
+    }
+    // Straight into the reverb too, so even in open ground there is a bloom.
+    const wet = gainNode(ac, 0.8);
+    input.connect(wet);
+    if (this.reverb) wet.connect(this.reverb.input);
+    this.slap = { input, taps, wet };
+    this._tuneSlapback(0);
+  }
+
+  /** Push the probe's measured echo times into the live network. */
+  _tuneSlapback(glide = 0.3) {
+    const s = this.slap;
+    if (!s || !this.ac) return;
+    const t = this.ac.currentTime;
+    const src = this._probe.taps;
+    for (let i = 0; i < s.taps.length; i++) {
+      const tap = s.taps[i];
+      const p = src[i];
+      if (!p) {
+        rampTo(tap.g.gain, 0, t + glide);
+        continue;
+      }
+      // Delay time is glided rather than jumped: a step in a live delay line is
+      // an audible click, and a slow glide reads as the room changing shape.
+      targetAt(tap.dl.delayTime, clamp(p.delay, 0.006, 1.2), t, Math.max(0.02, glide * 0.4));
+      targetAt(tap.lp.frequency, hz(this.ac, p.damp), t, glide * 0.5);
+      rampTo(tap.g.gain, clamp(p.gain, 0, 0.6), t + glide);
+    }
+  }
+
+  _disposeSlapback() {
+    const s = this.slap;
+    if (!s) return;
+    for (const tap of s.taps) {
+      disconnect(tap.dl); disconnect(tap.lp); disconnect(tap.hp);
+      disconnect(tap.g); disconnect(tap.pan); disconnect(tap.rs);
+    }
+    disconnect(s.wet);
+    disconnect(s.input);
+    this.slap = null;
   }
 
   /** Collapse the same sound fired twice at the same spot within 40 ms. */
@@ -539,60 +636,16 @@ class AudioEngine {
     return false;
   }
 
-  /**
-   * Discrete echoes off the real geometry around the listener, plus a big shove
-   * into the reverb. This is the layer that makes gunfire sound expensive.
-   */
-  _buildTail(bus, dist) {
-    const ac = this.ac;
-    const nodes = [];
-    const input = gainNode(ac, 1);
-    nodes.push(input);
-
-    const taps = this._probe.taps;
-    const maxTaps = this.quality === 'ultra' ? 5 : this.quality === 'high' ? 4 : 3;
-    let n = 0;
-    for (const tap of taps) {
-      if (n >= maxTaps) break;
-      const dl = delayNode(ac, tap.delay, 1.2);
-      const lp = biquad(ac, 'lowpass', tap.damp, 0.7);
-      const hp = biquad(ac, 'highpass', 110, 0.7);
-      // Alternate the taps across the stereo field: reflections do not all come
-      // from one place, and a mono slap sounds like a delay pedal.
-      const pan = stereoPan(ac, ((n % 2 === 0) ? 1 : -1) * (0.35 + 0.15 * n));
-      const g = gainNode(ac, tap.gain);
-      chain(input, dl, lp, hp, g, pan);
-      pan.connect(bus.input);
-      // Each echo also excites the reverb, which is what turns four discrete
-      // slaps into a continuous tail.
-      if (this.reverb) {
-        const rs = gainNode(ac, tap.gain * 0.8);
-        g.connect(rs);
-        rs.connect(this.reverb.input);
-        nodes.push(rs);
-      }
-      nodes.push(dl, lp, hp, g, pan);
-      n++;
-    }
-
-    // Straight into the reverb as well, so even in open ground there is a bloom.
-    if (this.reverb) {
-      const wet = gainNode(ac, clamp(1.1 + dist / 60, 0.6, 3));
-      input.connect(wet);
-      wet.connect(this.reverb.input);
-      nodes.push(wet);
-    }
-    return { input, nodes };
-  }
-
   _makeRoom(priority) {
     // Evict the least important thing that is already past its transient.
+    // Dead voices are skipped: they are already silent and no longer count
+    // against the budget, they are just waiting for their nodes to be reaped.
     let worst = -1;
     let worstScore = Infinity;
     const now = this.ac.currentTime;
     for (let i = 0; i < this.voices.length; i++) {
       const v = this.voices[i];
-      if (v.dead) return true;
+      if (v.dead) continue;
       const age = now - v.start;
       const score = v.priority - clamp01(age / 1.5) * 2;
       if (score < worstScore) {
@@ -609,6 +662,7 @@ class AudioEngine {
   _killVoice(v, fade = 0.04) {
     if (!v || v.dead) return;
     v.dead = true;
+    this._liveVoices = Math.max(0, this._liveVoices - 1);
     const t = this.ac ? this.ac.currentTime : 0;
     try {
       if (v.chain?.gain) {
@@ -629,18 +683,22 @@ class AudioEngine {
       const v = this.voices[i];
       if (now < v.end) continue;
       this.voices.splice(i, 1);
+      if (!v.dead) {
+        v.dead = true;
+        this._liveVoices = Math.max(0, this._liveVoices - 1);
+      }
       try {
         for (const n of v.tracked) {
           safeStop(n, now);
           disconnect(n);
         }
         v.chain?.dispose?.();
-        if (v.tailNodes) for (const n of v.tailNodes) disconnect(n);
       } catch {
         /* teardown is best effort */
       }
     }
-    this.stats.voices = this.voices.length;
+    this.stats.voices = this._liveVoices;
+    this.stats.pending = this.voices.length;
   }
 
   stopAll(fade = 0.06) {
@@ -724,7 +782,7 @@ class AudioEngine {
       const dv = PROBE_DIRS[i];
       let hit = null;
       try {
-        hit = phys.raycast(origin, { x: dv[0], y: dv[1], z: dv[2] }, 90, WORLD_MASK);
+        hit = phys.raycast(origin, { x: dv[0], y: dv[1], z: dv[2] }, 90, WORLD_MASK, this._hitOut);
       } catch {
         hit = null;
       }
@@ -779,6 +837,7 @@ class AudioEngine {
     P.mean = horizN ? horizSum / horizN : 30;
     P.open = totalUpish ? openRays / totalUpish : 1;
     P.zone = this._zoneFromProbe(P);
+    this._tuneSlapback();
     return P;
   }
 
@@ -786,9 +845,10 @@ class AudioEngine {
     const enclosed = P.ceiling < 14 && P.open < 0.5;
     const mean = P.mean;
     if (!enclosed) {
-      // Outside. Narrow means an alley, wide means the plaza.
+      // Outside. Narrow means an alley, wide means genuinely open ground —
+      // most of a dense map is neither, and 'street' is the right answer there.
       if (mean < 7.5) return 'alley';
-      if (mean > 34) return 'open';
+      if (mean > 48) return 'open';
       return 'street';
     }
     // Inside. Let a POI name the space when we are standing in one, because a
@@ -889,14 +949,32 @@ class AudioEngine {
     this._tinnitusNodes = { nodes, until: t + seconds + 0.7 };
   }
 
+  /**
+   * Retire the current ring. A second explosion while the first is still
+   * ringing must not yank the oscillators out of the graph mid-cycle — that is
+   * a hard click straight into the master, after the limiter. Fade, then let
+   * the update loop disconnect once the fade has actually elapsed.
+   */
   _clearTinnitus(t) {
     const cur = this._tinnitusNodes;
     if (!cur) return;
-    for (const n of cur.nodes) {
-      safeStop(n, t + 0.06);
-      disconnect(n);
+    const sum = cur.nodes[0];
+    if (sum?.gain) {
+      cancel(sum.gain, t);
+      setAt(sum.gain, sum.gain.value, t);
+      rampTo(sum.gain, 0, t + 0.08);
     }
+    for (const n of cur.nodes) safeStop(n, t + 0.14);
+    this._retired.push({ nodes: cur.nodes, at: t + 0.25 });
     this._tinnitusNodes = null;
+  }
+
+  _sweepRetired(now) {
+    for (let i = this._retired.length - 1; i >= 0; i--) {
+      if (now < this._retired[i].at) continue;
+      for (const n of this._retired[i].nodes) disconnect(n);
+      this._retired.splice(i, 1);
+    }
   }
 
   /** One call for "something just went off next to you". */
@@ -931,11 +1009,14 @@ class AudioEngine {
   }
 
   setQuality(tier) {
+    const prev = this.quality;
     this.quality = tier || 'high';
     this.spatializer?.setQuality(this.quality);
     this.reverb?.setQuality(this.quality);
     this.ambience?.setQuality(this.quality);
     this.maxVoices = this.quality === 'low' ? 20 : this.quality === 'medium' ? 30 : this.quality === 'ultra' ? 52 : 40;
+    // Tap count is tier-dependent, so the network has to be re-laid out.
+    if (this.ac && prev !== this.quality && this.buses.weapons) this._buildSlapback();
   }
 
   /* ── frame ───────────────────────────────────────────────────────────────── */
@@ -952,6 +1033,9 @@ class AudioEngine {
       } catch (err) {
         this._warn('probe', err);
       }
+      // The one shared source of truth for how wet the world is.
+      const w = this.ctx?.materials?.globals?.wetness;
+      this.wetness = Number.isFinite(w) ? w : finite(this.ctx?.weather?.wetness, 0);
       if (this.silent && this.spatializer) {
         // Nothing is audible, but the occlusion path still has to be exercised
         // or a crash in it would only ever show up on a real machine.
@@ -999,6 +1083,7 @@ class AudioEngine {
     }
 
     this._reap();
+    if (this._retired.length) this._sweepRetired(now);
     if (this._tinnitusNodes && now > this._tinnitusNodes.until) this._clearTinnitus(now);
   }
 
@@ -1036,12 +1121,22 @@ class AudioEngine {
         ads: p.ads,
       });
     });
+    // Stage names are WeaponSystem's: start|release|magout|magin|seat|
+    // boltrelease|end. It also calls play() directly for magout/magin; the
+    // duplicate collapses in _isDuplicate.
     on('weapon:reload', (p) => {
-      const stage = p.stage || '';
-      if (stage === 'out' || stage === 'magOut') this.play('mag_out');
-      else if (stage === 'in' || stage === 'magIn') this.play('mag_in');
-      else if (stage === 'bolt' || stage === 'charge') this.play('bolt_release');
-      else if (stage === 'start') this.play('cloth', { level: 1.4 });
+      switch (p.stage) {
+        case 'start': this.play('cloth', { level: 1.5 }); break;
+        case 'magout': this.play('mag_out'); break;
+        case 'magin': this.play('mag_in'); break;
+        case 'boltrelease': this.play('bolt_release'); break;
+        case 'end': this.play('cloth', { level: 0.8 }); break;
+        default: break; // 'release' and 'seat' are inside mag_out / mag_in
+      }
+    });
+    on('weapon:melee', (p) => {
+      if (p.damage) this.play('impact_flesh', { spatial: false, energy: 1200 });
+      else this.play('whoosh', { spatial: false, duration: 0.28, level: 0.8 });
     });
     on('weapon:equip', () => this.play('weapon_swap'));
     on('weapon:empty', (p) => {
@@ -1083,9 +1178,12 @@ class AudioEngine {
 
     /* Player --------------------------------------------------------------- */
     on('player:step', (p) => {
-      this.play(p.footstep || `step_${p.surface || 'concrete'}`, {
+      // SurfaceDefs' `footstep` id is more specific than the §5 tag it rolls up
+      // to (step_gravel vs 'dirt'), so prefer it for choosing the voicing.
+      const fid = p.footstep || `step_${p.surface || 'concrete'}`;
+      this.play(fid, {
         position: p.position,
-        surface: p.surface,
+        surface: fid.startsWith('step_') ? fid.slice(5) : p.surface,
         speed: p.speed,
         volume: p.volume,
         foot: p.foot,
@@ -1103,6 +1201,13 @@ class AudioEngine {
       });
     });
     on('player:jump', () => this.play('jump', { spatial: false }));
+    on('player:state', (p) => {
+      // Kit shifting as the player changes stance. Quiet, but its absence is
+      // what makes a crouch feel like a camera transform instead of a body.
+      if (p.from === p.to) return;
+      const big = p.to === 'prone' || p.from === 'prone';
+      this.play('cloth', { spatial: false, level: big ? 1.8 : 1.0, cooldown: 0.12 });
+    });
     on('player:slide', (p) => {
       if (p.phase === 'start') this.play('slide', { spatial: false, surface: p.surface, duration: 0.9 });
     });
@@ -1153,7 +1258,24 @@ class AudioEngine {
       const s = clamp01(1 - dist / (r * 2.6));
       if (s > 0.05) this.concussion(s);
     });
-    on('grenade:throw', (p) => this.play('grenade_throw', { position: p.origin || p.point }));
+    on('grenade:throw', (p) => this.play('grenade_throw', { position: p.point || p.origin }));
+    on('grenade:bounce', (p) => this.play('grenade_bounce', { position: p.point, surface: p.surface, level: p.speed ? clamp01(p.speed / 8) : 0.5 }));
+
+    /* Loose objects. Props landing, debris tumbling, ragdolls settling. */
+    on('physics:impact', (p) => {
+      const speed = Math.abs(p.speed ?? 0);
+      if (speed < 1.2) return;
+      this.play(`impact_${p.surface || 'wood'}`, {
+        position: p.point,
+        surface: p.surface,
+        // A crate dropping is not a bullet: scale the "energy" from momentum so
+        // the impact recipe reads it as a soft hit rather than a rifle round.
+        energy: clamp(speed * speed * 22, 60, 2600),
+        level: clamp(speed / 5, 0.15, 1),
+        cooldown: 0.03,
+        priority: 2,
+      });
+    });
 
     /* World ---------------------------------------------------------------- */
     on('weather:changed', () => this.ambience?.applyWeather());
@@ -1184,6 +1306,7 @@ class AudioEngine {
     this.stopAll(0.01);
     try {
       this.ambience?.dispose();
+      this._disposeSlapback();
       this.reverb?.dispose();
       for (const b of Object.values(this.buses)) {
         disconnect(b.input);

@@ -66,6 +66,9 @@ export class Spatializer {
     this._budgetMax = opts.rayBudget ?? 46;
     this._warned = false;
     this.enabled = true;
+    // PhysicsWorld.raycast allocates a fresh Hit unless you hand it one. We cast
+    // a lot of these, so bring our own and keep the GC out of the audio path.
+    this.hitOut = makeHitOut(ctx);
   }
 
   setQuality(q) {
@@ -180,7 +183,7 @@ export class Spatializer {
       rz /= rl;
       let hit = null;
       try {
-        hit = phys.raycast({ x: sx, y: sy, z: sz }, { x: rx, y: ry, z: rz }, reach, OCCLUDER_MASK);
+        hit = phys.raycast({ x: sx, y: sy, z: sz }, { x: rx, y: ry, z: rz }, reach, OCCLUDER_MASK, this.hitOut);
       } catch {
         hit = null;
       }
@@ -208,10 +211,14 @@ export class Spatializer {
     const corner = clamp01(directBlocked * (1 - frac) * 1.6);
 
     // Full occlusion collapses the top end; partial occlusion keeps it open.
+    // Interpolate the cutoff *geometrically* — a linear sweep from 20 kHz to
+    // 330 Hz spends almost all of its range in the top two octaves, so a wall
+    // that should sound like 400 Hz would come out at 1.2 kHz and read as a
+    // curtain instead.
     const cutoff =
       occ <= 0.001
         ? 22000
-        : clamp(lerp(20000, 330, Math.pow(occ, 0.62)) * (1 + corner * 2.6), 200, 22000);
+        : clamp(20000 * Math.pow(330 / 20000, Math.pow(occ, 0.62)) * (1 + corner * 2.6), 180, 22000);
     const gain = clamp(1 - 0.78 * occ + corner * 0.16, 0.06, 1);
     // Around a corner you hear mostly reflections: push the wet up. Through a
     // wall the reflections are muffled too: pull it down.
@@ -313,7 +320,10 @@ export class Spatializer {
         if (sendGain) {
           const d = this.distanceTo(chainObj.position);
           const distWet = clamp(0.35 + d / 42, 0.35, 2.4);
-          rampTo(sendGain.gain, clamp((o.send ?? 0) * distWet * occ.send, 0, 4), t + glide);
+          // `baseSend` is whatever the *synth* asked for via S.setSend, which
+          // overrides the registry default — a distant rifle is much wetter
+          // than the same id fired at your feet.
+          rampTo(sendGain.gain, clamp(chainObj.baseSend * distWet * occ.send, 0, 4), t + glide);
         }
       },
       updateAir: (when) => {
@@ -344,6 +354,27 @@ export class Spatializer {
 
     return chainObj;
   }
+}
+
+/**
+ * A reusable physics Hit. Uses THREE.Vector3 when the engine handed us THREE
+ * (it does), and a tiny stand-in with the two methods PhysicsWorld calls
+ * (`set`, `negate`) when it did not.
+ */
+export function makeHitOut(ctx) {
+  const V = ctx?.THREE?.Vector3;
+  const vec = () =>
+    V
+      ? new V()
+      : {
+          x: 0, y: 0, z: 0,
+          set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; },
+          negate() { this.x = -this.x; this.y = -this.y; this.z = -this.z; return this; },
+        };
+  return {
+    point: vec(), normal: vec(), distance: 0, fraction: 0,
+    body: null, faceIndex: -1, surface: 'concrete', material: null, entity: null,
+  };
 }
 
 /** Panner position, with the pre-AudioParam fallback. */

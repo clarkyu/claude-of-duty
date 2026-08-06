@@ -18,7 +18,14 @@
  *   uniform blouse with rolled sleeve seams and elbow pads, gloves with knuckle plates,
  *   trousers with cargo pockets, knee pads and boot blousing, rigger belt with buckle
  *   and dump pouch, drop-leg holster, boots with lace panel, cuff and lugged sole,
- *   plus a carried rifle parented to the right hand with a muzzle locator.
+ *   plus a carried rifle on a root-space weapon anchor with muzzle and grip locators.
+ *
+ * ── Why the rifle is not parented to a hand ─────────────────────────────────────
+ * The anchor's yaw is the body's and its pitch is the aim's, so the barrel *is* the
+ * fire vector — muzzle flash, tracer and projectile all leave the same place in the
+ * same direction. The hands are then IK'd onto `gripR` / `gripL` (see Bot.js). Doing
+ * it the other way round (hand drives gun) lets the barrel drift by whatever the
+ * shoulder animation happens to be doing that frame.
  *
  * ── Public API ──────────────────────────────────────────────────────────────────
  *   createCharacterBuilder(ctx) -> {
@@ -33,10 +40,11 @@
  *     boneList:  THREE.Bone[]       canonical ragdoll order
  *     skeleton:  THREE.Skeleton
  *     meshes:    THREE.SkinnedMesh[]
- *     rifle, muzzle                 Object3D parented into the right hand
- *     hitboxes:  [{id, hitbox, bones:[a,b], radius, from, to}]
+ *     weaponAnchor, rifle, muzzle, gripR, gripL
+ *     hitboxes:  [{id, hitbox, bones:[a,b], radius}]  kinematic proxy descriptors
  *     bodyCentre(name, outPos, outQuat)   ragdoll body transform for `name`
  *     applyBody(name, pos, quat)          inverse — drive a bone from a ragdoll body
+ *     stowWeapon(toHand)                  hand the rifle to the ragdoll, or take it back
  *     setVisible(v) / dispose()
  *   }
  *
@@ -350,21 +358,27 @@ function mergeParts(parts) {
 
 /* ═══════════════════════════════════════════════════════════════ colourways ══ */
 
+/**
+ * Kit colourways. The values are deliberately *separated*: uniform mid-tone, load
+ * bearing gear a stop and a half darker and a different hue, helmet darker again,
+ * boots and gloves near-black. Kit that is all one value is exactly what makes a
+ * character read as a mannequin under a hard sun.
+ */
 export const VARIANTS = [
   {
     id: 'olive',
-    uniform: 0x5c6247, webbing: 0x3d4235, helmet: 0x4a4f42,
-    boot: 0x2a2622, skin: 0xbe8b68, grime: 0.55,
+    uniform: 0x3c412e, webbing: 0x1d1f19, helmet: 0x22241c,
+    boot: 0x131211, skin: 0x9a6f50, grime: 0.6,
   },
   {
-    id: 'tan',
-    uniform: 0x8a7c5c, webbing: 0x6a6047, helmet: 0x776b52,
-    boot: 0x3a2f26, skin: 0xa9754f, grime: 0.7,
+    id: 'coyote',
+    uniform: 0x554c37, webbing: 0x2a2419, helmet: 0x2f2a1f,
+    boot: 0x1a1611, skin: 0x8a5c3e, grime: 0.75,
   },
   {
-    id: 'grey',
-    uniform: 0x4e5158, webbing: 0x35383d, helmet: 0x3e4147,
-    boot: 0x26262a, skin: 0x8f5f42, grime: 0.45,
+    id: 'urban',
+    uniform: 0x33363b, webbing: 0x18191b, helmet: 0x1d1e21, boot: 0x101011,
+    skin: 0x784e33, grime: 0.5,
   },
 ];
 
@@ -382,13 +396,18 @@ export default function createCharacterBuilder(ctx) {
     console.warn(`[ai/character] ${msg}`, err?.message || err || '');
   };
 
-  function material(name, tint) {
+  function material(name, tint, extra) {
     const lib = ctx.materials;
     let m = null;
+    const opts = { vertexColors: true, ...(extra || {}) };
     try {
-      if (lib?.get) m = lib.get(name, { vertexColors: true });
-      if (m && tint !== undefined && lib?.clone) {
-        m = lib.clone(name, { vertexColors: true, color: tint });
+      // Tinted kit is a *variant*, so it has to be a clone — never mutate a cached
+      // library material, three other systems are sharing it.
+      if (tint !== undefined && lib?.clone) {
+        m = lib.clone(name, { ...opts, color: tint });
+        if (m) owned.materials.push(m);
+      } else if (lib?.get) {
+        m = lib.get(name, opts);
       }
     } catch (err) {
       warn(`material ${name} unavailable`, err);
@@ -511,10 +530,10 @@ export default function createCharacterBuilder(ctx) {
 
     /* ── plate carrier ──────────────────────────────────────────────────── */
     const pcY = L.chestY + 0.10 * s;
-    box('webbing', ['chest', 'spine'], 0.45, 0.29 * s, 0.34 * s, 0.075 * s, 0.03 * s,
-      0, pcY, 0.115 * s, -0.04, 0, 0, SEG + 1);
-    box('webbing', ['chest', 'spine'], 0.5, 0.30 * s, 0.36 * s, 0.07 * s, 0.03 * s,
-      0, pcY, -0.112 * s, 0.03, 0, 0, SEG + 1);
+    box('webbing', ['chest', 'spine'], 0.45, 0.30 * s, 0.35 * s, 0.095 * s, 0.032 * s,
+      0, pcY, 0.125 * s, -0.04, 0, 0, SEG + 1);
+    box('webbing', ['chest', 'spine'], 0.5, 0.31 * s, 0.37 * s, 0.09 * s, 0.032 * s,
+      0, pcY, -0.122 * s, 0.03, 0, 0, SEG + 1);
     // Cummerbund wrapping the ribs.
     add(tubeGeom([
       [0, L.chestY - 0.03 * s, 0.002 * s, 0.186 * s, 0.134 * s],
@@ -534,29 +553,29 @@ export default function createCharacterBuilder(ctx) {
     // MOLLE rows front and back.
     for (let r = 0; r < 3; r++) {
       box('webbing', ['chest'], 0.7, 0.22 * s, 0.014 * s, 0.012 * s, 0.005 * s,
-        0, pcY - 0.10 * s + r * 0.075 * s, 0.156 * s, -0.04, 0, 0, 1);
+        0, pcY - 0.10 * s + r * 0.075 * s, 0.176 * s, -0.04, 0, 0, 1);
     }
     for (let r = 0; r < 2; r++) {
       box('webbing', ['chest'], 0.75, 0.24 * s, 0.014 * s, 0.012 * s, 0.005 * s,
-        0, pcY - 0.06 * s + r * 0.085 * s, -0.148 * s, 0.03, 0, 0, 1);
+        0, pcY - 0.06 * s + r * 0.085 * s, -0.168 * s, 0.03, 0, 0, 1);
     }
 
     // Three rifle-mag pouches, admin pouch, radio.
     for (let m = -1; m <= 1; m++) {
       box('webbing', ['chest'], 0.6, 0.082 * s, 0.155 * s, 0.055 * s, 0.02 * s,
-        m * 0.093 * s, pcY - 0.075 * s, 0.175 * s, -0.05, m * 0.06, 0);
+        m * 0.093 * s, pcY - 0.075 * s, 0.192 * s, -0.05, m * 0.06, 0);
       box('webbing', ['chest'], 0.65, 0.078 * s, 0.038 * s, 0.05 * s, 0.014 * s,
-        m * 0.093 * s, pcY + 0.012 * s, 0.176 * s, -0.05, m * 0.06, 0, 1);
+        m * 0.093 * s, pcY + 0.012 * s, 0.193 * s, -0.05, m * 0.06, 0, 1);
     }
     box('webbing', ['chest'], 0.55, 0.13 * s, 0.10 * s, 0.045 * s, 0.018 * s,
-      -0.075 * s, pcY + 0.115 * s, 0.16 * s, -0.06, 0.1, 0);
+      -0.075 * s, pcY + 0.115 * s, 0.178 * s, -0.06, 0.1, 0);
     box('webbing', ['chest'], 0.6, 0.085 * s, 0.15 * s, 0.06 * s, 0.022 * s,
-      0.105 * s, pcY + 0.02 * s, -0.155 * s, 0.03, -0.1, 0);
+      0.105 * s, pcY + 0.02 * s, -0.172 * s, 0.03, -0.1, 0);
     // Antenna stub.
     add(placed(tubeGeom([
       [0, 0, 0, 0.007 * s, 0.007 * s],
       [0, 0.16 * s, -0.02 * s, 0.005 * s, 0.005 * s],
-    ], 5, true, true), 0.13 * s, pcY + 0.09 * s, -0.16 * s), 'metal', ['chest'], 0.4);
+    ], 5, true, true), 0.13 * s, pcY + 0.09 * s, -0.18 * s), 'metal', ['chest'], 0.4);
     // Hydration hose over the left shoulder.
     add(tubeGeom([
       [-0.13 * s, pcY - 0.02 * s, -0.14 * s, 0.011 * s, 0.011 * s],
@@ -577,31 +596,31 @@ export default function createCharacterBuilder(ctx) {
 
       // Sleeve: deltoid bulge, rolled cuff at the elbow, tapered forearm.
       add(tubeGeom([
-        [sx, L.shoulderY + 0.075 * s, 0, 0.062 * s, 0.062 * s],
-        [sx, L.shoulderY + 0.02 * s, 0, 0.072 * s, 0.070 * s],
-        [sx + side * 0.004 * s, L.shoulderY - 0.075 * s, 0, 0.066 * s, 0.064 * s],
-        [ex, L.elbowY + 0.045 * s, 0, 0.058 * s, 0.058 * s],
-        [ex, L.elbowY - 0.005 * s, 0.002 * s, 0.062 * s, 0.062 * s],
-        [ex, L.elbowY - 0.05 * s, 0, 0.055 * s, 0.055 * s],
-        [wx, L.wristY + 0.10 * s, 0, 0.049 * s, 0.049 * s],
-        [wx, L.wristY + 0.035 * s, 0, 0.044 * s, 0.044 * s],
-        [wx, L.wristY + 0.012 * s, 0, 0.046 * s, 0.046 * s],
+        [sx, L.shoulderY + 0.078 * s, 0, 0.072 * s, 0.072 * s],
+        [sx, L.shoulderY + 0.02 * s, 0, 0.084 * s, 0.082 * s],
+        [sx + side * 0.004 * s, L.shoulderY - 0.075 * s, 0, 0.076 * s, 0.074 * s],
+        [ex, L.elbowY + 0.045 * s, 0, 0.066 * s, 0.066 * s],
+        [ex, L.elbowY - 0.005 * s, 0.002 * s, 0.070 * s, 0.070 * s],
+        [ex, L.elbowY - 0.05 * s, 0, 0.063 * s, 0.063 * s],
+        [wx, L.wristY + 0.10 * s, 0, 0.056 * s, 0.056 * s],
+        [wx, L.wristY + 0.035 * s, 0, 0.050 * s, 0.050 * s],
+        [wx, L.wristY + 0.012 * s, 0, 0.053 * s, 0.053 * s],
       ], RAD(10), true, true), 'uniform', [uB, lB, 'chest', hB], 0.35);
 
       // Elbow pad.
-      box('webbing', [lB, uB], 0.8, 0.075 * s, 0.10 * s, 0.045 * s, 0.02 * s,
-        ex, L.elbowY - 0.005 * s, -0.055 * s, 0.06, 0, 0);
+      box('webbing', [lB, uB], 0.8, 0.082 * s, 0.11 * s, 0.05 * s, 0.022 * s,
+        ex, L.elbowY - 0.005 * s, -0.058 * s, 0.06, 0, 0);
       // Shoulder patch / brassard.
-      box('webbing', [uB], 0.5, 0.02 * s, 0.06 * s, 0.075 * s, 0.008 * s,
-        sx + side * 0.068 * s, L.shoulderY - 0.03 * s, 0, 0, 0, 0, 1);
+      box('webbing', [uB], 0.5, 0.022 * s, 0.065 * s, 0.085 * s, 0.008 * s,
+        sx + side * 0.078 * s, L.shoulderY - 0.03 * s, 0, 0, 0, 0, 1);
 
       // Glove: palm block, thumb, knuckle plate.
-      box('boot', [hB, lB], 0.7, 0.052 * s, 0.115 * s, 0.088 * s, 0.024 * s,
-        wx, L.wristY - 0.055 * s, 0.004 * s);
-      box('boot', [hB], 0.7, 0.03 * s, 0.055 * s, 0.032 * s, 0.013 * s,
-        wx - side * 0.03 * s, L.wristY - 0.038 * s, 0.036 * s, 0.2, 0, side * 0.35, 1);
-      box('webbing', [hB], 0.75, 0.05 * s, 0.03 * s, 0.05 * s, 0.01 * s,
-        wx, L.wristY - 0.10 * s, 0.012 * s, 0, 0, 0, 1);
+      box('boot', [hB, lB], 0.7, 0.058 * s, 0.12 * s, 0.095 * s, 0.026 * s,
+        wx, L.wristY - 0.058 * s, 0.004 * s);
+      box('boot', [hB], 0.7, 0.032 * s, 0.058 * s, 0.036 * s, 0.014 * s,
+        wx - side * 0.032 * s, L.wristY - 0.04 * s, 0.038 * s, 0.2, 0, side * 0.35, 1);
+      box('webbing', [hB], 0.75, 0.054 * s, 0.032 * s, 0.054 * s, 0.01 * s,
+        wx, L.wristY - 0.105 * s, 0.012 * s, 0, 0, 0, 1);
     }
 
     /* ── neck & head ────────────────────────────────────────────────────── */
@@ -623,82 +642,87 @@ export default function createCharacterBuilder(ctx) {
       [0, hy + 0.240 * s, -0.012 * s, 0.014 * s, 0.016 * s],
     ], RAD(12), true, true), 'skin', ['head'], 0.2);
 
-    // Balaclava over the jaw and nose bridge.
+    // Balaclava: everything from the collar to the goggle line, leaving only a strip
+    // of skin around the eyes — which the goggles then cover anyway.
     add(tubeGeom([
-      [0, hy + 0.030 * s, 0.006 * s, 0.066 * s, 0.066 * s],
-      [0, hy + 0.075 * s, 0.010 * s, 0.083 * s, 0.087 * s],
-      [0, hy + 0.112 * s, 0.008 * s, 0.092 * s, 0.100 * s],
-      [0, hy + 0.132 * s, 0.006 * s, 0.093 * s, 0.101 * s],
+      [0, hy + 0.026 * s, 0.006 * s, 0.064 * s, 0.064 * s],
+      [0, hy + 0.070 * s, 0.010 * s, 0.083 * s, 0.087 * s],
+      [0, hy + 0.108 * s, 0.008 * s, 0.093 * s, 0.101 * s],
+      [0, hy + 0.134 * s, 0.006 * s, 0.095 * s, 0.103 * s],
     ], RAD(11), true, true), 'webbing', ['head'], 0.45);
 
-    // Goggles: strap band + lens block on the brim.
-    add(tubeGeom([
-      [0, hy + 0.168 * s, 0.002 * s, 0.096 * s, 0.104 * s],
-      [0, hy + 0.192 * s, 0.000 * s, 0.094 * s, 0.101 * s],
-    ], RAD(11), false, false), 'boot', ['head'], 0.4);
-    box('boot', ['head'], 0.35, 0.155 * s, 0.048 * s, 0.05 * s, 0.018 * s,
-      0, hy + 0.176 * s, 0.078 * s, 0.1, 0, 0);
-
     /* ── helmet ─────────────────────────────────────────────────────────── */
+    // Rounded ballistic dome: the ring radii follow a sphere so the crown does not
+    // come to a point, which is the classic tell of a lathe-built helmet.
     add(tubeGeom([
       [0, hy + 0.130 * s, -0.004 * s, 0.104 * s, 0.113 * s],
       [0, hy + 0.152 * s, -0.004 * s, 0.110 * s, 0.119 * s],
-      [0, hy + 0.196 * s, -0.006 * s, 0.104 * s, 0.112 * s],
-      [0, hy + 0.238 * s, -0.010 * s, 0.082 * s, 0.088 * s],
-      [0, hy + 0.268 * s, -0.014 * s, 0.044 * s, 0.048 * s],
-      [0, hy + 0.280 * s, -0.016 * s, 0.012 * s, 0.014 * s],
-    ], RAD(14), true, true), 'helmet', ['head'], 0.5);
+      [0, hy + 0.196 * s, -0.006 * s, 0.106 * s, 0.114 * s],
+      [0, hy + 0.230 * s, -0.009 * s, 0.094 * s, 0.101 * s],
+      [0, hy + 0.256 * s, -0.012 * s, 0.074 * s, 0.080 * s],
+      [0, hy + 0.274 * s, -0.014 * s, 0.048 * s, 0.052 * s],
+      [0, hy + 0.284 * s, -0.015 * s, 0.020 * s, 0.022 * s],
+      [0, hy + 0.288 * s, -0.016 * s, 0.005 * s, 0.006 * s],
+    ], RAD(14), true, true), 'webbing', ['head'], 0.52);
+
+    // Goggles pushed up onto the shell, proud of it so they cast their own shadow.
+    add(tubeGeom([
+      [0, hy + 0.150 * s, 0.002 * s, 0.116 * s, 0.124 * s],
+      [0, hy + 0.180 * s, 0.000 * s, 0.117 * s, 0.125 * s],
+    ], RAD(11), false, false), 'boot', ['head'], 0.4);
+    box('boot', ['head'], 0.3, 0.148 * s, 0.050 * s, 0.040 * s, 0.016 * s,
+      0, hy + 0.166 * s, 0.088 * s, 0.12, 0, 0);
+    box('metal', ['head'], 0.3, 0.160 * s, 0.012 * s, 0.016 * s, 0.005 * s,
+      0, hy + 0.190 * s, 0.086 * s, 0.12, 0, 0, 1);
     // Brim lip.
     add(tubeGeom([
       [0, hy + 0.126 * s, -0.004 * s, 0.108 * s, 0.117 * s],
       [0, hy + 0.140 * s, -0.004 * s, 0.113 * s, 0.122 * s],
-    ], RAD(14), false, false), 'helmet', ['head'], 0.65);
+    ], RAD(14), false, false), 'webbing', ['head'], 0.68);
 
-    // NVG shroud + folded mount arm.
-    box('metal', ['head'], 0.45, 0.055 * s, 0.038 * s, 0.03 * s, 0.008 * s,
-      0, hy + 0.208 * s, 0.098 * s, 0.25, 0, 0, 1);
+    // NVG shroud + folded mount arm, front and centre on the crown.
+    box('metal', ['head'], 0.45, 0.058 * s, 0.042 * s, 0.034 * s, 0.008 * s,
+      0, hy + 0.222 * s, 0.088 * s, 0.35, 0, 0, 1);
     add(placed(tubeGeom([
-      [0, 0, 0, 0.012 * s, 0.012 * s],
-      [0, 0.055 * s, 0.028 * s, 0.010 * s, 0.010 * s],
-    ], 6, true, true), 0, hy + 0.220 * s, 0.105 * s, -0.5, 0, 0), 'metal', ['head'], 0.4);
-    // Side rails + counterweight.
+      [0, 0, 0, 0.014 * s, 0.014 * s],
+      [0, 0.040 * s, 0.020 * s, 0.011 * s, 0.011 * s],
+    ], 6, true, true), 0, hy + 0.236 * s, 0.090 * s, -0.7, 0, 0), 'metal', ['head'], 0.4);
+    // Side rails + rear counterweight pouch.
     for (const side of [-1, 1]) {
-      box('metal', ['head'], 0.5, 0.012 * s, 0.026 * s, 0.115 * s, 0.005 * s,
-        side * 0.108 * s, hy + 0.176 * s, 0.012 * s, 0, side * 0.12, 0, 1);
+      box('metal', ['head'], 0.5, 0.014 * s, 0.028 * s, 0.12 * s, 0.005 * s,
+        side * 0.112 * s, hy + 0.190 * s, 0.010 * s, 0, side * 0.12, 0, 1);
     }
-    box('webbing', ['head'], 0.6, 0.085 * s, 0.06 * s, 0.045 * s, 0.018 * s,
-      0, hy + 0.200 * s, -0.104 * s, -0.15, 0, 0, 1);
+    box('webbing', ['head'], 0.6, 0.09 * s, 0.066 * s, 0.05 * s, 0.02 * s,
+      0, hy + 0.212 * s, -0.104 * s, -0.18, 0, 0, 1);
 
     // Four-point chin strap + chin cup.
     for (const side of [-1, 1]) {
-      for (const zf of [0.055, -0.05]) {
+      for (const zf of [0.052, -0.048]) {
         add(tubeGeom([
-          [side * 0.098 * s, hy + 0.128 * s, zf * s, 0.008 * s, 0.005 * s],
-          [side * 0.075 * s, hy + 0.070 * s, zf * s * 0.9, 0.008 * s, 0.005 * s],
-          [side * 0.045 * s, hy + 0.030 * s, 0.030 * s, 0.008 * s, 0.005 * s],
+          [side * 0.098 * s, hy + 0.126 * s, zf * s, 0.008 * s, 0.005 * s],
+          [side * 0.082 * s, hy + 0.076 * s, zf * s * 0.95, 0.008 * s, 0.005 * s],
+          [side * 0.052 * s, hy + 0.036 * s, 0.022 * s, 0.008 * s, 0.005 * s],
         ], 5, true, true), 'webbing', ['head'], 0.55);
       }
     }
-    box('webbing', ['head'], 0.6, 0.06 * s, 0.03 * s, 0.035 * s, 0.012 * s,
-      0, hy + 0.026 * s, 0.052 * s, 0.3, 0, 0, 1);
+    box('webbing', ['head'], 0.6, 0.05 * s, 0.026 * s, 0.03 * s, 0.010 * s,
+      0, hy + 0.030 * s, 0.044 * s, 0.3, 0, 0, 1);
 
     return parts;
   }
 
-  /* ── rifle carried in the right hand ───────────────────────────────────── */
+  /* ── the carried rifle (hung off the weapon anchor, gripped by IK) ──────── */
 
   function buildRifle(L, q) {
-    const s = L.s;
     const g = new THREE.Group();
     g.name = 'ai_rifle';
-    const mkMesh = (geo, slot) => {
-      const m = new THREE.Mesh(geo, slotMaterial(slot, VARIANTS[0]));
-      m.castShadow = true;
-      m.receiveShadow = true;
-      return m;
+    // One material, one draw call. `grime` per part is carried in the vertex mask, so
+    // the polymer furniture still reads differently from the machined receiver.
+    const parts = [];
+    const push = (geo, slot) => {
+      geo.userData.grime = slot === 'boot' ? 0.72 : 0.3;
+      parts.push(geo);
     };
-    const parts = { metal: [], boot: [] };
-    const push = (geo, slot) => parts[slot].push(geo);
 
     // Local space: +Z is muzzle-forward, origin at the pistol grip / trigger.
     push(placed(planarUv(roundedBoxGeom(0.052, 0.085, 0.30, 0.012, 2)), 0, 0.055, 0.10), 'metal');
@@ -728,16 +752,28 @@ export default function createCharacterBuilder(ctx) {
     // Foregrip.
     push(placed(planarUv(roundedBoxGeom(0.026, 0.075, 0.030, 0.011, 1)), 0, 0.006, 0.36, 0.12, 0, 0), 'boot');
 
-    for (const slot of Object.keys(parts)) {
-      if (!parts[slot].length) continue;
-      const merged = mergeSimple(parts[slot]);
-      owned.geometries.push(merged);
-      g.add(mkMesh(merged, slot));
-    }
-    const muzzle = new THREE.Object3D();
-    muzzle.name = 'muzzle';
-    muzzle.position.set(0, 0.055, 0.65);
-    g.add(muzzle);
+    const merged = mergeSimple(parts);
+    owned.geometries.push(merged);
+    const mesh = new THREE.Mesh(merged, material('painted_steel_chipped', 0x33353a, {
+      repeat: 0.35, detail: 0.6,
+    }));
+    mesh.name = 'ai_rifle_mesh';
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    g.add(mesh);
+    // Locators. The hands are IK'd onto the grips, so these are the contract between
+    // the weapon and the skeleton — move the rifle and the arms follow it.
+    const locator = (name, x, y, z) => {
+      const o = new THREE.Object3D();
+      o.name = name;
+      o.position.set(x, y, z);
+      g.add(o);
+      return o;
+    };
+    const muzzle = locator('muzzle', 0, 0.055, 0.65);
+    locator('gripR', 0, 0.045, -0.045);
+    locator('gripL', 0, 0.09, 0.24);
+    locator('ejector', 0.035, 0.075, 0.10);
     return { group: g, muzzle };
   }
 
@@ -761,8 +797,9 @@ export default function createCharacterBuilder(ctx) {
       position.set(g.attributes.position.array.subarray(0, n * 3), vo * 3);
       if (g.attributes.normal) normal.set(g.attributes.normal.array.subarray(0, n * 3), vo * 3);
       if (g.attributes.uv) uv.set(g.attributes.uv.array.subarray(0, n * 2), vo * 2);
+      const grime = g.userData?.grime ?? 0.4;
       for (let k = 0; k < n; k++) {
-        color[(vo + k) * 3] = 0.5;
+        color[(vo + k) * 3] = grime;
         color[(vo + k) * 3 + 1] = 0;
         color[(vo + k) * 3 + 2] = 0;
       }
@@ -783,28 +820,30 @@ export default function createCharacterBuilder(ctx) {
     return out;
   }
 
+  /*
+   * The library's textures are authored for architecture: a canvas weave at 120
+   * threads per metre and a carpet pile at 130 loops per metre look right on a tarp
+   * or a rug, but a 20 cm head only spans a fifth of a tile, so the pattern lands at
+   * ~4 px per cycle on screen and moirés into a wire net. Every slot therefore takes
+   * a `repeat` well under 1 (blow the texture up) and a trimmed `detail` amount.
+   */
   const SLOT_MATERIAL = {
-    uniform: 'fabric_uniform',
-    webbing: 'fabric_webbing',
-    helmet: 'fabric_webbing',
-    boot: 'rubber_tyre',
-    metal: 'painted_steel_chipped',
-    skin: 'skin_head',
+    uniform: { name: 'fabric_uniform', repeat: 0.5, detail: 0.5, key: 'uniform' },
+    webbing: { name: 'fabric_webbing', repeat: 0.45, detail: 0.5, key: 'webbing' },
+    boot: { name: 'rubber_tyre', repeat: 0.5, detail: 0.5, key: 'boot' },
+    metal: { name: 'painted_steel_chipped', repeat: 0.5, detail: 0.5 },
+    skin: { name: 'skin_head', repeat: 0.12, detail: 0.35, key: 'skin' },
   };
   const matCache = new Map();
   function slotMaterial(slot, variant) {
     const key = `${slot}|${variant.id}`;
     let m = matCache.get(key);
     if (m) return m;
-    const name = SLOT_MATERIAL[slot] || 'fabric_uniform';
-    const tint =
-      slot === 'uniform' ? variant.uniform
-        : slot === 'webbing' ? variant.webbing
-          : slot === 'helmet' ? variant.helmet
-            : slot === 'boot' ? variant.boot
-              : slot === 'skin' ? variant.skin
-                : undefined;
-    m = material(name, tint);
+    const def = SLOT_MATERIAL[slot] || SLOT_MATERIAL.uniform;
+    m = material(def.name, def.key ? variant[def.key] : undefined, {
+      repeat: def.repeat,
+      detail: def.detail,
+    });
     matCache.set(key, m);
     return m;
   }
@@ -996,17 +1035,28 @@ export default function createCharacterBuilder(ctx) {
       meshes.push(mesh);
     }
 
-    // The rifle rides the right hand: it is a plain child of the bone, so it inherits
-    // every bit of aim / recoil / ragdoll motion for free.
+    /*
+     * The weapon is NOT parented to a hand. It hangs off a root-space anchor whose
+     * yaw is the body's and whose pitch is the aim's, so the barrel points *exactly*
+     * along the fire direction — muzzle flash, tracer and bullet all agree — and the
+     * hands are then IK'd onto its grips. Driving it the other way round (hand -> gun)
+     * makes the barrel wander by whatever the shoulder pose happens to be.
+     */
+    const weaponAnchor = new THREE.Object3D();
+    weaponAnchor.name = 'weaponAnchor';
+    weaponAnchor.position.set(0.055 * L.s, L.chestY * 0.99, 0.27 * L.s);
     const rifle = model.rifle.group.clone(true);
-    rifle.position.set(0, -0.055 * L.s, 0.035 * L.s);
-    rifle.rotation.set(-0.15, 0, 0);
+    rifle.position.set(0, 0, 0);
+    rifle.rotation.set(0, 0, 0);
     for (const c of rifle.children) {
       c.castShadow = true;
       c.receiveShadow = true;
     }
-    bones.handR.add(rifle);
+    weaponAnchor.add(rifle);
+    group.add(weaponAnchor);
     const muzzle = rifle.getObjectByName('muzzle') || rifle;
+    const gripR = rifle.getObjectByName('gripR') || rifle;
+    const gripL = rifle.getObjectByName('gripL') || rifle;
 
     // Hitbox proxies. `hitbox` is the tag Ballistics.classify() reads; the ids match
     // HITBOX_MULT exactly so the multipliers apply without a translation table.
@@ -1072,7 +1122,10 @@ export default function createCharacterBuilder(ctx) {
       skeleton,
       meshes,
       rifle,
+      weaponAnchor,
       muzzle,
+      gripR,
+      gripL,
       hitboxes,
       layout: L,
       variant,
@@ -1083,11 +1136,23 @@ export default function createCharacterBuilder(ctx) {
       setVisible(v) {
         group.visible = !!v;
       },
+      /** Hand the weapon to the ragdoll (or take it back on respawn). */
+      stowWeapon(toHand) {
+        const parent = toHand ? bones.handR : group;
+        if (weaponAnchor.parent === parent) return;
+        group.updateMatrixWorld(true);
+        parent.attach(weaponAnchor);
+        if (!toHand) {
+          weaponAnchor.position.set(0.055 * L.s, L.chestY * 0.99, 0.27 * L.s);
+          weaponAnchor.quaternion.identity();
+          weaponAnchor.scale.set(1, 1, 1);
+        }
+      },
       dispose() {
         group.removeFromParent();
         skeleton.dispose?.();
         // Geometry and materials are shared and owned by the builder.
-        rifle.removeFromParent();
+        weaponAnchor.removeFromParent();
       },
     };
   }

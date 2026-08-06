@@ -149,7 +149,15 @@ export class Ambience {
     this.quality = q;
   }
 
-  /** Pull the live weather record and recompute every layer's target. */
+  /**
+   * Pull the live weather record and recompute every layer's target.
+   *
+   * Wind, wetness and dust come from `ctx.materials.globals` — the shared
+   * uniforms every surface, foliage card and decal in the game already reads.
+   * Sourcing them anywhere else would let the audio drift out of step with what
+   * is on screen. Rain rate, gust and cloud cover only exist on the weather
+   * record, so those come from there.
+   */
   applyWeather() {
     const st = this.ctx?.weather?.state || this.ctx?.weather?.get?.() || null;
     if (st) {
@@ -159,6 +167,12 @@ export class Ambience {
       this.w.wetness = Number.isFinite(st.wetness) ? st.wetness : this.w.wetness;
       this.w.dust = Number.isFinite(st.dust) ? st.dust : this.w.dust;
       this.w.coverage = Number.isFinite(st.coverage) ? st.coverage : this.w.coverage;
+    }
+    const g = this.ctx?.materials?.globals;
+    if (g) {
+      if (Number.isFinite(g.windStrength)) this.w.wind = g.windStrength;
+      if (Number.isFinite(g.wetness)) this.w.wetness = g.wetness;
+      if (Number.isFinite(g.dustLevel)) this.w.dust = g.dustLevel;
     }
     const p = this.ctx?.weather?.preset;
     if (typeof p === 'string') this.w.preset = p;
@@ -176,6 +190,14 @@ export class Ambience {
     this._paramT -= dt;
     if (this._paramT <= 0) {
       this._paramT = 0.08;
+      // `weather:changed` only fires when a preset is *chosen*; the cross-fade
+      // between two presets runs for another eight seconds after that, so the
+      // record has to be re-read continuously or the bed lags the sky.
+      this._weatherT = (this._weatherT ?? 0) - 0.08;
+      if (this._weatherT <= 0) {
+        this._weatherT = 0.5;
+        this.applyWeather();
+      }
       this._pushParams();
     }
     this._schedule(dt);

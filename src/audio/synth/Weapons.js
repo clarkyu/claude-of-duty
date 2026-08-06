@@ -189,11 +189,14 @@ export function weaponFire(S, p = {}) {
   // tail network — the mechanical noises are too quiet and too close to echo.
   const dry = gainNode(ac, 1);
   dry.connect(S.out);
-  let tailSend = null;
+  S.track?.(dry);
   if (S.tailIn) {
-    tailSend = gainNode(ac, prof.tail * lerp(1, 2.1, far) * (p.suppressed ? 0.35 : 1));
+    // The slap-back network is shared and permanent; this gain is what decides
+    // how much of *this* shot reaches it, and dies with the voice.
+    const tailSend = gainNode(ac, prof.tail * lerp(1, 2.1, far) * (p.suppressed ? 0.35 : 1));
     dry.connect(tailSend);
     tailSend.connect(S.tailIn);
+    S.track?.(tailSend);
   }
   S.setSend?.(prof.wet * lerp(1, 1.9, far) * (p.suppressed ? 0.45 : 1));
 

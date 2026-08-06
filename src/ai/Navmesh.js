@@ -556,7 +556,12 @@ export default function createNavmesh(ctx) {
     let apexI = 0;
     let lI = 0;
     let rI = 0;
-    for (let i = 0; i <= nPort; i++) {
+    // Degenerate (zero-width) portals from diagonal steps can make the classic
+    // restart-at-apex loop spin; a hard iteration budget keeps it honest.
+    let guard = 0;
+    const guardMax = nPort * 4 + 32;
+    for (let i = 0; i <= nPort && guard < guardMax; i++) {
+      guard++;
       const pLx = i < nPort ? _portL[i * 2] : endX;
       const pLz = i < nPort ? _portL[i * 2 + 1] : endZ;
       const pRx = i < nPort ? _portR[i * 2] : endX;
@@ -966,6 +971,39 @@ export default function createNavmesh(ctx) {
     floorAt: (x, z) => {
       const k = index(x, z);
       return k >= 0 && walkable[k] ? floor[k] : (ctx.level?.groundY?.(x, z) ?? 0);
+    },
+    /**
+     * Bilinear floor height over the four surrounding cell centres. Cell floors are
+     * piecewise constant, and walking on that reads as a bot climbing invisible steps
+     * every two metres; interpolating between the *walkable* neighbours fixes it while
+     * still refusing to average in a rooftop that happens to be next door.
+     */
+    groundAt(x, z) {
+      if (!api.ready) return ctx.level?.groundY?.(x, z) ?? 0;
+      const fx = (x - x0) / cell - 0.5;
+      const fz = (z - z0) / cell - 0.5;
+      const i0 = Math.floor(fx);
+      const j0 = Math.floor(fz);
+      const tx = fx - i0;
+      const tz = fz - j0;
+      const base = index(x, z);
+      const ref = base >= 0 && walkable[base] ? floor[base] : (ctx.level?.groundY?.(x, z) ?? 0);
+      let sum = 0;
+      let wsum = 0;
+      for (let dj = 0; dj <= 1; dj++) {
+        for (let di = 0; di <= 1; di++) {
+          const i = i0 + di;
+          const j = j0 + dj;
+          if (i < 0 || j < 0 || i >= cols || j >= rows) continue;
+          const k = j * cols + i;
+          if (!walkable[k]) continue;
+          if (Math.abs(floor[k] - ref) > 0.75) continue; // different deck, do not blend
+          const w = (di ? tx : 1 - tx) * (dj ? tz : 1 - tz);
+          sum += floor[k] * w;
+          wsum += w;
+        }
+      }
+      return wsum > 1e-4 ? sum / wsum : ref;
     },
     clearanceAt: (x, z) => {
       const k = index(x, z);

@@ -36,11 +36,12 @@ export function explosion(S, p = {}) {
 
   const dry = gainNode(ac, 1);
   dry.connect(S.out);
-  let tailSend = null;
+  S.track?.(dry);
   if (S.tailIn) {
-    tailSend = gainNode(ac, 1.5 * lerp(1, 2.4, far));
+    const tailSend = gainNode(ac, 1.5 * lerp(1, 2.4, far));
     dry.connect(tailSend);
     tailSend.connect(S.tailIn);
+    S.track?.(tailSend);
   }
   S.setSend?.(1.4 * lerp(1, 2.0, far));
 

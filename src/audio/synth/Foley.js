@@ -260,7 +260,11 @@ export function footstep(S, p = {}) {
     try { o.start(t + 0.008); o.stop(t + 0.1); } catch { /* ignore */ }
     S.track?.(o);
   }
-  if (prof.splash) {
+  // Standing water, and rain-soaked stone. `wetness` is the shared material
+  // global, so a boot lands in a puddle exactly where the shader draws one.
+  const wet = clamp01((p.wetness ?? 0) * 1.1);
+  const splashAmt = (prof.splash ?? 0) + wet * 0.55;
+  if (splashAmt > 0.02) {
     const { ac } = S;
     const o = ac.createOscillator();
     o.type = 'sine';
@@ -269,9 +273,12 @@ export function footstep(S, p = {}) {
     g.connect(S.out);
     setFreq(ac, o.frequency, rr(rng, 500, 1100), t);
     expFreq(ac, o.frequency, rr(rng, 130, 260), t + 0.09);
-    ad(g.gain, t, base * prof.splash * 0.4, 0.002, 0.1);
+    ad(g.gain, t, base * splashAmt * 0.4, 0.002, 0.1);
     try { o.start(t); o.stop(t + 0.2); } catch { /* ignore */ }
     S.track?.(o);
+    // Fine spray off the sole.
+    scatter(S, { freq: 5200 + wet * 2200, decay: 0.1 + wet * 0.12, level: 1, rate: 1.3 },
+      t + 0.004, base * splashAmt * 0.3, S.out);
   }
   // Gear: louder the faster you move, and never on every step.
   if (rng() < 0.55 + effort * 0.4) {

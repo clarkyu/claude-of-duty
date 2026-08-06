@@ -254,6 +254,13 @@ export function bulletImpact(S, p = {}) {
   if (prof.plop) plop(S, prof.plop, t + 0.002, prof.plop.level * base, S.out);
   if (prof.grit) grit(S, prof.grit, t, prof.grit.level * base * jitter(rng, 0.3), S.out);
   if (prof.shards) shards(S, t + 0.01, prof.shards * base, S.out);
+  // A round into wet stone throws water, not only dust. `wetness` is the shared
+  // material global, so this tracks the same puddles the shader is drawing.
+  const wet = clamp01((p.wetness ?? 0) * 1.15);
+  if (wet > 0.12 && !prof.plop) {
+    plop(S, { f0: 1100, f1: 300, decay: 0.07 }, t + 0.003, base * wet * 0.22, S.out);
+    grit(S, { freq: 6200, decay: 0.16, rate: 1.3 }, t + 0.004, base * wet * 0.18, S.out);
+  }
 
   return t + 0.5;
 }

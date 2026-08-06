@@ -177,8 +177,11 @@ export function renderIR(ac, spec, seed = 0x1f2e3d) {
     }
   }
 
-  // Normalise to a predictable send level: a convolver's output scales with the
-  // IR energy, and hand-tuned specs would otherwise be wildly different loudness.
+  // Normalise by *total energy*, not by peak. A convolver's output level tracks
+  // the energy in the IR, so peak-normalising would make the 3.4 s tunnel four
+  // times louder than the 0.7 s room for no good reason. Energy normalisation
+  // makes every zone the same loudness, and `spec.gain` then becomes an honest
+  // artistic control instead of a guess.
   let peak = 0;
   let energy = 0;
   for (let c = 0; c < 2; c++) {
@@ -189,9 +192,10 @@ export function renderIR(ac, spec, seed = 0x1f2e3d) {
       energy += d[i] * d[i];
     }
   }
-  const rms = Math.sqrt(energy / Math.max(1, buf.length * 2));
-  const norm = clamp(0.09 / Math.max(1e-6, rms), 0.02, 24) * (spec.gain ?? 1);
-  if (peak > 0) {
+  let norm = (1.35 / Math.max(1e-6, Math.sqrt(energy))) * (spec.gain ?? 1);
+  // A single early-reflection tap must never on its own overdrive the return.
+  if (peak * norm > 0.9) norm = 0.9 / peak;
+  if (peak > 0 && Number.isFinite(norm)) {
     for (let c = 0; c < 2; c++) {
       const d = buf.getChannelData(c);
       for (let i = 0; i < d.length; i++) d[i] *= norm;
