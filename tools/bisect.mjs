@@ -2,10 +2,22 @@
 // First question is always the same: does cost scale with pixel count (fill-bound)
 // or stay flat (CPU-bound)? Everything else follows from the answer, so measure that
 // before touching a single suspect.
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { serve, launch, bootGame, build } from './harness.mjs';
 
+// Write every measurement to disk the moment it is taken. Piped stdout buffers
+// until the process exits, so a run that gets reaped loses everything it found —
+// which has already happened twice here.
+const LOG = '/home/user/claude-of-duty/shots/bisect.log';
+writeFileSync(LOG, '');
+const say = (line) => {
+  console.log(line);
+  appendFileSync(LOG, line + '\n');
+};
+
 const QUALITY = process.argv[2] || 'medium';
-const port = 4990 + Math.floor(Math.random() * 90);
+// Chrome blocks a set of 'unsafe ports' (5060/5061 SIP among them); stay clear.
+const port = 8200 + Math.floor(Math.random() * 300);
 
 const b = await build({ outDir: 'dist-bis' });
 if (!b.ok) {
@@ -24,10 +36,10 @@ const time = async (n = 2) => {
 try {
   const t0 = Date.now();
   await bootGame(page, server.url, { quality: QUALITY });
-  console.log(`boot ${((Date.now() - t0) / 1000).toFixed(0)}s @ ${QUALITY}`);
+  say(`boot ${((Date.now() - t0) / 1000).toFixed(0)}s @ ${QUALITY}`);
   await page.evaluate(() => window.__COD.step(2, 1 / 60));
 
-  console.log('\n--- fill-bound or CPU-bound? ---');
+  say('\n--- fill-bound or CPU-bound? ---');
   const sizes = [
     [320, 180],
     [640, 360],
@@ -39,11 +51,11 @@ try {
     await page.evaluate(() => window.__COD.step(1, 1 / 60));
     const ms = await time(2);
     costs.push(ms);
-    console.log(`  ${String(w).padStart(4)}x${String(h).padStart(3)}  ${ms.toFixed(0).padStart(7)} ms/frame`);
+    say(`  ${String(w).padStart(4)}x${String(h).padStart(3)}  ${ms.toFixed(0).padStart(7)} ms/frame`);
   }
   const pixRatio = (1280 * 720) / (320 * 180);
   const costRatio = costs[2] / costs[0];
-  console.log(
+  say(
     `  pixels x${pixRatio}, cost x${costRatio.toFixed(1)} -> ${
       costRatio > pixRatio * 0.5 ? 'FILL-BOUND' : costRatio < 2 ? 'CPU-BOUND' : 'MIXED'
     }`
@@ -53,9 +65,9 @@ try {
   await page.setViewportSize({ width: 320, height: 180 });
   await page.evaluate(() => window.__COD.step(1, 1 / 60));
   const base = await time(2);
-  console.log(`\nbaseline @320x180: ${base.toFixed(0)} ms/frame`);
+  say(`\nbaseline @320x180: ${base.toFixed(0)} ms/frame`);
 
-  console.log('\n--- per-system CPU (ms/frame) ---');
+  say('\n--- per-system CPU (ms/frame) ---');
   const cpu = await page.evaluate(() => {
     const e = window.__COD.engine;
     const acc = {};
@@ -81,9 +93,9 @@ try {
       .sort((a, b) => b[1] - a[1])
       .filter(([, ms]) => ms > 1);
   });
-  for (const [n, ms] of cpu) console.log(`  ${n.padEnd(13)} ${String(ms).padStart(8)}`);
+  for (const [n, ms] of cpu) say(`  ${n.padEnd(13)} ${String(ms).padStart(8)}`);
 
-  console.log('\n--- system disable delta (ms saved, >5% only) ---');
+  say('\n--- system disable delta (ms saved, >5% only) ---');
   const names = await page.evaluate(() =>
     window.__COD.engine.systems.map((s) => s.name).filter((n) => n !== 'debug')
   );
@@ -98,10 +110,10 @@ try {
       if (s) s._broken = false;
     }, n);
     const saved = base - ms;
-    if (saved > base * 0.05) console.log(`  ${n.padEnd(13)} ${saved.toFixed(0).padStart(8)}`);
+    if (saved > base * 0.05) say(`  ${n.padEnd(13)} ${saved.toFixed(0).padStart(8)}`);
   }
 
-  console.log('\n--- post pass delta (ms saved, >5% only) ---');
+  say('\n--- post pass delta (ms saved, >5% only) ---');
   const passes = await page.evaluate(() => {
     const p = window.__COD.ctx.pipeline;
     if (!p) return [];
@@ -111,17 +123,17 @@ try {
     if (list && typeof list.keys === 'function') return [...list.keys()];
     return [];
   });
-  console.log(`  (${passes.length} passes exposed)`);
+  say(`  (${passes.length} passes exposed)`);
   for (const nm of passes) {
     await page.evaluate((x) => window.__COD.togglePass(x, false), nm);
     const ms = await time(1);
     await page.evaluate((x) => window.__COD.togglePass(x, true), nm);
     const saved = base - ms;
-    if (saved > base * 0.05) console.log(`  ${String(nm).padEnd(18)} ${saved.toFixed(0).padStart(7)}`);
+    if (saved > base * 0.05) say(`  ${String(nm).padEnd(18)} ${saved.toFixed(0).padStart(7)}`);
   }
 
   const st = await page.evaluate(() => window.__COD.stats());
-  console.log(`\ndraws ${st.drawCalls}, tris ${(st.tris / 1000).toFixed(0)}k, textures ${st.textures}`);
+  say(`\ndraws ${st.drawCalls}, tris ${(st.tris / 1000).toFixed(0)}k, textures ${st.textures}`);
 } finally {
   await browser.close().catch(() => {});
   server.stop();
