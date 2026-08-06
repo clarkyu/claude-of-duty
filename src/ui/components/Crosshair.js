@@ -38,8 +38,8 @@ export class Crosshair {
     this.svg = s;
 
     // Centre dot: black underlay, white core. Paint order, not a blur.
-    this.dotO = svg('circle', { class: 'dot-o', cx: 0, cy: 0, r: 1.45 }, s);
-    this.dot = svg('circle', { class: 'dot', cx: 0, cy: 0, r: 1.45 }, s);
+    this.dotO = svg('circle', { class: 'dot-o', cx: 0, cy: 0, r: 1.9 }, s);
+    this.dot = svg('circle', { class: 'dot', cx: 0, cy: 0, r: 1.9 }, s);
 
     // Four arms as groups so only one transform attribute changes per arm. Each
     // arm is two coincident lines — a heavy black one and a lighter white one on
