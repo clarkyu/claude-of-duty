@@ -105,7 +105,16 @@ export class Minimap {
       g.beginPath();
       g.rect(ix0, iz0, ix1 - ix0, iz1 - iz0);
       g.clip();
-      g.fillStyle = '#0b1016';
+      /*
+       * Light is where you can be. The colliders on this level are wall
+       * *segments*, not building volumes, so painting footprints alone gives four
+       * thin strips per structure — a hollow outline, which is the "you cannot
+       * tell solid from walkable" complaint. The nav grid knows the real answer,
+       * so the walkable surface (streets AND the interiors you can enter) is the
+       * light plate, everything else in bounds is dark mass, and walls are drawn
+       * bright on top of both. Three tones, no ambiguity.
+       */
+      g.fillStyle = '#1b232c';
       g.fillRect(ix0, iz0, ix1 - ix0, iz1 - iz0);
       this._drawWalkable(g, level);
       this._drawColliders(g, level);
@@ -133,7 +142,7 @@ export class Minimap {
   /** Diagonal hatch for the out-of-bounds apron. */
   _drawHatch(g, size) {
     g.save();
-    g.strokeStyle = 'rgba(148,166,186,0.10)';
+    g.strokeStyle = 'rgba(150,168,188,0.16)';
     g.lineWidth = Math.max(1, this.pxPerM * 0.14);
     const step = Math.max(6, this.pxPerM * 2.4);
     g.beginPath();
@@ -152,9 +161,10 @@ export class Minimap {
     const origin = nav.origin || [this.bounds.minX, this.bounds.minZ];
     const w = nav.walkable;
     const size = cell * this.pxPerM;
-    // One path, one fill. Filling each row-run separately at alpha 0.22 with a
-    // +0.6 px overlap double-composites every seam, which is what turned the
-    // plate into horizontal scanline banding; a single Path2D composites once.
+    // One path, one OPAQUE fill. Filling each row-run separately at alpha 0.22
+    // with a +0.6 px overlap double-composites every seam, which is what turned
+    // the plate into horizontal scanline banding. A single Path2D at alpha 1
+    // cannot band at all, however the runs overlap.
     const path = typeof Path2D === 'function' ? new Path2D() : null;
     const add = (x, y, w2, h2) => (path ? path.rect(x, y, w2, h2) : g.rect(x, y, w2, h2));
     if (!path) g.beginPath();
@@ -170,7 +180,7 @@ export class Minimap {
         }
       }
     }
-    g.fillStyle = 'rgba(150,175,200,0.16)';
+    g.fillStyle = '#5b6a78';
     if (path) g.fill(path);
     else g.fill();
   }
@@ -206,16 +216,10 @@ export class Minimap {
         g.save();
         g.translate(x, z);
         if (f.yaw) g.rotate(f.yaw);
-        // Solid, not an outline. A hollow footprint over a lit street wash tells
-        // you nothing about what you can walk through; buildings read as filled
-        // masses well above the walkable surface, low cover a step below them.
-        g.fillStyle = f.tall ? 'rgba(214,226,238,0.62)' : 'rgba(176,194,212,0.34)';
+        // Walls and cover sit on top of the solid/street split as bright edges:
+        // structure, not the thing that carries the solid-vs-walkable read.
+        g.fillStyle = f.tall ? 'rgba(242,247,252,0.92)' : 'rgba(38,48,58,0.72)';
         g.fillRect(-w / 2, -d / 2, w, d);
-        if (w > 3 || d > 3) {
-          g.strokeStyle = f.tall ? 'rgba(20,26,32,0.55)' : 'rgba(228,238,248,0.34)';
-          g.lineWidth = 1;
-          g.strokeRect(-w / 2 + 0.5, -d / 2 + 0.5, w - 1, d - 1);
-        }
         g.restore();
       }
     }

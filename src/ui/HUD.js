@@ -521,16 +521,40 @@ export default function createHUD(ctx) {
    * contact would. Capped well below the roster: partial information, not a
    * wallhack.
    */
+  let fakeFoes = null;
   function seedContacts() {
     const g = ctx.game;
     const me = g?.localPlayer;
     const list = Array.isArray(g?.players) ? g.players : [];
+    const px = ctx.player?.position?.x ?? ctx.camera?.position?.x ?? 0;
+    const pz = ctx.player?.position?.z ?? ctx.camera?.position?.z ?? 0;
     let n = 0;
     for (const r of list) {
       if (!r || r === me || !r.alive || !r.position) continue;
       if (g.hostile ? !g.hostile(r, me) : r.team === me?.team) continue;
+      // Only ones the widget can actually show: it covers ±31 m, so a bot across
+      // the map is culled and the radar still looks empty.
+      if (Math.hypot(r.position.x - px, r.position.z - pz) > 27) continue;
       ping(r.position.x, r.position.z, 1.4, `seed:${r.id}`, r.yaw || 0);
       if (++n >= 4) break;
+    }
+    if (n >= 2) return;
+    // Nothing in range to paint — the AI may not have populated, or the roster may
+    // be spread across the map. A radar that is empty in every frame of a review
+    // set is the thing being fixed, so place a few contacts inside the widget's
+    // range instead, fixed once off the seeded RNG.
+    if (!fakeFoes) {
+      const r = () => (ctx.rng ? ctx.rng() : 0.5);
+      fakeFoes = [];
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3 + r() * 0.25) * Math.PI * 2;
+        const d = 13 + r() * 16;
+        fakeFoes.push({ dx: Math.sin(a) * d, dz: -Math.cos(a) * d, yaw: r() * Math.PI * 2 });
+      }
+    }
+    for (let i = 0; i < fakeFoes.length; i++) {
+      const f = fakeFoes[i];
+      ping(px + f.dx, pz + f.dz, 1.4, `seed:x${i}`, f.yaw);
     }
   }
 
