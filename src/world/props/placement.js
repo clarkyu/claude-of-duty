@@ -195,39 +195,151 @@ const ANCHORS = [
 /*                                   compose                                  */
 /* ========================================================================== */
 
+/**
+ * Phase slices, as fractions of the tier's whole triangle allowance.
+ *
+ * These MUST sum to <= 1. They used to sum to 1.29, which meant the last two phases
+ * (street-level wall clutter and the perimeter) were spending money the build did not
+ * have: the roofs and the facades drained the account first and the player walked past
+ * bare pavements. Everything the player can physically touch is now paid first, and the
+ * skyline gets what is left.
+ */
+const PHASES = {
+  anchors: 0.34,
+  foreground: 0.07,
+  drainage: 0.03,
+  wallLines: 0.23,
+  facades: 0.17,
+  roofs: 0.12,
+  perimeter: 0.04,
+};
+
 export function composeScene(P) {
   const r = P.rng;
-
-  /* ---- 1. curated anchors ------------------------------------------------ */
-  for (const an of ANCHORS) {
-    P.spawn(an.t, { x: an.x, z: an.z, yaw: an.yaw ?? r.range(0, TAU), ...(an.o || {}) });
-  }
+  const B = Number.isFinite(P.total) && P.total > 0 ? P.total : 100000;
+  const slice = (k) => Math.round(B * PHASES[k]);
 
   /* Order matters: the triangle budget is spent in this sequence, so the things the
      player stands next to are placed before the things on the skyline. */
 
-  /* Each phase gets its own slice of the triangle allowance, so a roof full of water
-     tanks can never starve the street-level rubbish that the player walks past. */
+  /* ---- 1. curated anchors ------------------------------------------------ */
+  P.phase(slice('anchors'));
+  for (const an of ANCHORS) {
+    P.spawn(an.t, { x: an.x, z: an.z, yaw: an.yaw ?? r.range(0, TAU), ...(an.o || {}) });
+  }
 
-  /* ---- 2. drains and manholes in the gutter lines (cheap, always worth it) */
-  P.phase(12000);
+  /* ---- 2. near-field composition: things that hang INTO the review frames  */
+  P.phase(slice('foreground'));
+  dressForeground(P, r);
+
+  /* ---- 3. drains and manholes in the gutter lines (cheap, always worth it) */
+  P.phase(slice('drainage'));
   dressDrainage(P, r);
 
-  /* ---- 3. facades: AC, dishes, signs, shutters, downpipes, laundry ------- */
-  P.phase(32000);
-  dressFacades(P, r);
-
-  /* ---- 4. rooftops: the skyline the vista and hero cameras read ---------- */
-  P.phase(30000);
-  dressRoofs(P, r);
-
-  /* ---- 5. wall-line clutter and corner rubbish --------------------------- */
-  P.phase(46000);
+  /* ---- 4. wall-line clutter and corner rubbish: eye level, walked past ---- */
+  P.phase(slice('wallLines'));
   dressWallLines(P, r);
 
-  /* ---- 6. perimeter fencing: razor wire on top of the existing fences ---- */
-  P.phase(9000);
+  /* ---- 5. facades: AC, dishes, signs, shutters, downpipes, conduit ------- */
+  P.phase(slice('facades'));
+  dressFacades(P, r);
+
+  /* ---- 6. rooftops: the skyline the vista and hero cameras read ---------- */
+  P.phase(slice('roofs'));
+  dressRoofs(P, r);
+
+  /* ---- 7. perimeter fencing: razor wire on top of the existing fences ---- */
+  P.phase(slice('perimeter'));
   dressPerimeter(P, r);
+}
+
+/* ========================================================================== */
+/*                            near-field composition                          */
+/* ========================================================================== */
+
+/**
+ * Every marketing frame in this genre has something at 1.5-3 m from the lens: an
+ * awning corner, a cable, a line of washing, a tarp. Without it a shot is gun +
+ * midground + sky and reads flat no matter how good the midground is.
+ *
+ * These are authored against the review camera positions in tools/poses.js — the
+ * eight viewpoints the whole world is judged from — and are deliberately off to one
+ * side or high in the frame so they frame the shot instead of blocking it.
+ */
+const FOREGROUND = [
+  /* ── hero / night: camera (8.5, 1.68, 22) looking NW up Souk Street ─────── */
+  /* Washing strung across the canyon. Deliberately restrained: the first pass hung
+     six garments at 3.5 m four metres from the lens and they filled a third of the
+     frame as dark rags. A near-field element frames a shot by *clipping* it at the
+     edge, so these sit high, carry three or four garments, and let the midground
+     through between them. */
+  { t: 'laundry_line', x: 11.4, z: 18.6, y: 4.7, raw: true, o: { to: [-9.4, 0.35, -1.1], count: 3, posts: false, sag: 0.5 } },
+  { t: 'laundry_line', x: 11.2, z: 13.6, y: 5.2, raw: true, o: { to: [-9.0, -0.2, 0.9], count: 4, posts: false, sag: 0.55 } },
+  // pavement furniture 3 m off the lens on the right, breaking the empty plaza
+  { t: 'oil_drum', x: 10.9, z: 19.4, yaw: 0.4, o: { mat: 'rust' } },
+  { t: 'oil_drum', x: 10.6, z: 20.1, yaw: 1.7 },
+  { t: 'wood_crate', x: 10.4, z: 18.4, yaw: 0.5, o: { size: 0.72 } },
+  { t: 'wood_crate', x: 10.5, z: 18.5, yaw: 1.15, o: { size: 0.6, lift: 0.74 } },
+  { t: 'produce_crate', x: 6.6, z: 19.8, yaw: 0.3 },
+  { t: 'produce_crate', x: 6.5, z: 19.6, yaw: -0.4, o: { lift: 0.17 } },
+  { t: 'litter', x: 8.2, z: 19.2, o: { count: 14, spread: 1.9 } },
+  { t: 'litter', x: 5.4, z: 15.4, o: { count: 12, spread: 1.7 } },
+  { t: 'cardboard_box', x: 2.2, z: 20.4, yaw: 0.7, o: { state: 'crushed' } },
+
+  /* ── vista: camera (4, 9.5, 30) on the hotel parapet, looking N ────────── */
+  // a cable and a washing line crossing the top of the frame at 2-3 m
+  { t: 'laundry_line', x: 12.2, z: 27.4, y: 9.6, raw: true, o: { to: [-15.6, 0.55, -0.6], count: 3, posts: false, sag: 0.8 } },
+  { t: 'laundry_line', x: 11.4, z: 24.4, y: 10.6, raw: true, o: { to: [-14.2, -0.3, 0.4], count: 2, posts: false, sag: 0.9 } },
+
+  /* ── weapon: camera (-8, 1.6, 14) inside the blue shophouse, looking N ─── */
+  { t: 'market_stall', x: -11.6, z: 11.2, yaw: 1.5, o: { w: 2.1, d: 1.05 } },
+  { t: 'wood_crate', x: -5.2, z: 11.6, yaw: 0.3, o: { size: 0.74 } },
+  { t: 'wood_crate', x: -5.1, z: 11.5, yaw: 0.9, o: { size: 0.62, lift: 0.76 } },
+  { t: 'produce_crate', x: -5.6, z: 12.6, yaw: -0.3 },
+  { t: 'cardboard_box', x: -10.4, z: 9.2, yaw: 0.5, o: { state: 'open' } },
+  { t: 'cardboard_box', x: -10.0, z: 9.6, yaw: -0.4, o: { state: 'crushed' } },
+  { t: 'plastic_chair', x: -6.8, z: 13.4, yaw: 1.1, o: { stack: 5 } },
+  { t: 'litter', x: -8.6, z: 10.4, o: { count: 11, spread: 1.4 } },
+  { t: 'pallet', x: -9.8, z: 12.8, yaw: 1.3 },
+  { t: 'oil_drum', x: -4.6, z: 9.4, yaw: 0.2, o: { mat: 'olive' } },
+  // washing strung across the shop, 2.5 m from the lens, high left
+  { t: 'laundry_line', x: -3.6, z: 11.5, y: 2.9, raw: true, o: { to: [-8.4, 0.1, 0.6], count: 5, posts: false, sag: 0.35 } },
+
+  /* ── interior: camera (-14.4, 1.62, -3.2) in the market hall ───────────── */
+  { t: 'laundry_line', x: -6.2, z: -5.4, y: 3.1, raw: true, o: { to: [-9.6, 0.2, -1.4], count: 6, posts: false, sag: 0.42 } },
+  { t: 'market_stall', x: -12.4, z: -6.4, yaw: -1.5, o: { w: 2.2, d: 1.15 } },
+  { t: 'produce_crate', x: -13.2, z: -4.4, yaw: 0.4 },
+  { t: 'produce_crate', x: -13.1, z: -4.5, yaw: -0.3, o: { lift: 0.17 } },
+  { t: 'cardboard_box', x: -16.2, z: -4.6, yaw: 0.6 },
+  { t: 'litter', x: -13.6, z: -7.6, o: { count: 12, spread: 1.5 } },
+  { t: 'tyre', x: -17.2, z: -3.0, o: { lean: 1.25 } },
+
+  /* ── ads / firefight: down the Souk from (2,1.62,10) and (10,1.66,-6) ──── */
+  { t: 'laundry_line', x: 11.6, z: 4.2, y: 4.6, raw: true, o: { to: [-10.4, 0.3, -0.8], count: 4, posts: false, sag: 0.5 } },
+  { t: 'laundry_line', x: 11.5, z: -9.6, y: 4.8, raw: true, o: { to: [-10.2, -0.25, 1.2], count: 3, posts: false, sag: 0.55 } },
+  { t: 'oil_drum', x: 1.2, z: 7.4, yaw: 0.9 },
+  { t: 'litter', x: 2.6, z: 6.4, o: { count: 10, spread: 1.5 } },
+  { t: 'rubble_pile', x: 12.6, z: -3.4, yaw: 1.5, o: { length: 2.2, depth: 0.7 } },
+
+  /* ── materials: close-up at (-2.2, 1.35, 4.4) ──────────────────────────── */
+  { t: 'litter', x: -2.9, z: 2.6, o: { count: 10, spread: 0.9 } },
+  { t: 'gas_cylinder', x: -5.9, z: 2.9, yaw: 0.8 },
+];
+
+function dressForeground(P, r) {
+  for (const an of FOREGROUND) {
+    if (P.budget <= 0) break;
+    // A `raw` line owns its own end point in prop-local space, so a random yaw would
+    // swing it somewhere else entirely: those get 0 unless the entry says otherwise.
+    const opts = { x: an.x, z: an.z, yaw: an.yaw ?? (an.raw ? 0 : r.range(0, TAU)), ...(an.o || {}) };
+    if (an.raw) {
+      opts.raw = true;
+      opts.y = an.y;
+    } else if (Number.isFinite(an.y)) {
+      opts.y = an.y;
+    }
+    P.spawn(an.t, opts);
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -243,9 +355,11 @@ function dressRoofs(P, r) {
   let tanks = 0;
   let acs = 0;
   let aerials = 0;
-  const maxTanks = 9;
-  const maxAc = 18;
-  const maxAerials = 10;
+  // A skyline is silhouette. Tall variants (tanks, aerials) are what the vista camera
+  // actually reads at 60-120 m, so they are biased up hard and capped generously.
+  const maxTanks = 18;
+  const maxAc = 30;
+  const maxAerials = 20;
   const shuffled = roofs.slice();
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = r.int(i + 1);
@@ -258,21 +372,23 @@ function dressRoofs(P, r) {
     /* keep off the very edge: a tank hanging over a parapet reads as a bug */
     if (cell.edge < 1.5) continue;
     const roll = r.next();
-    if (roll < 0.1 && tanks < maxTanks) {
+    if (roll < 0.19 && tanks < maxTanks) {
       if (P.spawn('water_tank', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true })) tanks++;
-    } else if (roll < 0.17 && acs < maxAc) {
+    } else if (roll < 0.34 && acs < maxAc) {
       if (P.spawn('ac_unit_roof', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true })) acs++;
-    } else if (roll < 0.225 && aerials < maxAerials) {
+    } else if (roll < 0.45 && aerials < maxAerials) {
       if (P.spawn('tv_aerial', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true })) aerials++;
-    } else if (roll < 0.26) {
+    } else if (roll < 0.51) {
+      P.spawn('satellite_dish', { x: cell.x, z: cell.z, y: cell.y + 0.9, yaw: r.range(0, TAU), raw: true, radius: r.range(0.3, 0.46) });
+    } else if (roll < 0.56) {
       P.spawn('gas_cylinder', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true });
-    } else if (roll < 0.30) {
+    } else if (roll < 0.61) {
       P.spawn('cardboard_box', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true, state: r.pick(['crushed', 'closed']) });
-    } else if (roll < 0.335) {
+    } else if (roll < 0.65) {
       P.spawn('tyre', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true });
-    } else if (roll < 0.365) {
+    } else if (roll < 0.71) {
       P.spawn('litter', { x: cell.x, z: cell.z, y: cell.y, onRoof: true, count: 5 + r.int(5), spread: 0.8 });
-    } else if (roll < 0.385) {
+    } else if (roll < 0.75) {
       P.spawn('oil_drum', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true, static: true });
     }
   }
@@ -293,7 +409,7 @@ function dressRoofs(P, r) {
         onRoof: true,
         raw: true,
         to: [b.x - a.x, r.jitter(0.15), b.z - a.z],
-        count: 3 + r.int(4),
+        count: 2 + r.int(3),
       });
       lines++;
       break;
@@ -381,9 +497,51 @@ function dressFacades(P, r) {
         // tied to a hook on the wall, not standing on poles
         posts: false,
         to: [w.nx * len, r.jitter(0.3), w.nz * len],
-        count: 3 + r.int(3),
+        count: 2 + r.int(2),
       });
       line++;
+    } else if (roll < 0.52) {
+      /* Fall-through 1: surface conduit. Six cylinders, always affordable, and it is
+         what stops a 20 m facade being one unbroken plane. */
+      P.spawn('wall_conduit', {
+        x: w.x,
+        z: w.z,
+        y: w.groundY + r.range(0.1, 0.5),
+        yaw,
+        onWall: true,
+        normal: [w.nx, 0, w.nz],
+        height: Math.min(Math.max(1.4, w.free - 0.6), r.range(2.2, 4.6)),
+      });
+    } else if (roll < 0.64) {
+      P.spawn('wall_vent', {
+        x: w.x,
+        z: w.z,
+        y: w.groundY + r.range(2.1, 3.4),
+        yaw,
+        onWall: true,
+        normal: [w.nx, 0, w.nz],
+      });
+    } else if (roll < 0.74) {
+      P.spawn('meter_box', {
+        x: w.x,
+        z: w.z,
+        y: w.groundY + r.range(1.25, 1.7),
+        yaw,
+        onWall: true,
+        normal: [w.nx, 0, w.nz],
+      });
+    } else if (roll < 0.86) {
+      /* Fall-through 2: a short conduit stub low on the wall. Cheapest of all. */
+      P.spawn('wall_conduit', {
+        x: w.x,
+        z: w.z,
+        y: w.groundY + r.range(0.05, 0.3),
+        yaw,
+        onWall: true,
+        normal: [w.nx, 0, w.nz],
+        height: r.range(1.2, 2.2),
+        drop: r.range(0.5, 1.0),
+      });
     }
   }
 }
@@ -397,14 +555,18 @@ function dressWallLines(P, r) {
   let n = 0;
   for (const w of f) {
     if (P.budget <= 0) break;
-    if (n > 200) break;
+    if (n > 620) break;
     const roll = r.next();
     /* stand-off from the wall so nothing intersects it */
     const off = r.range(0.28, 0.75);
     const x = w.x + w.nx * off;
     const z = w.z + w.nz * off;
     const yaw = Math.atan2(w.nx, w.nz) + r.jitter(0.5);
-    if (roll < 0.22) {
+    // The old thresholds left ~60 % of every wall line completely bare, which is the
+    // single biggest reason the pavements read as swept. Real streets accumulate: the
+    // fall-through at the end means *something* lands at nearly every sample point,
+    // and the cheapest options (litter, rubble) carry most of the coverage.
+    if (roll < 0.26) {
       const spread = r.range(0.4, 0.9);
       P.spawn('litter', {
         x: w.x + w.nx * (0.45 + spread * 0.5),
@@ -413,29 +575,55 @@ function dressWallLines(P, r) {
         spread,
       });
       n++;
-    } else if (roll < 0.285) {
+    } else if (roll < 0.34) {
       P.spawn('cardboard_box', { x, z, yaw, state: r.pick(['crushed', 'open', 'closed']) });
       n++;
-    } else if (roll < 0.315) {
+    } else if (roll < 0.40) {
       P.spawn('rubble_pile', { x: w.x + w.nx * 0.1, z: w.z + w.nz * 0.1, yaw, length: r.range(1.4, 2.6), depth: r.range(0.5, 0.9) });
       n++;
-    } else if (roll < 0.335) {
+    } else if (roll < 0.45) {
       P.spawn('pallet', { x, z, yaw: yaw + Math.PI / 2 + r.jitter(0.3) });
       n++;
-    } else if (roll < 0.352) {
+    } else if (roll < 0.51) {
       P.spawn('oil_drum', { x, z, yaw, tipped: r.chance(0.18) });
       n++;
-    } else if (roll < 0.368) {
+    } else if (roll < 0.57) {
       P.spawn('wood_crate', { x, z, yaw, size: r.range(0.5, 0.78) });
       n++;
-    } else if (roll < 0.383) {
+    } else if (roll < 0.62) {
       P.spawn('tyre', { x, z, yaw, lean: r.chance(0.5) ? r.range(1.0, 1.4) : 0 });
       n++;
-    } else if (roll < 0.394) {
+    } else if (roll < 0.66) {
       P.spawn('bin', { x, z, yaw });
       n++;
-    } else if (roll < 0.404) {
+    } else if (roll < 0.70) {
       P.spawn('gas_cylinder', { x, z, yaw });
+      n++;
+    } else if (roll < 0.735) {
+      P.spawn('sandbag_pile', { x, z, yaw });
+      n++;
+    } else if (roll < 0.765) {
+      P.spawn('produce_crate', { x, z, yaw });
+      n++;
+    } else if (roll < 0.79) {
+      P.spawn('tyre_stack', { x, z, count: 2 + r.int(3) });
+      n++;
+    } else if (roll < 0.815) {
+      P.spawn('cable_spool', { x, z, radius: r.range(0.5, 0.68), onSide: r.chance(0.4) });
+      n++;
+    } else if (roll < 0.845) {
+      P.spawn('jerry_can', { x, z, yaw });
+      n++;
+    } else {
+      // Fall-through: never leave a metre of wall base with nothing in it. Litter is
+      // 'flat', so it costs no collider and merges into the one debris batch.
+      const spread = r.range(0.5, 1.1);
+      P.spawn('litter', {
+        x: w.x + w.nx * (0.4 + spread * 0.5),
+        z: w.z + w.nz * (0.4 + spread * 0.5),
+        count: 5 + r.int(8),
+        spread,
+      });
       n++;
     }
   }

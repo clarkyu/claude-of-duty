@@ -406,7 +406,7 @@ export class ProbeSystem {
 		vec4 pp = uProbePos[ ${i} ];
 		vec3 bmin = uProbeMin[ ${i} ].xyz;
 		vec3 bmax = uProbeMax[ ${i} ].xyz;
-		float w = pp.w * codProbeWeight( worldPos, bmin, bmax, uProbeMin[ ${i} ].w );
+		float w = pp.w * codProbeWeight( worldPos, bmin, bmax, uProbeMin[ ${i} ].w, pp.xyz );
 		if ( w > 0.0001 ) {
 			vec3 d = codBoxProject( worldRefl, worldPos, bmin, bmax, pp.xyz );
 			acc += textureCubeUV( uProbeMap${i}, d, roughness ).rgb * ( w * uProbeMax[ ${i} ].w );
@@ -425,11 +425,28 @@ uniform vec4 uProbePos[ ${n} ];   // xyz centre, w enabled
 uniform vec4 uProbeMin[ ${n} ];   // xyz box min, w feather (m)
 uniform vec4 uProbeMax[ ${n} ];   // xyz box max, w intensity
 ${maps}
-/** Falloff towards the box faces so neighbouring probes cross-fade instead of popping. */
-float codProbeWeight( vec3 p, vec3 bmin, vec3 bmax, float feather ) {
+/**
+ * Falloff towards the box faces so neighbouring probes cross-fade instead of popping,
+ * *and* away from the capture point.
+ *
+ * The second half matters more than it looks. Containment alone gives every point in
+ * a 45 m auto-placed box a weight of 1, so a cube shot from the middle of the open
+ * street completely replaces the sky IBL on surfaces inside a closed room thirty
+ * metres away — and because box projection only re-aims the direction and knows
+ * nothing about occlusion, two walls of the same 8 m room end up sampling two
+ * unrelated parts of an outdoor capture. That is the "cold wall, warm ceiling, no
+ * motivating source" artefact: it is not a lighting decision, it is a probe reaching
+ * somewhere it has no information about. Fading with distance from the capture point,
+ * normalised to the probe's own half-extent, keeps the probe authoritative where it
+ * was measured and hands the rest back to the sky environment.
+ */
+float codProbeWeight( vec3 p, vec3 bmin, vec3 bmax, float feather, vec3 origin ) {
 	vec3 d = min( p - bmin, bmax - p );
 	float m = min( min( d.x, d.y ), d.z );
-	return clamp( m / max( feather, 0.05 ), 0.0, 1.0 );
+	float box = clamp( m / max( feather, 0.05 ), 0.0, 1.0 );
+	vec3 halfExtent = max( ( bmax - bmin ) * 0.5, vec3( 0.5 ) );
+	float rel = length( ( p - origin ) / halfExtent );
+	return box * ( 1.0 - smoothstep( 0.3, 0.95, rel ) );
 }
 
 /** Intersect the reflection ray with the probe volume and re-aim it at the capture point. */

@@ -38,7 +38,7 @@
 import * as THREE from 'three';
 
 /** Bump when the GLSL changes so cached programs are not reused across a hot reload. */
-export const EXT_VERSION = 4;
+export const EXT_VERSION = 5;
 
 /* ========================================================================== */
 /*                             global uniform bag                             */
@@ -208,6 +208,9 @@ uniform sampler2D uCodHeightMap;
 #ifdef COD_TILEBREAK
 	uniform vec4 uCodBreak;  // maskScale, strength, fadeStart(m), fadeEnd(m)
 #endif
+#ifdef COD_MACRO
+	uniform vec4 uCodMacro;  // macroStrength, edgeWear, edgeMetal, streak
+#endif
 #ifdef COD_LAYER
 	uniform sampler2D uCodLayerMap;
 	uniform sampler2D uCodLayerNormal;
@@ -261,13 +264,17 @@ ${HELPERS}
  * direction; the sample count scales with the grazing angle where the artefacts are.
  */
 vec2 codParallax( sampler2D hmap, vec2 uv, vec3 tv, float scale, float layers, out float hOut ) {
-	float n = clamp( mix( layers, max( 4.0, layers * 0.35 ), abs( tv.z ) ), 4.0, 40.0 );
+	// Loop bound 24, not 40. Drivers unroll a constant-bound loop, so the bound sets the
+	// compiled instruction count for every material that has POM — and on the software
+	// rasteriser used for review builds, program compilation is the single biggest term
+	// in boot time. Nothing above ultra (26 layers, clamped here) ever needed more.
+	float n = clamp( mix( layers, max( 4.0, layers * 0.35 ), abs( tv.z ) ), 4.0, 24.0 );
 	float stepH = 1.0 / n;
 	vec2 delta = ( tv.xy / max( 0.25, tv.z ) ) * scale * stepH;
 	float h = 1.0;
 	vec2 cur = uv;
 	float d = 1.0 - texture2D( hmap, cur ).x;
-	for ( int i = 0; i < 40; i ++ ) {
+	for ( int i = 0; i < 24; i ++ ) {
 		if ( float( i ) >= n || d < h ) break;
 		h -= stepH;
 		cur -= delta;
@@ -334,6 +341,9 @@ float codHeight = 0.5;
 float codPomShadow = 1.0;
 float codWetAmount = 0.0;
 float codGrime = 0.0;
+float codMacroN = 0.5;    // world-space low-frequency band, 0..1
+float codStreak = 0.0;    // world-space vertical staining
+float codGlassDirt = 0.0;
 
 #ifdef COD_POM
 {
@@ -391,10 +401,6 @@ vec3 codNw;
 	codNw = normalize( codTBN * nTS );
 }
 #endif
-// The forge packs the full-resolution height field in albedo.a, so this is free and
-// it is already sampled at the parallax-corrected UV.
-codHeight = codAlb.a;
-
 /* ---- tiling break-up: second rotated sample, low-frequency mask ---- */
 #ifdef COD_TILEBREAK
 {
@@ -420,6 +426,55 @@ codHeight = codAlb.a;
 }
 #endif
 
+// The forge packs the full-resolution height field in albedo.a, so this is free and it
+// is already sampled at the parallax-corrected, break-up-blended UV.
+codHeight = codAlb.a;
+
+/* ---- world-space macro variation, staining and convex edge wear ---- */
+#ifdef COD_MACRO
+{
+	// Sampled from WORLD POSITION, never from the tile UV. This block used to live in
+	// the *generation* shader against vUv — 0..1 across one tile — so every copy of the
+	// tile got the same blotch in the same place and it advertised the grid instead of
+	// breaking it. uCodGrunge packs r = fine dirt (1/48 tile), g = large blotches
+	// (1/4 tile), b = cell net, a = downward streaks, so one fetch at 1/80 m gives a
+	// ~20 m band in .g and a ~1.7 m band in .r and neither can line up with a repeat.
+	vec4 mA = texture2D( uCodGrunge, vCodWPos.xz * 0.0125 + vCodWPos.y * 0.0031 );
+	codMacroN = codSat( mA.g * 0.7 + mA.r * 0.3 );
+	float macro = codMacroN - 0.5;
+	float amt = uCodMacro.x;
+	codAlb.rgb *= 1.0 + macro * 0.30 * amt;
+	// Batch-to-batch colour. Render, concrete and brick arrive in loads that never
+	// quite match, and that mismatch is most of what makes a long wall read as built.
+	codAlb.rgb = mix( codAlb.rgb, codAlb.rgb * vec3( 1.07, 1.0, 0.90 ), codSat( mA.g * 1.7 - 0.45 ) * 0.35 * amt );
+	codOrm.g = codSat( codOrm.g + macro * 0.14 * amt );
+
+	// Vertical staining, placed in world space. runoff() in the generation pass is in
+	// tile UV, so every 3 m the identical streak restarted from nothing; here the
+	// source band is horizontal world position and the smear runs down the building,
+	// which is at least the right *kind* of wrong until decals place it from geometry.
+	float face = codSat( 1.0 - abs( codWN.y ) * 1.8 );
+	if ( uCodMacro.w > 0.01 && face > 0.02 ) {
+		vec4 mB = texture2D( uCodGrunge, vec2( ( vCodWPos.x * 0.86 + vCodWPos.z * 0.51 ) * 0.055, vCodWPos.y * 0.011 ) );
+		codStreak = codSat( mB.a * 1.4 + mB.r * 0.3 - 0.44 ) * face * uCodMacro.w;
+		codAlb.rgb *= mix( vec3( 1.0 ), vec3( 0.66, 0.645, 0.60 ), codStreak * 0.75 );
+		codOrm.g = codSat( codOrm.g + codStreak * 0.16 );
+	}
+
+	// Convex edge wear — the inverse of the cavity term that already drives grime.
+	// The proud parts of the height field are the only parts that anything ever
+	// touches, so they lose their grime, lose their roughness and, on metal, lose
+	// their oxide. Without it every arris, nosing and kerb vanishes the moment the two
+	// faces either side of it happen to share a tone.
+	float convex = smoothstep( 0.60, 0.93, codHeight ) * ( 0.30 + 0.85 * codMacroN );
+	float wear = convex * uCodMacro.y * ( 1.0 - codStreak * 0.6 );
+	codAlb.rgb = mix( codAlb.rgb, codAlb.rgb * 1.20 + vec3( 0.035 ), wear );
+	codOrm.g = codSat( codOrm.g - wear * 0.40 );
+	codOrm.b = codSat( codOrm.b + wear * uCodMacro.z );
+	codOrm.r = codSat( codOrm.r + wear * 0.12 );
+}
+#endif
+
 /* ---- second material driven by vertex colour (snow / mud / paint) ---- */
 #ifdef COD_VCOL
 	vec3 codMask = codSat3( vColor.rgb );
@@ -429,7 +484,9 @@ codHeight = codAlb.a;
 
 #ifdef COD_LAYER
 {
-	float lw = codSat( codMask.g * uCodLayer.x + uCodLayer.y );
+	// Drifts pile up somewhere in particular. Without a world-scale mask a global
+	// layerAmount is a uniform film over the whole map, which is worse than no layer.
+	float lw = codSat( ( codMask.g * uCodLayer.x + uCodLayer.y ) * ( 0.25 + 1.5 * codMacroN ) );
 	if ( lw > 0.002 ) {
 		// Height-aware: cavityBias 1 fills crevices first (mud, water), 0 covers
 		// the peaks first (snow blowing onto a ledge).
@@ -525,6 +582,26 @@ codHeight = codAlb.a;
 }
 #endif
 
+/* ---- glass: pane-to-pane variation and a real dirt gradient ---- */
+#ifdef COD_GLASS
+{
+	// Computed here rather than at the alpha tail so it can drive roughness and the
+	// specular response too — a dirty pane is not just a more opaque clean pane.
+	// Per-pane hash: a real facade has a different film on every sheet, and identical
+	// glazing across forty windows is one of the loudest "generated" tells there is.
+	vec3 pc = floor( vCodWPos * vec3( 0.75, 0.55, 0.75 ) );
+	float pane = fract( sin( dot( pc, vec3( 12.9898, 78.233, 37.719 ) ) ) * 43758.5453 );
+	vec4 gr = texture2D( uCodGrunge, vCodUv * uCodGlass.w + pane * 7.13 );
+	// Rain carries the muck down the sheet and it dries in the bottom of the frame.
+	float down = codSat( 0.62 - fract( vCodWPos.y * 0.55 ) ) * 2.0;
+	codGlassDirt = codSat( ( gr.r * 0.45 + gr.g * 0.55 ) * ( 0.5 + 1.0 * down ) * uCodGlass.z * ( 0.55 + 0.9 * pane ) );
+	codAlb.rgb = mix( codAlb.rgb, codAlb.rgb * 0.55 + vec3( 0.15, 0.146, 0.136 ), codGlassDirt * 0.9 );
+	// Clean glass is optically smooth; the film is what scatters. Driving roughness
+	// from the dirt is what lets the clean part of the pane behave like a mirror.
+	codOrm.g = codSat( mix( codOrm.g * 0.30, 0.78, codGlassDirt ) );
+}
+#endif
+
 diffuseColor.rgb *= codAlb.rgb;
 #ifdef COD_ALPHA_FROM_MAP
 	diffuseColor.a *= codAlb.a;
@@ -606,6 +683,9 @@ diffuseColor.a = alpha;
 float codHeight = 0.5;
 vec3 codMask = vec3( 0.0 );
 float codGrime = 0.0;
+float codMacroN = 0.5;
+float codStreak = 0.0;
+float codGlassDirt = 0.0;
 float codFresnel = fres;
 `;
 
@@ -640,6 +720,13 @@ export const FRAG_PHYSICAL_TAIL = /* glsl */ `
 #endif
 #ifdef COD_WATER
 	material.roughness = max( 0.0325, roughnessFactor );
+	material.specularF90 = 1.0;
+#endif
+#ifdef COD_GLASS
+	// F90 = 1 so the grazing-angle reflection reaches full strength. The pane's alpha
+	// is fresnel-driven (see FRAG_ALPHA_TAIL), and because the blend multiplies the
+	// whole outgoing radiance by alpha, that is also what lets the reflection grow
+	// towards the edge of the sheet instead of sitting at one painted-on brightness.
 	material.specularF90 = 1.0;
 #endif
 `;
@@ -728,10 +815,10 @@ export const FRAG_EMISSIVE = /* glsl */ `
 export const FRAG_ALPHA_TAIL = /* glsl */ `
 #ifdef COD_GLASS
 {
+	// Fresnel: near-transparent head-on, near-opaque at grazing. That transition IS
+	// glass — a pane with a constant alpha reads as a sheet of dark plastic.
 	float f = pow( 1.0 - codSat( dot( codNw, codVw ) ), 5.0 );
-	vec4 gr = texture2D( uCodGrunge, vCodUv * uCodGlass.w );
-	float dirt = codSat( gr.r * 0.55 + gr.g * 0.45 ) * uCodGlass.z;
-	diffuseColor.a = codSat( uCodGlass.x + f * uCodGlass.y + dirt );
+	diffuseColor.a = codSat( uCodGlass.x + f * uCodGlass.y + codGlassDirt * 0.85 );
 }
 #endif
 `;

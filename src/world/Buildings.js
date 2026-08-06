@@ -24,7 +24,7 @@ import { clamp, hash2, hash3, lerp } from './kit/geom.js';
 import { wallRun, addPillar, addDownpipe, lowWall } from './kit/Walls.js';
 import { stairs, railing, ladder, crate, crateStack } from './kit/Stairs.js';
 import { roofDeck, parapet, pitchedRoof, balcony, awning, canopy, roofClutter } from './kit/Roofs.js';
-import { signBoard } from './kit/Street.js';
+import { signBoard, marketStall } from './kit/Street.js';
 
 const _up = new THREE.Vector3(0, 1, 0);
 
@@ -221,6 +221,12 @@ export function buildBuilding(bat, def, rng) {
         const ph = hash3(Math.round(x0 * 3) + side, Math.round(z0 * 3), k + 1);
         const ph2 = hash3(Math.round(z0 * 3) - side, Math.round(x0 * 3), k + 7);
         bat.uvOffset = [ph * 6.37, ph2 * 4.91];
+        // The plinth, the string course and the cornice run *through* the unit joints,
+        // so they take one phase for the whole side. Per-segment phase made the dado
+        // band jump at every boundary, which reads as the band stepping in height.
+        const bph = hash3(Math.round(x0 * 3) + side * 13, Math.round(z0 * 3) + side, 3);
+        const bph2 = hash3(Math.round(z0 * 3) - side * 7, Math.round(x0 * 3), 11);
+        const bandUv = [bph * 5.11, bph2 * 3.73];
 
         // Three material zones on every facade, which is what stops a wall reading
         // as one extruded rectangle: a protruding plinth at splash-back height, a
@@ -243,7 +249,11 @@ export function buildBuilding(bat, def, rng) {
           openings: blocked.concat(wins),
           plinth: li === 0 ? def.plinth : null,
           cornice: isTop ? def.cornice : band,
-          glassMat: 'glass.window',
+          bandUv,
+          // Shopfront glazing is its own palette key: a shop window is plate glass in
+          // a steel frame, not the same dirty domestic pane, and giving it a distinct
+          // material stops the glazing inheriting the wall's read entirely.
+          glassMat: spec?.style === 'shop' ? 'glass.shop' : 'glass.window',
           windowStyle: null,
         });
       }
@@ -255,6 +265,15 @@ export function buildBuilding(bat, def, rng) {
           bat.b('struct.concreteClean').box([p.x, (y0 + y1) * 0.5, p.z], [0.16, (y1 - y0) * 0.5, 0.16], {
             chamfer: 0.02,
           });
+          // Matching rib on the inside face. Two paints meeting at a bare vertical
+          // seam in the middle of a wall reads as a material assignment error; a
+          // pilaster is what a real party wall junction actually looks like.
+          if (def.inner) {
+            const q = sidePoint(rect, side, t, k * segLen, -t * 0.5 - 0.035);
+            bat.b('struct.concreteClean').box([q.x, (y0 + y1) * 0.5, q.z], [0.14, (y1 - y0) * 0.5, 0.14], {
+              chamfer: 0.02,
+            });
+          }
         }
       }
     }
@@ -334,6 +353,7 @@ export function buildBuilding(bat, def, rng) {
   if (def.fireEscape) buildFireEscape(bat, def, ys, roofY);
   if (def.interior === 'market') buildMarketInterior(bat, def, ys, roofY, rng);
   if (def.interior === 'garage') buildGarageInterior(bat, def, ys, rng);
+  if (def.interior === 'shop') buildShopInterior(bat, def, ys, rng);
 
   /* ── LOD 1 shell ─────────────────────────────────────────────────────── */
   bat.lod = 1;
@@ -620,12 +640,25 @@ function buildMarketInterior(bat, def, ys, roofY, rng) {
   const voidX0 = def.floorVoid ? def.floorVoid.rect[0] : Infinity;
   for (const cx of colX) {
     const tall = cx > voidX0;
+    const size = tall ? 0.68 : 0.62;
+    const y1 = tall ? roofY - 0.34 : mez - 0.28;
     for (const cz of colZ) {
-      addPillar(bat, cx, cz, g, tall ? roofY - 0.34 : mez - 0.28, tall ? 0.68 : 0.62, {
+      // A column that meets a tile floor at a razor 90 degrees reads as an extruded
+      // rectangle, not as a column. Two extra boxes — a stepped plinth and a flared
+      // capital — are what turn it into architecture, and they are also what carries
+      // the contact shadow at the floor junction.
+      addPillar(bat, cx, cz, g, y1, size, {
         mat: 'struct.concreteClean',
         round: true,
         segments: 14,
+        baseH: 0.34,
+        capH: 0.3,
       });
+      const pm = bat.b('struct.concrete');
+      pm.box([cx, g + 0.08, cz], [size * 0.92, 0.08, size * 0.92], { chamfer: 0.03 }); // sub-plinth
+      pm.box([cx, y1 - 0.36, cz], [size * 0.86, 0.06, size * 0.86], { chamfer: 0.025 }); // necking
+      // Splash-back kick at the very bottom, which is what stops the razor line.
+      bat.b('int.tile').box([cx, g + 0.02, cz], [size * 1.02, 0.02, size * 1.02], { chamfer: 0.01 });
     }
   }
   // A transfer beam across the heads of the tall columns, so the roof visibly lands
@@ -691,16 +724,231 @@ function buildMarketInterior(bat, def, ys, roofY, rng) {
     bat.b('metal.paintCream').box([lx, roofY + 1.2, lz + i * 2.1], [3.0, 0.06, 0.07], { chamfer: 0.012 });
   }
 
-  // Market counters — waist-high cover inside the hall.
-  for (let i = 0; i < 5; i++) {
-    const cx = lerp(mx1 + 1.4, x1 - 2.4, rng());
-    const cz = lerp(z0 + 2.4, z1 - 2.4, rng());
-    const yaw = rng() > 0.5 ? 0 : Math.PI / 2;
-    lowWall(bat, cx - Math.cos(yaw) * 1.3, cz + Math.sin(yaw) * 1.3, cx + Math.cos(yaw) * 1.3, cz - Math.sin(yaw) * 1.3, g, g + 0.92, 0.5, 'int.tile', {
-      copingMat: 'wood.weathered',
+  /* ── the hall is 30 x 25 m: it needs beams, fittings and real furniture ──── */
+
+  // Roof joists spanning the double-height void, hung off the transfer beam. Without
+  // them the ceiling is a flat plane wearing the exterior wall's crack texture.
+  const jm = bat.b('wood.weathered');
+  for (let i = 0; ; i++) {
+    const jz = z0 + 2.2 + i * 1.9;
+    if (jz > z1 - 2.2) break;
+    jm.box([(mx1 + x1) * 0.5 + 0.6, roofY - 0.62, jz], [(x1 - mx1) * 0.5 - 0.3, 0.13, 0.07], { chamfer: 0.014 });
+  }
+  // Purlins the other way, and a run of pendant fittings down the middle of the hall.
+  for (const px of [mx1 + 2.4, mx1 + 6.4]) {
+    jm.box([px, roofY - 0.78, (z0 + z1) * 0.5], [0.08, 0.1, (z1 - z0) * 0.5 - 1.6], { chamfer: 0.014 });
+  }
+  for (let i = 0; i < 4; i++) {
+    const lz = lerp(z0 + 4.5, z1 - 4.5, i / 3);
+    const lx = (mx1 + x1) * 0.5 + 0.6;
+    bat.b('metal.rust').cylinder([lx, roofY - 0.8, lz], [lx, roofY - 2.1, lz], 0.01, 4);
+    bat.b('metal.paintGreen').cylinder([lx, roofY - 2.08, lz], [lx, roofY - 2.34, lz], 0.24, 10, { radius2: 0.07 });
+    bat.b('sign.lit').cylinder([lx, roofY - 2.32, lz], [lx, roofY - 2.36, lz], 0.14, 8);
+  }
+
+  // Skirting round the hall so the tile floor does not meet the plaster at a razor.
+  const sk = bat.b('struct.concrete');
+  for (const [ax, az, bx, bz] of [
+    [x0 + t, z0 + t, x1 - t, z0 + t],
+    [x1 - t, z0 + t, x1 - t, z1 - t],
+    [x1 - t, z1 - t, x0 + t, z1 - t],
+    [x0 + t, z1 - t, x0 + t, z0 + t],
+  ]) {
+    sk.box([(ax + bx) * 0.5, g + 0.075, (az + bz) * 0.5], [Math.abs(bx - ax) * 0.5 + 0.04, 0.075, Math.abs(bz - az) * 0.5 + 0.04], {
+      chamfer: 0.012,
+    });
+  }
+
+  // Market counters. These used to be five bare `lowWall` runs in the floor tile
+  // material — a literal blockout mass with no material identity, still in the frame.
+  // `marketStall` is a real stall: steel frame, canvas canopy, timber counter, and it
+  // gives the hall the silhouette a market is supposed to have.
+  const stalls = [
+    [mx1 + 2.2, z0 + 4.6, 0],
+    [mx1 + 2.4, z0 + 10.4, 0],
+    [mx1 + 2.3, z0 + 16.2, 0],
+    [x1 - 3.4, z0 + 7.2, Math.PI],
+    [x1 - 3.6, z0 + 13.6, Math.PI],
+    [x1 - 3.5, z0 + 19.4, Math.PI],
+  ];
+  for (const [sx, sz, syaw] of stalls) {
+    if (sx <= mx1 || sx >= x1 - 1.2) continue;
+    marketStall(bat, sx, g, sz, syaw + (rng() - 0.5) * 0.12, { width: 2.4, depth: 1.5, height: 2.2 });
+  }
+  // Two plain trestle counters as low cover between the stalls.
+  for (const [cx, cz, yaw] of [
+    [(mx1 + x1) * 0.5 + 0.4, z0 + 7.8, Math.PI / 2],
+    [(mx1 + x1) * 0.5 + 0.2, z0 + 17.0, Math.PI / 2],
+  ]) {
+    lowWall(bat, cx - Math.cos(yaw) * 1.4, cz + Math.sin(yaw) * 1.4, cx + Math.cos(yaw) * 1.4, cz - Math.sin(yaw) * 1.4, g, g + 0.92, 0.55, 'wood.weathered', {
+      copingMat: 'struct.concreteClean',
     });
   }
   crateStack(bat, x1 - 2.2, z0 + 3.4, g, g + 1.9, 0.3, rng);
+  crateStack(bat, mx1 + 1.3, z1 - 3.0, g, g + 1.5, -0.25, rng);
+}
+
+/**
+ * A row of shop units. The `weapon` review camera stands in the middle one, and until
+ * now that was a bare box: three walls, three windows, a floor and a ceiling, with no
+ * door, no trim, no skirting and no light fitting.
+ *
+ * What actually makes a room read as a room, in order of how much it buys:
+ *   1. a **skirting** and a **dado rail**, so the wall/floor junction is not a razor;
+ *   2. **ceiling joists**, so the ceiling is not one flat plane wearing a wall texture;
+ *   3. a **pendant light** on a flex — the single element that says "interior";
+ *   4. a partition with a door opening, so the space has depth beyond the near wall;
+ *   5. a counter, shelving and stock.
+ */
+function buildShopInterior(bat, def, ys, rng) {
+  const [x0, z0, x1, z1] = def.rect;
+  const t = def.thick ?? 0.4;
+  const g = ys[0];
+  const ceil = ys[1];
+  const ix0 = x0 + t;
+  const ix1 = x1 - t;
+  const iz0 = z0 + t;
+  const iz1 = z1 - t;
+  const units = Math.max(1, def.units || 1);
+  const unitAxis = x1 - x0 >= z1 - z0 ? 'x' : 'z';
+
+  /* ── skirting + dado rail all the way round ────────────────────────────── */
+  const runs = [
+    [ix0, iz0, ix1, iz0],
+    [ix1, iz0, ix1, iz1],
+    [ix1, iz1, ix0, iz1],
+    [ix0, iz1, ix0, iz0],
+  ];
+  const sk = bat.b('wood.painted');
+  const dd = bat.b('struct.concreteClean');
+  for (const [ax, az, bx, bz] of runs) {
+    const cx = (ax + bx) * 0.5;
+    const cz = (az + bz) * 0.5;
+    const hx = Math.max(0.03, Math.abs(bx - ax) * 0.5);
+    const hz = Math.max(0.03, Math.abs(bz - az) * 0.5);
+    // skirting board
+    sk.box([cx, g + 0.09, cz], [hx + 0.03, 0.09, hz + 0.03], { chamfer: 0.012 });
+    // dado rail at chair height — the horizontal that stops a wall reading as one plane
+    dd.box([cx, g + 1.05, cz], [hx + 0.018, 0.035, hz + 0.018], { chamfer: 0.01 });
+  }
+
+  /* ── ceiling joists ───────────────────────────────────────────────────── */
+  const jm = bat.b('wood.weathered');
+  const along = x1 - x0 >= z1 - z0;
+  const span = along ? iz1 - iz0 : ix1 - ix0;
+  const count = Math.max(4, Math.round((along ? ix1 - ix0 : iz1 - iz0) / 1.15));
+  for (let i = 0; i < count; i++) {
+    const u = lerp(along ? ix0 + 0.5 : iz0 + 0.5, along ? ix1 - 0.5 : iz1 - 0.5, i / (count - 1));
+    if (along) jm.box([u, ceil - 0.42, (iz0 + iz1) * 0.5], [0.055, 0.13, span * 0.5], { chamfer: 0.012 });
+    else jm.box([(ix0 + ix1) * 0.5, ceil - 0.42, u], [span * 0.5, 0.13, 0.055], { chamfer: 0.012 });
+  }
+  // one deeper spine beam under the joists
+  if (along) jm.box([(ix0 + ix1) * 0.5, ceil - 0.6, (iz0 + iz1) * 0.5], [(ix1 - ix0) * 0.5, 0.16, 0.11], { chamfer: 0.016 });
+  else jm.box([(ix0 + ix1) * 0.5, ceil - 0.6, (iz0 + iz1) * 0.5], [0.11, 0.16, (iz1 - iz0) * 0.5], { chamfer: 0.016 });
+
+  /* ── one fit-out per unit ─────────────────────────────────────────────── */
+  for (let k = 0; k < units; k++) {
+    const f0 = k / units;
+    const f1 = (k + 1) / units;
+    const ux0 = unitAxis === 'x' ? lerp(ix0, ix1, f0) : ix0;
+    const ux1 = unitAxis === 'x' ? lerp(ix0, ix1, f1) : ix1;
+    const uz0 = unitAxis === 'x' ? iz0 : lerp(iz0, iz1, f0);
+    const uz1 = unitAxis === 'x' ? iz1 : lerp(iz0, iz1, f1);
+    const cx = (ux0 + ux1) * 0.5;
+    const cz = (uz0 + uz1) * 0.5;
+
+    /**
+     * Party partition between units, as a **stub** running back from the shopfront
+     * for a little over half the depth, with a doorway punched through it.
+     *
+     * A stub rather than a full division for two reasons: the far half stays open so
+     * the eye reads all the way to the back of the terrace (depth, which a sealed box
+     * has none of), and a receding wall a metre to one side of the camera is the
+     * cheapest perspective line there is. It is deliberately offset off the exact unit
+     * boundary so it can never land on top of a spawn or a review camera.
+     */
+    if (k > 0) {
+      const runLen = unitAxis === 'x' ? (uz1 - uz0) * 0.56 : (ux1 - ux0) * 0.56;
+      if (unitAxis === 'x') {
+        const px = ux0 - 0.75;
+        wallRun(bat, {
+          x0: px,
+          z0: uz0 + 0.05,
+          x1: px,
+          z1: uz0 + runLen,
+          y0: g,
+          y1: ceil - 0.1,
+          thick: 0.2,
+          mat: 'int.plaster',
+          openings: [{ u: runLen * 0.62, w: 1.1, h: 2.15, type: 'door' }],
+          plinth: null,
+          cornice: null,
+        });
+      } else {
+        const pz = uz0 - 0.75;
+        wallRun(bat, {
+          x0: ux0 + 0.05,
+          z0: pz,
+          x1: ux0 + runLen,
+          z1: pz,
+          y0: g,
+          y1: ceil - 0.1,
+          thick: 0.2,
+          mat: 'int.plaster',
+          openings: [{ u: runLen * 0.62, w: 1.1, h: 2.15, type: 'door' }],
+          plinth: null,
+          cornice: null,
+        });
+      }
+    }
+
+    // Pendant light on a flex — the one element that says "someone works here".
+    const px = cx + (rng() - 0.5) * 1.4;
+    const pz = cz + (rng() - 0.5) * 1.4;
+    bat.b('metal.rust').cylinder([px, ceil - 0.62, pz], [px, ceil - 1.35, pz], 0.008, 4);
+    bat.b('metal.paintCream').cylinder([px, ceil - 1.34, pz], [px, ceil - 1.52, pz], 0.16, 10, { radius2: 0.05 });
+    bat.b('sign.lit').cylinder([px, ceil - 1.5, pz], [px, ceil - 1.55, pz], 0.1, 8);
+
+    // Counter along the back, with a till plinth and a shelf under it.
+    const back = unitAxis === 'x' ? { ax: ux0 + 0.5, az: uz0 + 1.1, bx: ux1 - 0.5, bz: uz0 + 1.1 } : { ax: ux0 + 1.1, az: uz0 + 0.5, bx: ux0 + 1.1, bz: uz1 - 0.5 };
+    lowWall(bat, back.ax, back.az, back.bx, back.bz, g, g + 0.94, 0.56, 'wood.weathered', {
+      copingMat: 'struct.concreteClean',
+    });
+
+    // Wall shelving: three boards on brackets against the long inner wall.
+    const shx = unitAxis === 'x' ? cx : ux1 - 0.4;
+    const shz = unitAxis === 'x' ? uz1 - 0.4 : cz;
+    const shL = unitAxis === 'x' ? Math.min(2.6, (ux1 - ux0) * 0.5) : Math.min(2.6, (uz1 - uz0) * 0.5);
+    const bm = bat.b('wood.ply');
+    for (let s = 0; s < 3; s++) {
+      const sy = g + 0.9 + s * 0.62;
+      if (unitAxis === 'x') bm.box([shx, sy, shz], [shL, 0.024, 0.24], { chamfer: 0.008 });
+      else bm.box([shx, sy, shz], [0.24, 0.024, shL], { chamfer: 0.008 });
+      // stock: a few boxes standing on the board
+      for (let b = 0; b < 4; b++) {
+        const ft = (b + 0.5) / 4;
+        const bx2 = unitAxis === 'x' ? lerp(shx - shL + 0.2, shx + shL - 0.2, ft) : shx;
+        const bz2 = unitAxis === 'x' ? shz : lerp(shz - shL + 0.2, shz + shL - 0.2, ft);
+        if (rng() < 0.35) continue;
+        const bh = 0.14 + rng() * 0.16;
+        bat
+          .b(rng() > 0.5 ? 'wood.painted' : 'struct.panelPale')
+          .box([bx2, sy + 0.024 + bh * 0.5, bz2], [0.11, bh * 0.5, 0.11], { chamfer: 0.012 });
+      }
+    }
+    // Bracket pairs under the shelves.
+    const brm = bat.b('metal.rust');
+    for (const s of [-1, 1]) {
+      const bx2 = unitAxis === 'x' ? shx + s * (shL - 0.25) : shx;
+      const bz2 = unitAxis === 'x' ? shz : shz + s * (shL - 0.25);
+      brm.box([bx2, g + 1.52, bz2], [0.02, 0.65, 0.02], { chamfer: 0 });
+    }
+  }
+  // Floor grime strip where the traffic runs — a wear lane, authored as geometry so it
+  // survives whatever the material library is doing.
+  bat.b('int.tile').box([(ix0 + ix1) * 0.5, g + 0.008, (iz0 + iz1) * 0.5], [(ix1 - ix0) * 0.32, 0.008, (iz1 - iz0) * 0.3], {
+    chamfer: 0.004,
+  });
 }
 
 function buildGarageInterior(bat, def, ys, rng) {
@@ -954,4 +1202,203 @@ export function buildBackdrop(bat, def) {
   bat.uvOffset = [0, 0];
 }
 
-export default { buildBuilding, buildMinaret, buildFuelStation, buildBackdrop, sideLine, sidePoint };
+/* ------------------------------------------------------- the far distance */
+
+/** Periodic ridge profile — integer harmonics so the ring closes cleanly at theta 0. */
+function ridgeAt(theta, base, bands) {
+  let h = base;
+  for (let i = 0; i < bands.length; i++) {
+    const amp = bands[i][0];
+    const f = Math.max(1, Math.round(bands[i][1]));
+    h += amp * 0.62 * Math.sin(theta * f + i * 2.399 + 0.7);
+    h += amp * 0.38 * Math.sin(theta * (f * 2 + 1) + i * 1.137);
+  }
+  return Math.max(5, h);
+}
+
+/**
+ * The far terrain band. A retail vista frame is three explicit depth layers: the
+ * playspace, a mid backdrop of non-playable geometry, and a far terrain layer whose
+ * only job is to make sure the horizon is never a straight line. Without it the tan
+ * ground plane meets the sky at a razor edge and the world visibly stops at the fence.
+ *
+ * Built as two nested cones: the ring nearest the camera sits below grade (hidden
+ * behind the backdrop blocks) and the surface rises away to the ridgeline, so the
+ * hillside faces the player and takes the sun the same way the map does.
+ */
+export function buildHorizon(bat, H) {
+  if (!H) return;
+  const seg = Math.max(24, H.segments ?? 96);
+  const layer = (rNear, yNear, rFar, base, bands, mat) => {
+    const mb = bat.b(mat);
+    const dR = rFar - rNear;
+    const prev = { x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0 };
+    let p0 = null;
+    for (let i = 0; i <= seg; i++) {
+      const a = (i / seg) * Math.PI * 2;
+      const ca = Math.cos(a);
+      const sa = Math.sin(a);
+      const h = ridgeAt(a, base, bands);
+      const dY = h - yNear;
+      const nl = Math.hypot(ca * dY, dR, sa * dY) || 1;
+      const cur = {
+        nx: (-ca * dY) / nl,
+        ny: dR / nl,
+        nz: (-sa * dY) / nl,
+        n0: [rNear * ca, yNear, rNear * sa],
+        n1: [rFar * ca, h, rFar * sa],
+      };
+      if (p0) {
+        mb.quad(p0.n0, cur.n0, cur.n1, p0.n1, [(p0.nx + cur.nx) * 0.5, (p0.ny + cur.ny) * 0.5, (p0.nz + cur.nz) * 0.5]);
+      }
+      p0 = cur;
+    }
+    void prev;
+  };
+  layer(H.inner ?? 235, -1.6, H.outer ?? 620, H.base ?? 34, H.bands || [[22, 1]], H.mat || 'ground.dirt');
+  if (H.far) {
+    layer(
+      H.far.inner ?? 540,
+      -12,
+      H.far.outer ?? 1080,
+      H.far.base ?? 96,
+      [
+        [H.far.amp ?? 44, 1],
+        [(H.far.amp ?? 44) * 0.5, 3],
+        [(H.far.amp ?? 44) * 0.22, 5],
+      ],
+      H.far.mat || 'wall.bone'
+    );
+  }
+}
+
+/**
+ * Tall non-playable silhouette elements at 150-300 m: minarets, water towers, tower
+ * cranes, smokestacks and radio masts. A skyline is silhouette — a row of flat-topped
+ * boxes at similar heights is scenery, and these are what turn it into a city.
+ * Everything here is authored with the fewest segments that still reads at range.
+ */
+export function buildSkyline(bat, list) {
+  for (const s of list || []) {
+    const { x, z } = s;
+    const y0 = s.base ?? 0;
+    const h = s.h ?? 30;
+    try {
+      switch (s.kind) {
+        case 'minaret': {
+          const r = s.r ?? 3.2;
+          bat.b('wall.bone').cylinder([x, y0, z], [x, y0 + h * 0.72, z], r, 8, { radius2: r * 0.74 });
+          bat.b('struct.concreteClean').cylinder([x, y0 + h * 0.7, z], [x, y0 + h * 0.75, z], r * 1.45, 8);
+          bat.b('wall.sand').cylinder([x, y0 + h * 0.75, z], [x, y0 + h * 0.9, z], r * 0.62, 8, { radius2: r * 0.55 });
+          bat.b('roof.shingle').cylinder([x, y0 + h * 0.9, z], [x, y0 + h, z], r * 0.7, 8, { radius2: 0.1 });
+          bat.b('metal.galv').cylinder([x, y0 + h, z], [x, y0 + h + r * 0.9, z], r * 0.05, 5);
+          break;
+        }
+        case 'dome': {
+          const r = s.r ?? 10;
+          bat.b('wall.bone').box([x, y0 + h * 0.35, z], [r, h * 0.35, r], { chamfer: 0.5 });
+          bat.b('wall.sand').cylinder([x, y0 + h * 0.7, z], [x, y0 + h, z], r * 0.62, 10, { radius2: r * 0.1 });
+          break;
+        }
+        case 'tower': {
+          // Water tower: four legs, a braced ring and a big drum on top.
+          const r = s.r ?? 6;
+          const lm = bat.b('metal.rust');
+          for (let i = 0; i < 4; i++) {
+            const a = (i / 4) * Math.PI * 2 + 0.78;
+            lm.cylinder([x + Math.cos(a) * r, y0, z + Math.sin(a) * r], [x + Math.cos(a) * r * 0.6, y0 + h * 0.66, z + Math.sin(a) * r * 0.6], 0.42, 5);
+          }
+          for (const f of [0.3, 0.52]) {
+            for (let i = 0; i < 4; i++) {
+              const a0 = (i / 4) * Math.PI * 2 + 0.78;
+              const a1 = ((i + 1) / 4) * Math.PI * 2 + 0.78;
+              const rr = r * (1 - f * 0.6);
+              lm.cylinder(
+                [x + Math.cos(a0) * rr, y0 + h * f, z + Math.sin(a0) * rr],
+                [x + Math.cos(a1) * rr, y0 + h * f, z + Math.sin(a1) * rr],
+                0.22,
+                4
+              );
+            }
+          }
+          bat.b('metal.galv').cylinder([x, y0 + h * 0.66, z], [x, y0 + h * 0.94, z], r * 0.86, 10);
+          bat.b('metal.galv').cylinder([x, y0 + h * 0.94, z], [x, y0 + h, z], r * 0.7, 10, { radius2: r * 0.12 });
+          break;
+        }
+        case 'stack': {
+          const r = s.r ?? 3;
+          bat.b('brick.red').cylinder([x, y0, z], [x, y0 + h, z], r, 10, { radius2: r * 0.52 });
+          bat.b('struct.concreteClean').cylinder([x, y0 + h, z], [x, y0 + h + 0.9, z], r * 0.62, 10);
+          for (let i = 1; i <= 3; i++) {
+            const yy = y0 + (h * i) / 4;
+            bat.b('struct.concreteClean').cylinder([x, yy, z], [x, yy + 0.5, z], r * (1 - i * 0.12) + 0.22, 10);
+          }
+          break;
+        }
+        case 'crane': {
+          // Tower crane: mast, jib, counter-jib, hook block. Pure silhouette.
+          const jib = s.jib ?? 30;
+          const yaw = s.yaw ?? 0;
+          const cs = Math.cos(yaw);
+          const sn = Math.sin(yaw);
+          const m = bat.b('metal.paintRed');
+          for (const [ox, oz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+            m.cylinder([x + ox * 0.85, y0, z + oz * 0.85], [x + ox * 0.85, y0 + h, z + oz * 0.85], 0.16, 4);
+          }
+          for (let i = 1; i * 3 < h; i++) {
+            const yy = y0 + i * 3;
+            m.cylinder([x - 0.85, yy, z - 0.85], [x + 0.85, yy, z + 0.85], 0.1, 4);
+            m.cylinder([x - 0.85, yy, z + 0.85], [x + 0.85, yy, z - 0.85], 0.1, 4);
+          }
+          // jib + counter-jib
+          const jx = x + cs * jib;
+          const jz = z - sn * jib;
+          const bx = x - cs * jib * 0.34;
+          const bz = z + sn * jib * 0.34;
+          m.cylinder([x, y0 + h, z], [jx, y0 + h - 0.6, jz], 0.2, 4);
+          m.cylinder([x, y0 + h - 1.4, z], [jx, y0 + h - 1.8, jz], 0.14, 4);
+          m.cylinder([x, y0 + h, z], [bx, y0 + h - 0.2, bz], 0.18, 4);
+          // apex A-frame and the two pendants
+          m.cylinder([x, y0 + h, z], [x, y0 + h + 6.5, z], 0.13, 4);
+          m.cylinder([x, y0 + h + 6.5, z], [x + cs * jib * 0.66, y0 + h - 0.4, z - sn * jib * 0.66], 0.07, 4);
+          m.cylinder([x, y0 + h + 6.5, z], [bx, y0 + h - 0.2, bz], 0.07, 4);
+          bat.b('struct.concrete').box([bx, y0 + h - 1.4, bz], [1.5, 1.0, 1.5], { chamfer: 0.1 });
+          // hook block on its fall
+          const hx = x + cs * jib * 0.55;
+          const hz = z - sn * jib * 0.55;
+          bat.b('metal.galv').cylinder([hx, y0 + h - 1.0, hz], [hx, y0 + h * 0.45, hz], 0.05, 4);
+          bat.b('metal.galv').box([hx, y0 + h * 0.44, hz], [0.4, 0.5, 0.4], { chamfer: 0.06 });
+          break;
+        }
+        default: {
+          // lattice radio mast
+          const m = bat.b('metal.galv');
+          for (let i = 0; i < 3; i++) {
+            const a = (i / 3) * Math.PI * 2;
+            m.cylinder([x + Math.cos(a) * 1.2, y0, z + Math.sin(a) * 1.2], [x, y0 + h, z], 0.13, 4);
+          }
+          for (let i = 1; i * 4 < h; i++) {
+            const yy = y0 + i * 4;
+            const rr = 1.2 * (1 - yy / (h * 1.3));
+            for (let k = 0; k < 3; k++) {
+              const a0 = (k / 3) * Math.PI * 2;
+              const a1 = ((k + 1) / 3) * Math.PI * 2;
+              m.cylinder(
+                [x + Math.cos(a0) * rr, yy, z + Math.sin(a0) * rr],
+                [x + Math.cos(a1) * rr, yy, z + Math.sin(a1) * rr],
+                0.07,
+                4
+              );
+            }
+          }
+          bat.b('metal.paintRed').cylinder([x, y0 + h, z], [x, y0 + h + 3, z], 0.08, 4);
+          break;
+        }
+      }
+    } catch {
+      /* one bad silhouette must never take the horizon with it */
+    }
+  }
+}
+
+export default { buildBuilding, buildMinaret, buildFuelStation, buildBackdrop, buildHorizon, buildSkyline, sideLine, sidePoint };

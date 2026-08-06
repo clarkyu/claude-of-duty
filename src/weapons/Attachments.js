@@ -41,7 +41,7 @@ export const ATTACHMENTS = {
     slot: 'optic',
     name: 'Kite RDS',
     mount: 'railTop',
-    build: (ctx, mats) => buildRedDot(ctx, mats, { tubeR: 0.0182, glassR: 0.0142, length: 0.086, dotMoa: 2 }),
+    build: (ctx, mats) => buildRedDot(ctx, mats, { tubeR: 0.0192, glassR: 0.0162, length: 0.088, dotMoa: 2 }),
     stats: { adsTime: 1.02, spreadAds: 0.94 },
   },
   reddot_halo: {
@@ -50,7 +50,7 @@ export const ATTACHMENTS = {
     name: 'Halo Reflex',
     mount: 'railTop',
     build: (ctx, mats) =>
-      buildRedDot(ctx, mats, { tubeR: 0.0205, glassR: 0.0168, length: 0.072, dotMoa: 3, ring: true, mountH: 0.011 }),
+      buildRedDot(ctx, mats, { tubeR: 0.0215, glassR: 0.0186, length: 0.074, dotMoa: 3, ring: true, mountH: 0.011 }),
     stats: { adsTime: 0.96, spreadAds: 0.97 },
   },
   scope_lynx4x: {

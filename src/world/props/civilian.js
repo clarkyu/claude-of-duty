@@ -269,14 +269,21 @@ export function laundryLine(a, r, o = {}) {
     const px = lerp(0, to[0], t);
     const py = lerp(0, to[1], t) - Math.sin(t * Math.PI) * sag;
     const pz = lerp(0, to[2], t);
-    const gw = r.range(0.34, 0.66);
-    const gh = r.range(0.5, 1.0);
+    const gw = r.range(0.3, 0.52);
+    const gh = r.range(0.38, 0.72);
     // xf() maps local +X to (cos yaw, 0, -sin yaw), so the sign on Z is negated
     const yaw = Math.atan2(-to[2], to[0]);
     const phase = r.range(0, TAU);
-    a.add(r.chance(0.5) ? 'canvas' : 'tarp', sheet(5, 6, (u, v) => {
-      // pinched at the line, widening and rippling as it falls
-      const pinch = 0.35 + 0.65 * v;
+    /**
+     * Washing is mostly pale, and a shirt is roughly rectangular. The old garment was
+     * pinched from 35 % at the line out to 100 % at the hem, which makes a triangle,
+     * and it picked between two dark cloths — so a street full of these read as a row
+     * of dark pennants rather than as laundry. Light cloth three times in four, and a
+     * much gentler taper.
+     */
+    a.add(r.pick(['signWhite', 'signWhite', 'canvas', 'card', 'tarp']), sheet(5, 6, (u, v) => {
+      // pinched at the shoulders, hanging almost straight below
+      const pinch = 0.78 + 0.22 * v;
       const swayX = Math.sin(v * 3.1 + phase) * 0.05 * v;
       const swayZ = Math.sin(v * 2.3 + phase * 1.6) * 0.07 * v;
       return [(u - 0.5) * gw * pinch + swayX, -v * gh, swayZ + Math.sin(u * 4.4 + phase) * 0.035 * v];

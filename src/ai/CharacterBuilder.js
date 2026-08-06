@@ -48,8 +48,18 @@
  *     setVisible(v) / dispose()
  *   }
  *
- * Geometry is cached per (variant, quality) and shared by every soldier; only the
- * bones, the skeleton and the SkinnedMesh wrappers are per-character.
+ * ── Reading at range ────────────────────────────────────────────────────────────
+ * A soldier is judged first as a silhouette. Two things decide whether he has one:
+ * whether the kit is big enough to interrupt the outline of the body (a plate
+ * carrier is armour worn *over* a man, so it is wider than his ribs; a helmet is a
+ * shell over pads, so it is far bigger than his skull), and whether the recesses
+ * between the shells are dark. Neither is free here — see `bakeVertexAO()` for the
+ * second and the plate-carrier/helmet blocks for the first — and without them the
+ * whole figure collapses into one tapered tube at 25 m.
+ *
+ * Geometry is cached per (variant, height, quality) and shared by every soldier;
+ * only the bones, the skeleton and the SkinnedMesh wrappers are per-character.
+ * `AISystem.spawn()` quantises height so that cache actually hits.
  */
 import * as THREE from 'three';
 
@@ -368,17 +378,17 @@ export const VARIANTS = [
   {
     id: 'olive',
     uniform: 0x3c412e, webbing: 0x1d1f19, helmet: 0x22241c,
-    boot: 0x131211, skin: 0x9a6f50, grime: 0.6,
+    boot: 0x131211, metalKit: 0x25272b, skin: 0x9a6f50, grime: 0.6,
   },
   {
     id: 'coyote',
     uniform: 0x554c37, webbing: 0x2a2419, helmet: 0x2f2a1f,
-    boot: 0x1a1611, skin: 0x8a5c3e, grime: 0.75,
+    boot: 0x1a1611, metalKit: 0x2a2723, skin: 0x8a5c3e, grime: 0.75,
   },
   {
     id: 'urban',
     uniform: 0x33363b, webbing: 0x18191b, helmet: 0x1d1e21, boot: 0x101011,
-    skin: 0x784e33, grime: 0.5,
+    metalKit: 0x212327, skin: 0x784e33, grime: 0.5,
   },
 ];
 
@@ -396,18 +406,60 @@ export default function createCharacterBuilder(ctx) {
     console.warn(`[ai/character] ${msg}`, err?.message || err || '');
   };
 
+  /**
+   * ── Why every character material is a private clone, and why it is re-tuned ──────
+   *
+   * Measured on the firefight frame: a sunlit soldier came out at L≈167 against a
+   * sunlit brick wall at L≈91 and sand at L≈100 — brighter than every surface around
+   * him, with the whole authored value ladder (uniform 0x3c412e / helmet 0x22241c /
+   * boot 0x131211) crushed into one cream tone. The albedo was innocent: the shader
+   * multiplies `material.color` (linear 0.045) by the canvas albedo (~0.5), so the
+   * diffuse term is *tiny*. What was lifting him were the **albedo-independent**
+   * lobes, and on a body they cover a far larger share of the pixels than they do on
+   * architecture, because a limb is a tube and most of a tube faces the eye at a
+   * grazing angle:
+   *
+   *   • `fabric_uniform` ships sheen 0.85 / `fabric_webbing` 0.6 with a *bright*
+   *     sheen colour. Sheen is a broad retro-reflective lobe that is *added* after
+   *     the diffuse, is strongest at grazing angles, and does not care what colour
+   *     the cloth is. Additive light is exactly what flattens a value ladder: the
+   *     same +x lands on the 0.045 uniform and the 0.016 helmet.
+   *   • `envMapIntensity` 1.0 gives the kit a full unoccluded sky hemisphere. A man
+   *     standing in a street sees a slot of sky, not a dome of it.
+   *   • the dust layer lerps albedo towards a pale sand colour on up-facing facets.
+   *     Right for a windowsill that has stood there a month, wrong for a soldier.
+   *
+   * Those knobs belong to `materials/MaterialLibrary.js` and are correct for tarps,
+   * awnings and sandbags, so they are not changed there — they are dialled back here,
+   * on clones this module owns outright. Never `lib.get()`: that hands back a *shared
+   * cached* material and re-tuning it would repaint every tarp on the map.
+   */
   function material(name, tint, extra) {
     const lib = ctx.materials;
+    const tune = (extra && extra.tune) || {};
+    const opts = {
+      vertexColors: true,
+      dust: 0.12,
+      wet: 0.45,
+      grime: 0.85,
+      // Crevice dirt doubles as the AO tint — see bakeVertexAO(). The library
+      // default (0x4a4239, linear 0.07) multiplies albedo by fourteen and takes a
+      // shaded soldier to solid black; this is a stop and a half, which darkens a
+      // seam without deleting it.
+      grimeColor: 0x6a6055,
+      // Let occlusion bite into direct light too, or every pouch reads as a decal.
+      aoDirect: 0.40,
+      ...(extra || {}),
+    };
+    delete opts.tune;
     let m = null;
-    const opts = { vertexColors: true, ...(extra || {}) };
     try {
-      // Tinted kit is a *variant*, so it has to be a clone — never mutate a cached
-      // library material, three other systems are sharing it.
-      if (tint !== undefined && lib?.clone) {
-        m = lib.clone(name, { ...opts, color: tint });
-        if (m) owned.materials.push(m);
-      } else if (lib?.get) {
-        m = lib.get(name, opts);
+      if (lib?.clone) {
+        m = lib.clone(name, {
+          ...opts,
+          color: tint ?? 0x6a6a5a,
+          sheenColor: tune.sheenColor ?? 0x22241c,
+        });
       }
     } catch (err) {
       warn(`material ${name} unavailable`, err);
@@ -415,10 +467,19 @@ export default function createCharacterBuilder(ctx) {
     }
     if (!m) {
       m = new THREE.MeshStandardMaterial({
-        color: tint ?? 0x6a6a5a, roughness: 0.85, metalness: 0.03, vertexColors: true,
+        color: tint ?? 0x6a6a5a, roughness: 0.9, metalness: 0.03, vertexColors: true,
       });
-      owned.materials.push(m);
     }
+    owned.materials.push(m);
+    // Re-tune. Guarded by `!== undefined` so the Standard/Physical split does not
+    // matter and a fallback material survives the same code path.
+    if (m.sheen !== undefined) m.sheen = tune.sheen ?? 0.3;
+    if (m.specularIntensity !== undefined) m.specularIntensity = tune.spec ?? 0.3;
+    m.envMapIntensity = tune.env ?? 0.55;
+    m.aoMapIntensity = tune.aoInt ?? 1.35;
+    if (tune.rough !== undefined) m.roughness = tune.rough;
+    if (tune.metal !== undefined) m.metalness = tune.metal;
+    m.needsUpdate = true;
     return m;
   }
 
@@ -471,11 +532,11 @@ export default function createCharacterBuilder(ctx) {
         X + side * 0.118 * s, L.hipY - 0.115 * s, 0.012 * s, 0, 0, side * 0.08);
 
       // Knee pad — three raised ribs so it is not a flat slab.
-      box('webbing', [shinB, thighB], 0.75, 0.10 * s, 0.135 * s, 0.055 * s, 0.026 * s,
-        X, L.kneeY + 0.012 * s, 0.078 * s, -0.05, 0, 0);
+      box('webbing', [shinB, thighB], 0.75, 0.132 * s, 0.155 * s, 0.072 * s, 0.026 * s,
+        X, L.kneeY + 0.012 * s, 0.086 * s, -0.05, 0, 0);
       for (let k = -1; k <= 1; k++) {
-        box('webbing', [shinB, thighB], 0.8, 0.085 * s, 0.022 * s, 0.02 * s, 0.008 * s,
-          X, L.kneeY + 0.012 * s + k * 0.04 * s, 0.104 * s, -0.05, 0, 0, 1);
+        box('webbing', [shinB, thighB], 0.8, 0.112 * s, 0.024 * s, 0.022 * s, 0.008 * s,
+          X, L.kneeY + 0.012 * s + k * 0.045 * s, 0.120 * s, -0.05, 0, 0, 1);
       }
 
       /* boot */
@@ -528,54 +589,67 @@ export default function createCharacterBuilder(ctx) {
     box('webbing', ['pelvis'], 0.7, 0.10 * s, 0.12 * s, 0.07 * s, 0.026 * s,
       -0.155 * s, L.hipY - 0.02 * s, -0.055 * s, 0, -0.4, 0);
 
-    /* ── plate carrier ──────────────────────────────────────────────────── */
+    /* ── plate carrier ──────────────────────────────────────────────────────
+     * Everything here used to sit *inside* the torso silhouette: the plate bag was
+     * 0.30 wide against a 0.39-wide chest and the yokes ran at x = 0.10 against a
+     * 0.196 half-width, so from the front not one piece of it broke the outline and
+     * the whole rig read as a tapered tube. A carrier is the widest thing on a
+     * soldier's body — it is armour worn *over* him — so it is now wider than the
+     * ribs, the cummerbund steps proud of them, and the yokes cross the top of the
+     * deltoid where they interrupt the shoulder line.
+     */
     const pcY = L.chestY + 0.10 * s;
-    box('webbing', ['chest', 'spine'], 0.45, 0.30 * s, 0.35 * s, 0.095 * s, 0.032 * s,
-      0, pcY, 0.125 * s, -0.04, 0, 0, SEG + 1);
-    box('webbing', ['chest', 'spine'], 0.5, 0.31 * s, 0.37 * s, 0.09 * s, 0.032 * s,
-      0, pcY, -0.122 * s, 0.03, 0, 0, SEG + 1);
-    // Cummerbund wrapping the ribs.
+    box('webbing', ['chest', 'spine'], 0.45, 0.425 * s, 0.375 * s, 0.105 * s, 0.030 * s,
+      0, pcY, 0.132 * s, -0.04, 0, 0, SEG + 1);
+    box('webbing', ['chest', 'spine'], 0.5, 0.435 * s, 0.395 * s, 0.10 * s, 0.030 * s,
+      0, pcY, -0.130 * s, 0.03, 0, 0, SEG + 1);
+    // Cummerbund wrapping the ribs — a hard step outboard of the torso tube.
     add(tubeGeom([
-      [0, L.chestY - 0.03 * s, 0.002 * s, 0.186 * s, 0.134 * s],
-      [0, L.chestY + 0.055 * s, 0.004 * s, 0.192 * s, 0.140 * s],
+      [0, L.chestY - 0.045 * s, 0.002 * s, 0.212 * s, 0.150 * s],
+      [0, L.chestY + 0.060 * s, 0.004 * s, 0.218 * s, 0.156 * s],
     ], RAD(14), false, false), 'webbing', ['spine', 'chest'], 0.6);
+    // Side plate pockets: the corners of the cummerbund, squared off.
+    for (const side of [-1, 1]) {
+      box('webbing', ['chest', 'spine'], 0.62, 0.05 * s, 0.20 * s, 0.20 * s, 0.024 * s,
+        side * 0.208 * s, L.chestY + 0.015 * s, 0.005 * s, 0, 0, side * 0.05);
+    }
 
-    // Shoulder yokes, front-over-back.
+    // Shoulder yokes, front-over-back, riding over the deltoid.
     for (const side of [-1, 1]) {
       add(tubeGeom([
-        [side * 0.088 * s, pcY + 0.14 * s, 0.10 * s, 0.040 * s, 0.022 * s],
-        [side * 0.10 * s, L.shoulderY + 0.028 * s, 0.045 * s, 0.044 * s, 0.026 * s],
-        [side * 0.108 * s, L.shoulderY + 0.042 * s, -0.02 * s, 0.044 * s, 0.026 * s],
-        [side * 0.095 * s, pcY + 0.14 * s, -0.095 * s, 0.040 * s, 0.022 * s],
+        [side * 0.108 * s, pcY + 0.155 * s, 0.118 * s, 0.048 * s, 0.028 * s],
+        [side * 0.140 * s, L.shoulderY + 0.082 * s, 0.055 * s, 0.052 * s, 0.032 * s],
+        [side * 0.150 * s, L.shoulderY + 0.104 * s, -0.018 * s, 0.052 * s, 0.032 * s],
+        [side * 0.118 * s, pcY + 0.155 * s, -0.112 * s, 0.048 * s, 0.028 * s],
       ], RAD(8), true, true), 'webbing', ['chest'], 0.55);
     }
 
     // MOLLE rows front and back.
     for (let r = 0; r < 3; r++) {
-      box('webbing', ['chest'], 0.7, 0.22 * s, 0.014 * s, 0.012 * s, 0.005 * s,
-        0, pcY - 0.10 * s + r * 0.075 * s, 0.176 * s, -0.04, 0, 0, 1);
+      box('webbing', ['chest'], 0.7, 0.30 * s, 0.016 * s, 0.014 * s, 0.005 * s,
+        0, pcY - 0.11 * s + r * 0.080 * s, 0.187 * s, -0.04, 0, 0, 1);
     }
     for (let r = 0; r < 2; r++) {
-      box('webbing', ['chest'], 0.75, 0.24 * s, 0.014 * s, 0.012 * s, 0.005 * s,
-        0, pcY - 0.06 * s + r * 0.085 * s, -0.168 * s, 0.03, 0, 0, 1);
+      box('webbing', ['chest'], 0.75, 0.32 * s, 0.016 * s, 0.014 * s, 0.005 * s,
+        0, pcY - 0.06 * s + r * 0.085 * s, -0.182 * s, 0.03, 0, 0, 1);
     }
 
     // Three rifle-mag pouches, admin pouch, radio.
     for (let m = -1; m <= 1; m++) {
-      box('webbing', ['chest'], 0.6, 0.082 * s, 0.155 * s, 0.055 * s, 0.02 * s,
-        m * 0.093 * s, pcY - 0.075 * s, 0.192 * s, -0.05, m * 0.06, 0);
-      box('webbing', ['chest'], 0.65, 0.078 * s, 0.038 * s, 0.05 * s, 0.014 * s,
-        m * 0.093 * s, pcY + 0.012 * s, 0.193 * s, -0.05, m * 0.06, 0, 1);
+      box('webbing', ['chest'], 0.6, 0.098 * s, 0.170 * s, 0.066 * s, 0.020 * s,
+        m * 0.118 * s, pcY - 0.082 * s, 0.205 * s, -0.05, m * 0.10, 0);
+      box('webbing', ['chest'], 0.65, 0.094 * s, 0.042 * s, 0.058 * s, 0.014 * s,
+        m * 0.118 * s, pcY + 0.014 * s, 0.207 * s, -0.05, m * 0.10, 0, 1);
     }
-    box('webbing', ['chest'], 0.55, 0.13 * s, 0.10 * s, 0.045 * s, 0.018 * s,
-      -0.075 * s, pcY + 0.115 * s, 0.178 * s, -0.06, 0.1, 0);
-    box('webbing', ['chest'], 0.6, 0.085 * s, 0.15 * s, 0.06 * s, 0.022 * s,
-      0.105 * s, pcY + 0.02 * s, -0.172 * s, 0.03, -0.1, 0);
+    box('webbing', ['chest'], 0.55, 0.15 * s, 0.11 * s, 0.05 * s, 0.018 * s,
+      -0.088 * s, pcY + 0.125 * s, 0.190 * s, -0.06, 0.1, 0);
+    box('webbing', ['chest'], 0.6, 0.10 * s, 0.165 * s, 0.07 * s, 0.022 * s,
+      0.115 * s, pcY + 0.02 * s, -0.185 * s, 0.03, -0.1, 0);
     // Antenna stub.
     add(placed(tubeGeom([
       [0, 0, 0, 0.007 * s, 0.007 * s],
-      [0, 0.16 * s, -0.02 * s, 0.005 * s, 0.005 * s],
-    ], 5, true, true), 0.13 * s, pcY + 0.09 * s, -0.18 * s), 'metal', ['chest'], 0.4);
+      [0, 0.20 * s, -0.03 * s, 0.005 * s, 0.005 * s],
+    ], 5, true, true), 0.145 * s, pcY + 0.10 * s, -0.19 * s), 'metal', ['chest'], 0.4);
     // Hydration hose over the left shoulder.
     add(tubeGeom([
       [-0.13 * s, pcY - 0.02 * s, -0.14 * s, 0.011 * s, 0.011 * s],
@@ -651,56 +725,63 @@ export default function createCharacterBuilder(ctx) {
       [0, hy + 0.134 * s, 0.006 * s, 0.095 * s, 0.103 * s],
     ], RAD(11), true, true), 'webbing', ['head'], 0.45);
 
-    /* ── helmet ─────────────────────────────────────────────────────────── */
-    // Rounded ballistic dome: the ring radii follow a sphere so the crown does not
-    // come to a point, which is the classic tell of a lathe-built helmet.
+    /* ── helmet ─────────────────────────────────────────────────────────────
+     * Sized against the skull it covers, not fitted to it. The old shell was 0.104
+     * against a 0.092 skull — 12 mm proud, which at 25 m and 720p is half a pixel,
+     * so the head rendered as a bare skull and the single strongest silhouette cue a
+     * soldier has was thrown away. A real ballistic shell over pads and a cover is
+     * ~135 mm half-width over a ~92 mm skull, and that reads as a helmet at 40 m.
+     * It also gets its own material slot so the shell can be the dark end of the
+     * value ladder instead of matching the pouches.
+     */
     add(tubeGeom([
-      [0, hy + 0.130 * s, -0.004 * s, 0.104 * s, 0.113 * s],
-      [0, hy + 0.152 * s, -0.004 * s, 0.110 * s, 0.119 * s],
-      [0, hy + 0.196 * s, -0.006 * s, 0.106 * s, 0.114 * s],
-      [0, hy + 0.230 * s, -0.009 * s, 0.094 * s, 0.101 * s],
-      [0, hy + 0.256 * s, -0.012 * s, 0.074 * s, 0.080 * s],
-      [0, hy + 0.274 * s, -0.014 * s, 0.048 * s, 0.052 * s],
-      [0, hy + 0.284 * s, -0.015 * s, 0.020 * s, 0.022 * s],
-      [0, hy + 0.288 * s, -0.016 * s, 0.005 * s, 0.006 * s],
-    ], RAD(14), true, true), 'webbing', ['head'], 0.52);
+      [0, hy + 0.112 * s, -0.006 * s, 0.126 * s, 0.136 * s],
+      [0, hy + 0.142 * s, -0.006 * s, 0.135 * s, 0.146 * s],
+      [0, hy + 0.186 * s, -0.008 * s, 0.132 * s, 0.142 * s],
+      [0, hy + 0.224 * s, -0.011 * s, 0.118 * s, 0.127 * s],
+      [0, hy + 0.256 * s, -0.014 * s, 0.094 * s, 0.101 * s],
+      [0, hy + 0.282 * s, -0.016 * s, 0.060 * s, 0.065 * s],
+      [0, hy + 0.298 * s, -0.018 * s, 0.026 * s, 0.028 * s],
+      [0, hy + 0.304 * s, -0.019 * s, 0.006 * s, 0.007 * s],
+    ], RAD(14), true, true), 'helmet', ['head'], 0.52);
+
+    // Brim lip: the flare under the shell, and the widest point of the head.
+    add(tubeGeom([
+      [0, hy + 0.104 * s, -0.006 * s, 0.130 * s, 0.140 * s],
+      [0, hy + 0.124 * s, -0.006 * s, 0.140 * s, 0.150 * s],
+    ], RAD(14), false, false), 'helmet', ['head'], 0.68);
 
     // Goggles pushed up onto the shell, proud of it so they cast their own shadow.
     add(tubeGeom([
-      [0, hy + 0.150 * s, 0.002 * s, 0.116 * s, 0.124 * s],
-      [0, hy + 0.180 * s, 0.000 * s, 0.117 * s, 0.125 * s],
+      [0, hy + 0.152 * s, 0.002 * s, 0.144 * s, 0.153 * s],
+      [0, hy + 0.184 * s, 0.000 * s, 0.145 * s, 0.154 * s],
     ], RAD(11), false, false), 'boot', ['head'], 0.4);
-    box('boot', ['head'], 0.3, 0.148 * s, 0.050 * s, 0.040 * s, 0.016 * s,
-      0, hy + 0.166 * s, 0.088 * s, 0.12, 0, 0);
-    box('metal', ['head'], 0.3, 0.160 * s, 0.012 * s, 0.016 * s, 0.005 * s,
-      0, hy + 0.190 * s, 0.086 * s, 0.12, 0, 0, 1);
-    // Brim lip.
-    add(tubeGeom([
-      [0, hy + 0.126 * s, -0.004 * s, 0.108 * s, 0.117 * s],
-      [0, hy + 0.140 * s, -0.004 * s, 0.113 * s, 0.122 * s],
-    ], RAD(14), false, false), 'webbing', ['head'], 0.68);
+    box('boot', ['head'], 0.3, 0.175 * s, 0.056 * s, 0.044 * s, 0.016 * s,
+      0, hy + 0.168 * s, 0.112 * s, 0.12, 0, 0);
+    box('metal', ['head'], 0.3, 0.188 * s, 0.013 * s, 0.018 * s, 0.005 * s,
+      0, hy + 0.194 * s, 0.110 * s, 0.12, 0, 0, 1);
 
     // NVG shroud + folded mount arm, front and centre on the crown.
-    box('metal', ['head'], 0.45, 0.058 * s, 0.042 * s, 0.034 * s, 0.008 * s,
-      0, hy + 0.222 * s, 0.088 * s, 0.35, 0, 0, 1);
+    box('metal', ['head'], 0.45, 0.068 * s, 0.048 * s, 0.040 * s, 0.008 * s,
+      0, hy + 0.238 * s, 0.104 * s, 0.35, 0, 0, 1);
     add(placed(tubeGeom([
-      [0, 0, 0, 0.014 * s, 0.014 * s],
-      [0, 0.040 * s, 0.020 * s, 0.011 * s, 0.011 * s],
-    ], 6, true, true), 0, hy + 0.236 * s, 0.090 * s, -0.7, 0, 0), 'metal', ['head'], 0.4);
+      [0, 0, 0, 0.016 * s, 0.016 * s],
+      [0, 0.048 * s, 0.024 * s, 0.012 * s, 0.012 * s],
+    ], 6, true, true), 0, hy + 0.254 * s, 0.106 * s, -0.7, 0, 0), 'metal', ['head'], 0.4);
     // Side rails + rear counterweight pouch.
     for (const side of [-1, 1]) {
-      box('metal', ['head'], 0.5, 0.014 * s, 0.028 * s, 0.12 * s, 0.005 * s,
-        side * 0.112 * s, hy + 0.190 * s, 0.010 * s, 0, side * 0.12, 0, 1);
+      box('metal', ['head'], 0.5, 0.016 * s, 0.032 * s, 0.145 * s, 0.005 * s,
+        side * 0.142 * s, hy + 0.186 * s, 0.010 * s, 0, side * 0.12, 0, 1);
     }
-    box('webbing', ['head'], 0.6, 0.09 * s, 0.066 * s, 0.05 * s, 0.02 * s,
-      0, hy + 0.212 * s, -0.104 * s, -0.18, 0, 0, 1);
+    box('helmet', ['head'], 0.6, 0.115 * s, 0.078 * s, 0.060 * s, 0.022 * s,
+      0, hy + 0.226 * s, -0.128 * s, -0.18, 0, 0, 1);
 
     // Four-point chin strap + chin cup.
     for (const side of [-1, 1]) {
       for (const zf of [0.052, -0.048]) {
         add(tubeGeom([
-          [side * 0.098 * s, hy + 0.126 * s, zf * s, 0.008 * s, 0.005 * s],
-          [side * 0.082 * s, hy + 0.076 * s, zf * s * 0.95, 0.008 * s, 0.005 * s],
+          [side * 0.118 * s, hy + 0.112 * s, zf * s, 0.008 * s, 0.005 * s],
+          [side * 0.086 * s, hy + 0.070 * s, zf * s * 0.95, 0.008 * s, 0.005 * s],
           [side * 0.052 * s, hy + 0.036 * s, 0.022 * s, 0.008 * s, 0.005 * s],
         ], 5, true, true), 'webbing', ['head'], 0.55);
       }
@@ -754,8 +835,10 @@ export default function createCharacterBuilder(ctx) {
 
     const merged = mergeSimple(parts);
     owned.geometries.push(merged);
-    const mesh = new THREE.Mesh(merged, material('painted_steel_chipped', 0x33353a, {
-      repeat: 0.35, detail: 0.6,
+    const mesh = new THREE.Mesh(merged, material('painted_steel_chipped', 0x2b2d31, {
+      repeat: 0.35,
+      detail: 0.6,
+      tune: { spec: 0.45, env: 0.85, rough: 0.6, metal: 0.55 },
     }));
     mesh.name = 'ai_rifle_mesh';
     mesh.castShadow = true;
@@ -827,12 +910,42 @@ export default function createCharacterBuilder(ctx) {
    * ~4 px per cycle on screen and moirés into a wire net. Every slot therefore takes
    * a `repeat` well under 1 (blow the texture up) and a trimmed `detail` amount.
    */
+  /*
+   * `tune` is the per-slot dial-back described on material(). The helmet is its own
+   * slot rather than sharing `webbing`: the value ladder the palette authors only
+   * exists if the shell can actually be a different value from the pouches, and a
+   * head-sized dark mass on top of the shoulders is most of what makes a soldier
+   * read as a soldier at 40 m.
+   */
   const SLOT_MATERIAL = {
-    uniform: { name: 'fabric_uniform', repeat: 0.5, detail: 0.5, key: 'uniform' },
-    webbing: { name: 'fabric_webbing', repeat: 0.45, detail: 0.5, key: 'webbing' },
-    boot: { name: 'rubber_tyre', repeat: 0.5, detail: 0.5, key: 'boot' },
-    metal: { name: 'painted_steel_chipped', repeat: 0.5, detail: 0.5 },
-    skin: { name: 'skin_head', repeat: 0.12, detail: 0.35, key: 'skin' },
+    uniform: {
+      // sheen*sheenColor lands at ~0.005 against the library's 0.174: the lobe is
+      // still there as a hint of cloth, it just no longer outruns the albedo.
+      name: 'fabric_uniform', repeat: 0.5, detail: 0.5, key: 'uniform',
+      tune: { sheen: 0.28, sheenColor: 0x26281e, spec: 0.24, env: 1.0, rough: 1.0 },
+    },
+    webbing: {
+      name: 'fabric_webbing', repeat: 0.45, detail: 0.5, key: 'webbing',
+      tune: { sheen: 0.22, sheenColor: 0x1d1f18, spec: 0.22, env: 0.95, rough: 0.97 },
+    },
+    helmet: {
+      name: 'fabric_webbing', repeat: 0.4, detail: 0.45, key: 'helmet',
+      tune: { sheen: 0.2, sheenColor: 0x191b14, spec: 0.28, env: 0.9, rough: 0.9 },
+    },
+    boot: {
+      name: 'rubber_tyre', repeat: 0.5, detail: 0.5, key: 'boot',
+      tune: { spec: 0.3, env: 0.85, rough: 0.95 },
+    },
+    metal: {
+      // Untinted this comes back as white chrome (recipe colour 0xffffff, metalness 1)
+      // and the NVG shroud, rails and buckle turn into mirrors on the helmet.
+      name: 'painted_steel_chipped', repeat: 0.5, detail: 0.5, key: 'metalKit',
+      tune: { spec: 0.4, env: 0.9, rough: 0.66, metal: 0.55 },
+    },
+    skin: {
+      name: 'skin_head', repeat: 0.12, detail: 0.35, key: 'skin',
+      tune: { sheen: 0, spec: 0.4, env: 1.0 },
+    },
   };
   const matCache = new Map();
   function slotMaterial(slot, variant) {
@@ -843,9 +956,183 @@ export default function createCharacterBuilder(ctx) {
     m = material(def.name, def.key ? variant[def.key] : undefined, {
       repeat: def.repeat,
       detail: def.detail,
+      tune: def.tune,
     });
+    m.name = `ai:${slot}:${variant.id}`;
     matCache.set(key, m);
     return m;
+  }
+
+  /* ── baked per-part occlusion ──────────────────────────────────────────── */
+
+  /**
+   * The kit is a stack of separate shells: pouches on a plate bag, the bag on a
+   * chest, a helmet over a skull, a knee pad on a trouser leg. *Nothing* in the
+   * material pipeline knows about that arrangement — the ORM map only describes the
+   * weave of the cloth — so every junction renders as a flat plane and the gear
+   * dissolves into the body exactly the way an un-occluded weapon viewmodel does.
+   *
+   * So bake it. Rasterise the assembled model into a 19 mm occupancy grid, then for
+   * every vertex sample a cosine-distributed hemisphere around its normal and count
+   * how much of it is walled off. The result rides in the vertex-colour *red* channel
+   * — the mask the material shader already reads as grime, which darkens albedo and
+   * lifts roughness. Dirt collects where light does not reach, so the same channel
+   * doing both jobs is not a hack, it is how the two actually correlate.
+   *
+   * Runs once per cached (variant, height, quality) model; ~40 ms for a soldier.
+   */
+  const AO_CELL = 0.019;
+  const AO_RADIUS = 0.088;
+  const AO_BIAS = 0.024;
+
+  /** Cosine-weighted hemisphere directions, +Y along the surface normal. */
+  const AO_DIRS = (() => {
+    const out = [];
+    const N = 14;
+    for (let i = 0; i < N; i++) {
+      const t = (i + 0.5) / N;
+      const y = Math.sqrt(1 - t);
+      const r = Math.sqrt(t);
+      const phi = i * 2.399963229728653;
+      out.push([Math.cos(phi) * r, y, Math.sin(phi) * r]);
+    }
+    return out;
+  })();
+  const AO_RADII = [0.34, 0.66, 1.0];
+  const AO_WEIGHTS = [1.35, 1.0, 0.62];
+
+  /**
+   * Which limb group a part belongs to. Geometry is authored in the bind pose, where
+   * the arms hang *inside* the silhouette of the ribs — so an unrestricted bake
+   * paints a dark stripe down the outside of the torso and the inside of both
+   * sleeves, and that stripe is still there when the arms come up onto the weapon.
+   * Occlusion therefore only accumulates within a group: the torso does not shadow
+   * an arm, and an arm does not shadow the torso. Everything that does not move
+   * relative to the trunk stays in group 0, where cross-occlusion is what we want.
+   */
+  function limbGroup(bones) {
+    for (const b of bones) {
+      if (b === 'upperArmL' || b === 'lowerArmL' || b === 'handL') return 1;
+      if (b === 'upperArmR' || b === 'lowerArmR' || b === 'handR') return 2;
+    }
+    return 0;
+  }
+
+  function buildOccupancy(parts) {
+    const min = [Infinity, Infinity, Infinity];
+    const max = [-Infinity, -Infinity, -Infinity];
+    for (const p of parts) {
+      const pa = p.geometry.attributes.position.array;
+      const n = p.geometry.attributes.position.count * 3;
+      for (let i = 0; i < n; i += 3) {
+        for (let k = 0; k < 3; k++) {
+          const v = pa[i + k];
+          if (v < min[k]) min[k] = v;
+          if (v > max[k]) max[k] = v;
+        }
+      }
+    }
+    if (!Number.isFinite(min[0])) return null;
+    const pad = AO_RADIUS + AO_CELL * 2;
+    const dim = [0, 0, 0];
+    for (let k = 0; k < 3; k++) {
+      min[k] -= pad;
+      max[k] += pad;
+      dim[k] = Math.max(1, Math.ceil((max[k] - min[k]) / AO_CELL));
+    }
+    // One bit per limb group, so a sample can ask "is anything from *my* group here".
+    const grid = new Uint8Array(dim[0] * dim[1] * dim[2]);
+    const inv = 1 / AO_CELL;
+    let bit = 1;
+    const mark = (x, y, z) => {
+      const ix = ((x - min[0]) * inv) | 0;
+      const iy = ((y - min[1]) * inv) | 0;
+      const iz = ((z - min[2]) * inv) | 0;
+      if (ix < 0 || iy < 0 || iz < 0 || ix >= dim[0] || iy >= dim[1] || iz >= dim[2]) return;
+      grid[(iz * dim[1] + iy) * dim[0] + ix] |= bit;
+    };
+    for (const p of parts) {
+      const pos = p.geometry.attributes.position.array;
+      const idx = p.geometry.index?.array;
+      if (!idx) continue;
+      bit = 1 << limbGroup(p.bones);
+      for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t] * 3;
+        const b = idx[t + 1] * 3;
+        const c = idx[t + 2] * 3;
+        const ax = pos[a], ay = pos[a + 1], az = pos[a + 2];
+        const bx = pos[b], by = pos[b + 1], bz = pos[b + 2];
+        const cx = pos[c], cy = pos[c + 1], cz = pos[c + 2];
+        const e = Math.max(
+          Math.hypot(bx - ax, by - ay, bz - az),
+          Math.hypot(cx - bx, cy - by, cz - bz),
+          Math.hypot(ax - cx, ay - cy, az - cz)
+        );
+        const steps = clamp(Math.ceil(e / (AO_CELL * 0.72)), 1, 10);
+        for (let i = 0; i <= steps; i++) {
+          for (let j = 0; j <= steps - i; j++) {
+            const u = i / steps;
+            const v = j / steps;
+            const w = 1 - u - v;
+            mark(ax * w + bx * u + cx * v, ay * w + by * u + cy * v, az * w + bz * u + cz * v);
+          }
+        }
+      }
+    }
+    return { grid, min, dim, inv };
+  }
+
+  function bakeVertexAO(parts) {
+    const occ = buildOccupancy(parts);
+    if (!occ) return;
+    const { grid, min, dim, inv } = occ;
+    let wantBit = 1;
+    const solid = (x, y, z) => {
+      const ix = ((x - min[0]) * inv) | 0;
+      const iy = ((y - min[1]) * inv) | 0;
+      const iz = ((z - min[2]) * inv) | 0;
+      if (ix < 0 || iy < 0 || iz < 0 || ix >= dim[0] || iy >= dim[1] || iz >= dim[2]) return 0;
+      return grid[(iz * dim[1] + iy) * dim[0] + ix] & wantBit;
+    };
+    let wTotal = 0;
+    for (const w of AO_WEIGHTS) wTotal += w * AO_DIRS.length;
+
+    const tX = new THREE.Vector3();
+    const tZ = new THREE.Vector3();
+    const nrm = new THREE.Vector3();
+    for (const p of parts) {
+      const pos = p.geometry.attributes.position;
+      const nor = p.geometry.attributes.normal;
+      const n = pos.count;
+      const ao = new Float32Array(n);
+      wantBit = 1 << limbGroup(p.bones);
+      for (let i = 0; i < n; i++) {
+        nrm.set(nor.getX(i), nor.getY(i), nor.getZ(i));
+        if (nrm.lengthSq() < 1e-8) nrm.set(0, 1, 0);
+        else nrm.normalize();
+        // Any tangent will do — the sample set is rotationally symmetric enough.
+        if (Math.abs(nrm.y) < 0.9) tX.set(0, 1, 0);
+        else tX.set(1, 0, 0);
+        tZ.crossVectors(nrm, tX).normalize();
+        tX.crossVectors(tZ, nrm).normalize();
+        const ox = pos.getX(i) + nrm.x * AO_BIAS;
+        const oy = pos.getY(i) + nrm.y * AO_BIAS;
+        const oz = pos.getZ(i) + nrm.z * AO_BIAS;
+        let hit = 0;
+        for (let d = 0; d < AO_DIRS.length; d++) {
+          const dd = AO_DIRS[d];
+          const wx = tX.x * dd[0] + nrm.x * dd[1] + tZ.x * dd[2];
+          const wy = tX.y * dd[0] + nrm.y * dd[1] + tZ.y * dd[2];
+          const wz = tX.z * dd[0] + nrm.z * dd[1] + tZ.z * dd[2];
+          for (let r = 0; r < AO_RADII.length; r++) {
+            const rad = AO_RADII[r] * AO_RADIUS;
+            if (solid(ox + wx * rad, oy + wy * rad, oz + wz * rad)) hit += AO_WEIGHTS[r];
+          }
+        }
+        ao[i] = clamp(1 - (hit / wTotal) * 1.3, 0, 1);
+      }
+      p.ao = ao;
+    }
   }
 
   /* ── auto skinning ─────────────────────────────────────────────────────── */
@@ -918,10 +1205,13 @@ export default function createCharacterBuilder(ctx) {
           sw[i * 4 + k] = picked[k][1] / sum;
         }
       }
-      // Grime mask: dirt climbs from the ground and settles in the low kit.
+      // Grime mask: dirt climbs from the ground and settles in the low kit — plus
+      // the baked cavity term, squared so only genuinely buried geometry goes dark
+      // and a flat sleeve stays the value the palette asked for.
       const height = clamp(y / 1.85, 0, 1);
       const g = clamp(grimeBase * (1.25 - height * 0.85) + (1 - height) * 0.22, 0, 1);
-      col[i * 3] = g;
+      const cav = part.ao ? 1 - part.ao[i] : 0;
+      col[i * 3] = clamp(g + cav * cav * cav * 0.7, 0, 1);
       col[i * 3 + 1] = 0;
       col[i * 3 + 2] = 0;
       void total;
@@ -944,6 +1234,11 @@ export default function createCharacterBuilder(ctx) {
     BONE_ORDER.forEach((nm, i) => { boneIndex[nm] = i; });
 
     const parts = authorParts(L, variant, q);
+    try {
+      bakeVertexAO(parts);
+    } catch (err) {
+      warn('vertex AO bake failed', err);
+    }
     for (const p of parts) skinPart(p, boneIndex, segs, variant);
 
     const bySlot = new Map();

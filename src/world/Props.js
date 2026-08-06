@@ -72,7 +72,15 @@ const DISTRICTS = ['west', 'centre', 'east'];
 const DETAIL = '_detail';
 const CONTACT = '_contact';
 
-const TRI_BUDGET = { low: 48000, medium: 100000, high: 185000, ultra: 240000 };
+/**
+ * Triangle allowance for the whole dressing pass, per quality tier.
+ *
+ * Raised about a third from where it was. The old medium allowance of 100k was 5 % of
+ * a 1.85 M-triangle frame and it was not enough to put something at the base of every
+ * wall — which is the difference between a street and a blockout. It costs no extra
+ * draw calls: everything here merges into the same per-district, per-material batches.
+ */
+const TRI_BUDGET = { low: 56000, medium: 132000, high: 200000, ultra: 265000 };
 const DYNAMIC_BUDGET = { low: 6, medium: 14, high: 20, ultra: 26 };
 
 const _v = new THREE.Vector3();
@@ -80,6 +88,49 @@ const _v2 = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _up = new THREE.Vector3(0, 1, 0);
 const _scl = new THREE.Vector3(1, 1, 1);
+
+/**
+ * The lines the map is actually looked down — the review cameras in tools/poses.js plus
+ * the three main lanes. Dressing is sorted towards these so budget exhaustion produces
+ * dense pockets where the player is looking rather than an even thin sprinkle nowhere.
+ * [x0, z0, x1, z1] in world XZ.
+ */
+const SIGHTLINES = [
+  [8.5, 22.0, -6.0, -14.0], // hero / night, up Souk Street
+  [2.0, 10.0, 1.0, -26.0], // ads
+  [-14.4, -3.2, -4.0, -9.0], // interior, market hall
+  [10.0, -6.0, -10.0, -20.0], // firefight
+  [-2.2, 4.4, -3.6, 1.0], // materials close-up
+  [4.0, 30.0, -8.0, -48.0], // vista
+  [-8.0, 14.0, -8.4, 6.0], // weapon, inside the shophouse
+  [5.0, -46.0, 5.0, 28.0], // Souk Street, end to end
+  [-47.0, -48.0, -47.0, 52.0], // West Alley
+  [37.5, -42.0, 37.5, 28.0], // Canal Road
+  [-50.0, 1.0, 46.0, 1.0], // Mid Cross
+];
+
+/** Distance from (x, z) to the nearest sightline segment. */
+function sightlineDistance(x, z) {
+  let best = Infinity;
+  for (const [ax, az, bx, bz] of SIGHTLINES) {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const l2 = dx * dx + dz * dz;
+    let t = l2 > 1e-6 ? ((x - ax) * dx + (z - az) * dz) / l2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const px = ax + dx * t;
+    const pz = az + dz * t;
+    const d = Math.hypot(x - px, z - pz);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/** Cheap deterministic 0..1 from a world position — used only for tie-breaking. */
+function hash01(x, z) {
+  const s = Math.sin(x * 127.1 + z * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
 
 /* ========================================================================== */
 /*                         placed-prop footprint index                        */
@@ -248,6 +299,69 @@ export default function createProps(ctx) {
       nz: hit.normal.z,
       surface: hit.surface || 'concrete',
     };
+  }
+
+  /**
+   * Least-squares plane through four ground samples taken under the corners of a
+   * prop's footprint. This is how a vehicle gets all four wheels on a cambered road:
+   * a single probe under the origin reports the crown, and a 2.5 m wheelbase across a
+   * 60 mm crown then lifts one axle clear of the tarmac.
+   *
+   * @returns {{y:number, nx:number, ny:number, nz:number}|null} null when the samples
+   *          straddle a kerb or a step, in which case the caller keeps the flat drop.
+   */
+  function fitGroundPlane(x, z, yaw, bnd, scale, py) {
+    const hx = Math.max(0.25, (bnd.size[0] * scale) / 2) * 0.72;
+    const hz = Math.max(0.25, (bnd.size[2] * scale) / 2) * 0.72;
+    const cs = Math.cos(yaw);
+    const sn = Math.sin(yaw);
+    let n = 0;
+    let sy = 0;
+    const us = [];
+    const vs = [];
+    const ys = [];
+    for (const lx of [-hx, hx]) {
+      for (const lz of [-hz, hz]) {
+        const wx = x + lx * cs + lz * sn;
+        const wz = z - lx * sn + lz * cs;
+        const s = surfaceBelow(wx, py + 1.4, wz, 3.2);
+        if (!s || s.ny < 0.55) return null;
+        us.push(wx - x);
+        vs.push(wz - z);
+        ys.push(s.y);
+        sy += s.y;
+        n++;
+      }
+    }
+    if (n < 4) return null;
+    const mean = sy / n;
+    // Straddling a kerb or a step: a plane through those points would tilt the whole
+    // prop into the pavement. Fall back to the flat drop.
+    let spread = 0;
+    for (const yv of ys) spread = Math.max(spread, Math.abs(yv - mean));
+    if (spread > 0.22) return null;
+    let Suu = 0;
+    let Svv = 0;
+    let Suv = 0;
+    let Suy = 0;
+    let Svy = 0;
+    for (let i = 0; i < n; i++) {
+      const u = us[i];
+      const v = vs[i];
+      const d = ys[i] - mean;
+      Suu += u * u;
+      Svv += v * v;
+      Suv += u * v;
+      Suy += u * d;
+      Svy += v * d;
+    }
+    const det = Suu * Svv - Suv * Suv;
+    if (Math.abs(det) < 1e-6) return null;
+    const a = (Suy * Svv - Svy * Suv) / det;
+    const b = (Svy * Suu - Suy * Suv) / det;
+    if (Math.abs(a) > 0.3 || Math.abs(b) > 0.3) return null;
+    const inv = 1 / Math.hypot(a, 1, b);
+    return { y: mean, nx: -a * inv, ny: inv, nz: -b * inv };
   }
 
   /** Sweep the map for flat roof decks — one entry per candidate cell. */
@@ -457,7 +571,23 @@ export default function createProps(ctx) {
     const yaw = Number.isFinite(o.yaw) ? o.yaw : 0;
     const scale = Number.isFinite(o.scale) ? o.scale : 1;
     _q.setFromAxisAngle(_up, yaw);
-    if (!o.raw && !o.onWall && ny < 0.999) {
+    /**
+     * Big footprints get a **four-corner plane fit** instead of the surface normal at
+     * their origin. A carriageway carries a 50-60 mm crown (LevelData GROUND `crown`),
+     * so a car sampled at one point sits with one axle in the air: the origin normal is
+     * the local camber, not the plane the four wheels actually rest on. Sampling under
+     * each corner and least-squares fitting a plane puts every wheel on the road.
+     */
+    let planeFit = null;
+    if (!o.raw && !o.onWall && !o.onRoof && radius > 0.85) {
+      planeFit = fitGroundPlane(x, z, yaw, bnd, scale, py);
+    }
+    if (planeFit) {
+      py = planeFit.y;
+      _v.set(planeFit.nx, planeFit.ny, planeFit.nz).normalize();
+      const tilt = new THREE.Quaternion().setFromUnitVectors(_up, _v);
+      _q.premultiply(tilt);
+    } else if (!o.raw && !o.onWall && ny < 0.999) {
       /* tilt onto the surface normal — fully for small props, partly for big ones so a
          parked car does not look like it is climbing the camber */
       const blend = clamp01(1.15 - radius * 0.45);
@@ -859,13 +989,15 @@ export default function createProps(ctx) {
     }
     stats.roofCells = roofs.length;
     stats.facadePoints = facades.length;
-    /* deterministic shuffle so the facade order is not a raster scan */
-    for (let i = facades.length - 1; i > 0; i--) {
-      const j = rng.int(i + 1);
-      const t = facades[i];
-      facades[i] = facades[j];
-      facades[j] = t;
-    }
+    /**
+     * Facade order decides who survives when the budget runs out. A shuffle spread the
+     * survivors evenly over 100 x 100 m, which is exactly wrong: the eye reads density,
+     * and a thin even sprinkle everywhere looks emptier than dense pockets somewhere.
+     * Sort by distance to the sightlines the game is actually looked down, with a small
+     * deterministic jitter so the result is not a monotonic sweep along one wall.
+     */
+    for (const f of facades) f._key = sightlineDistance(f.x, f.z) + hash01(f.x, f.z) * 2.5;
+    facades.sort((a, b) => a._key - b._key);
 
     const P = {
       rng,
@@ -878,6 +1010,8 @@ export default function createProps(ctx) {
         ? { minX: ctx.level.bounds.min.x, maxX: ctx.level.bounds.max.x, minZ: ctx.level.bounds.min.z, maxZ: ctx.level.bounds.max.z }
         : { minX: -50, maxX: 48, minZ: -46, maxZ: 54 },
       poi: (id) => ctx.level?.poi?.(id) || null,
+      /** The whole tier allowance, so placement can size its phases as fractions. */
+      total: TRI_BUDGET[tier()] ?? TRI_BUDGET.high,
       /** Open a placement phase with its own slice of the triangle allowance. */
       phase: (tris) => {
         phaseCap = Number.isFinite(tris) ? stats.triangles + tris : Infinity;

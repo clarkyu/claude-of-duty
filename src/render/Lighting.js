@@ -313,11 +313,13 @@ class ContactShadowPass {
        not "crevice detail", and 0.9 m is roughly a bench leg's worth of surroundings. */
     this.aoTaps = 8;
     this.aoRadius = 0.9;
-    this.aoStrength = 0.9;
-    this.aoPower = 1.35;
-    this.aoNormalBias = 0.035;
+    // The pipeline already runs a 1.1 m GTAO over the composited frame, so this term
+    // has to be additive-but-modest or crevices get occluded twice and go to soot.
+    this.aoStrength = 0.72;
+    this.aoPower = 1.1;
+    this.aoNormalBias = 0.05;
     /** How much of the AO is allowed to bite the indirect term in the material. */
-    this.aoIndirect = 0.85;
+    this.aoIndirect = 0.7;
 
     this.material = new THREE.ShaderMaterial({
       name: 'lighting:contactShadows',
@@ -833,7 +835,7 @@ const SH_THETA = 12;
  * an area-weighted mix of dark asphalt and warm stucco/terracotta facade. Spectral
  * on purpose — see `_rebuildIBL`.
  */
-const BOUNCE_ALBEDO = new THREE.Color(0.21, 0.175, 0.135);
+const BOUNCE_ALBEDO = new THREE.Color(0.26, 0.215, 0.165);
 
 class Lighting {
   constructor(ctx) {
@@ -1253,6 +1255,51 @@ class Lighting {
   }
 
   /**
+   * **Key colour temperature.** The one place this rig is allowed to lie, and it has
+   * to, because the two things golden hour is made of pull in opposite directions on
+   * this map: the *colour* wants a 4-6 deg sun and the *lit floor* wants 15 (see the
+   * warp table in Sky.js — below 8 deg the canyon shadows 91% of the visible ground).
+   *
+   * So the geometry stays honest and the colour is graded. The disc's own atmospheric
+   * transmittance at a 15 deg sun is (1, 0.78, 0.55) peak-normalised, which is about
+   * 4900 K — the review measured the resulting frame at a channel spread of 2 parts in
+   * 255 and called it grey, correctly. A camera at golden hour records 2800-3500 K.
+   * The curve below lands 3400 K at 15 deg and fades itself out entirely above ~40 deg
+   * so harsh noon is left exactly as physics delivers it.
+   *
+   * Only the *hue* moves: `kelvinToLinearRGB` normalises to unit luminance and the sky
+   * normalises to unit peak, so re-peaking preserves how bright the key reads. And it
+   * only ever applies when the sun is the key — grading the moon orange at moonrise
+   * would be a bug, not a look.
+   */
+  _gradeKey() {
+    if (this.sunIntensity <= 1e-4) return;
+    const sky = this.ctx.sky;
+    if (sky && (sky.moonIntensity ?? 0) > (sky.sunIntensity ?? 0)) return;
+
+    const altDeg = (Math.asin(clamp(this.sunDirection.y, -1, 1)) * 180) / Math.PI;
+    if (altDeg <= 0) return;
+
+    let kelvin = this.sunStaging.kelvin;
+    let weight = 1;
+    if (kelvin === null) {
+      kelvin = clamp(2450 + 62 * altDeg, 2300, 6500);
+      // Cross-fade back to the physical disc as the sun climbs out of the warm band.
+      const t = clamp01((altDeg - 24) / 18);
+      weight = 1 - t * t * (3 - 2 * t);
+      if (weight <= 0.001) return;
+    }
+
+    kelvinToLinearRGB(kelvin, _color);
+    const peak = Math.max(_color.r, _color.g, _color.b, 1e-6);
+    this.sunColor.setRGB(
+      this.sunColor.r + (_color.r / peak - this.sunColor.r) * weight,
+      this.sunColor.g + (_color.g / peak - this.sunColor.g) * weight,
+      this.sunColor.b + (_color.b / peak - this.sunColor.b) * weight
+    );
+  }
+
+  /**
    * Pull the key light out of the sky model. The sky already returns a physically
    * scaled intensity (its own exposure adaptation included), so noon and dusk differ
    * by the right *ratio* and the pipeline's auto-exposure does the rest.
@@ -1289,16 +1336,7 @@ class Lighting {
     }
 
     this._applyStaging();
-
-    // Colour-temperature override. `kelvinToLinearRGB` normalises to unit luminance
-    // and the sky normalises to unit peak channel, so re-peak it: the key changes hue
-    // without changing how bright it reads, which is the whole point of authoring
-    // intensity and temperature separately.
-    if (this.sunStaging.kelvin !== null && this.sunIntensity > 1e-4) {
-      kelvinToLinearRGB(this.sunStaging.kelvin, _color);
-      const peak = Math.max(_color.r, _color.g, _color.b, 1e-6);
-      this.sunColor.setRGB(_color.r / peak, _color.g / peak, _color.b / peak);
-    }
+    this._gradeKey();
 
     // Full daylight -> practicals off. See LightManager.update().
     this.daylight = clamp01((this.sunDirection.y - 0.005) / 0.1) * clamp01(this.sunIntensity / 0.6);
@@ -1428,7 +1466,12 @@ class Lighting {
      */
     const sunUp = Math.max(this.sunDirection.y, 0);
     const open = clamp01((sunUp - 0.06) / 0.5);
-    const litGround = open * open * (3 - 2 * open);
+    // Floor at 0.3: the lower hemisphere is not only ground. Even when the street is
+    // shadowed, the sunlit upper facades opposite are a large, warm, bright bounce
+    // card, and dropping the whole term to the ground's lit fraction takes them with
+    // it — the first pass at this cut the frame's mean luminance by a third and the
+    // shadows went to mud.
+    const litGround = 0.3 + 0.7 * open * open * (3 - 2 * open);
     const aR = BOUNCE_ALBEDO.r;
     const aG = BOUNCE_ALBEDO.g;
     const aB = BOUNCE_ALBEDO.b;
@@ -1436,6 +1479,29 @@ class Lighting {
     const gR = (aR * (sunE * this.sunColor.r + eR)) / Math.PI;
     const gG = (aG * (sunE * this.sunColor.g + eG)) / Math.PI;
     const gB = (aB * (sunE * this.sunColor.b + eB * 0.95)) / Math.PI;
+
+    /**
+     * **The skyline.** Everything above is the sky an observer standing in a field
+     * would see, and this level is not a field. From the street the lowest 20-ish
+     * degrees of every direction is not sky, it is the block opposite — and that band
+     * is the *brightest* part of a clear morning sky (measured horizon radiance 1.25
+     * against a zenith of 0.068), so leaving it unoccluded meant roughly half of all
+     * diffuse irradiance arrived as bright blue light from directions that are
+     * physically solid masonry. That is the whole reason shaded ground came out navy:
+     * measured R/B 0.66 on the courtyard, bluer than the sky above it, next to a
+     * sunlit ochre wall that in reality is throwing warm light straight at it.
+     *
+     * Replacing that band with the facade bounce is not a fudge, it is the missing
+     * geometry term — and it is the cheap, global half of it. The per-pixel half is
+     * the screen-space AO in the contact pass; this is what that AO is occluding
+     * *towards*.
+     */
+    const SKYLINE_TOP = 0.34; // sin(20 deg): horizon-to-here is building, not sky
+    const SKYLINE_FILL = 0.55; // it is a street, not a shaft — some sky still gets in
+    // Facades are lighter than the road and catch more sun, so they bounce harder.
+    const fR = gR * 1.45;
+    const fG = gG * 1.45;
+    const fB = gB * 1.45;
 
     const basis = [];
     for (let i = 0; i < dirs.length; i++) {
@@ -1445,9 +1511,11 @@ class Lighting {
       let g;
       let b;
       if (d.up > 0.06) {
-        r = c.r;
-        g = c.g;
-        b = c.b;
+        const t = clamp01(d.up / SKYLINE_TOP);
+        const occ = SKYLINE_FILL * (1 - t) * (1 - t);
+        r = c.r + (fR - c.r) * occ;
+        g = c.g + (fG - c.g) * occ;
+        b = c.b + (fB - c.b) * occ;
       } else if (d.up > -0.06) {
         // Soft horizon blend so the SH does not have to resolve a hard step.
         const t = (d.up + 0.06) / 0.12;

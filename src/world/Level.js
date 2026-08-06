@@ -104,11 +104,12 @@ import {
   fence,
   bollardGeometry,
   lampGeometry,
+  lampBowlGeometry,
   acUnitGeometry,
   instMatrix,
 } from './kit/Street.js';
 import { Terrain } from './Terrain.js';
-import { buildBuilding, buildMinaret, buildFuelStation, buildBackdrop, sideLine, sidePoint } from './Buildings.js';
+import { buildBuilding, buildMinaret, buildFuelStation, buildBackdrop, buildHorizon, buildSkyline, sideLine, sidePoint } from './Buildings.js';
 import DATA, {
   BOUNDS,
   TIERS,
@@ -117,6 +118,9 @@ import DATA, {
   MINARET,
   FUEL,
   BACKDROP,
+  SKYLINE,
+  HORIZON,
+  CABLES,
   SPAWNS,
   POIS,
   PROBES,
@@ -275,6 +279,15 @@ export default function createLevel(ctx) {
     } catch (err) {
       warn('fuel station failed', err);
     }
+    /**
+     * Three explicit depth bands, which is how a retail vista frame is actually built:
+     *   1. the playspace (everything above);
+     *   2. a mid backdrop of non-playable blocks at 60-190 m with real silhouette;
+     *   3. a far layer — tall landmark shapes at 150-300 m and a terrain ridge beyond
+     *      them — so the horizon is never a straight line and the world does not
+     *      visibly stop at the fence.
+     * All of it lives in one batcher, so the whole far distance is a handful of draws.
+     */
     const bd = getBatcher('backdrop');
     for (const b of BACKDROP) {
       try {
@@ -282,6 +295,74 @@ export default function createLevel(ctx) {
       } catch (err) {
         warn('backdrop failed', err);
         bd.lod = 0;
+      }
+    }
+    bd.lod = 0;
+    bd.uvScale = 1;
+    bd.uvOffset = [0, 0];
+    try {
+      buildSkyline(bd, SKYLINE);
+    } catch (err) {
+      warn('skyline failed', err);
+    }
+    const hz = getBatcher('horizon');
+    try {
+      // The far ridge is 600-1100 m out: stretch its UVs hard or the ground texture
+      // reads as a tiled bedsheet across half the sky.
+      hz.uvScale = 0.06;
+      buildHorizon(hz, HORIZON);
+      hz.uvScale = 1;
+    } catch (err) {
+      warn('horizon failed', err);
+      hz.uvScale = 1;
+    }
+  }
+
+  /**
+   * Overhead cable runs. Every street in a town like this is netted with them, and a
+   * catenary crossing the frame at 6-9 m is the cheapest near-field occluder there is:
+   * all eight review frames were gun + midground + sky with nothing in the foreground,
+   * and this is the single change that buys the most depth per triangle.
+   *
+   * Each run also drops a service spur and, on the long spans, a strung lamp — which
+   * gives the night pose something above head height to bloom against.
+   */
+  function authorCables() {
+    // One batcher for every run in the map, not one per street quadrant. Four
+    // materials x four street districts was 16 meshes for a few hundred metres of
+    // wire, and each of those costs a draw in the main pass and in every shadow
+    // cascade. Consolidated it is four meshes total.
+    const b = getBatcher('cables');
+    for (const c of CABLES) {
+      const [x0, z0, y0, x1, z1, y1, sag = 0.8] = c;
+      const mb = b.b('metal.rust');
+      const N = 8;
+      const pts = [];
+      for (let i = 0; i <= N; i++) {
+        const t = i / N;
+        pts.push([lerp(x0, x1, t), lerp(y0, y1, t) - Math.sin(t * Math.PI) * sag, lerp(z0, z1, t)]);
+      }
+      for (let i = 0; i < N; i++) mb.cylinder(pts[i], pts[i + 1], 0.017, 4);
+      // A second, slacker conductor a little below it — one wire reads as a mistake.
+      for (let i = 0; i < N; i++) {
+        const a = [pts[i][0], pts[i][1] - 0.16 - Math.sin(((i / N) * Math.PI)) * 0.12, pts[i][2] + 0.1];
+        const bb = [pts[i + 1][0], pts[i + 1][1] - 0.16 - Math.sin((((i + 1) / N) * Math.PI)) * 0.12, pts[i + 1][2] + 0.1];
+        mb.cylinder(a, bb, 0.012, 4);
+      }
+      // Insulator + bracket at each end so the run lands on something.
+      for (const [ex, ey, ez] of [[x0, y0, z0], [x1, y1, z1]]) {
+        b.b('metal.galv').box([ex, ey + 0.06, ez], [0.1, 0.06, 0.1], { chamfer: 0.02 });
+        b.b('struct.concreteClean').cylinder([ex, ey + 0.12, ez], [ex, ey + 0.26, ez], 0.05, 6, { radius2: 0.07 });
+      }
+      // A strung lamp at mid span on the longer runs.
+      const L = Math.hypot(x1 - x0, z1 - z0);
+      if (L > 9) {
+        const mx = (x0 + x1) * 0.5;
+        const mz = (z0 + z1) * 0.5;
+        const my = (y0 + y1) * 0.5 - sag;
+        b.b('metal.rust').cylinder([mx, my, mz], [mx, my - 0.5, mz], 0.01, 4);
+        b.b('metal.paintGreen').cylinder([mx, my - 0.5, mz], [mx, my - 0.72, mz], 0.19, 8, { radius2: 0.06 });
+        b.b('sign.lit').cylinder([mx, my - 0.7, mz], [mx, my - 0.74, mz], 0.11, 8);
       }
     }
   }
@@ -481,9 +562,21 @@ export default function createLevel(ctx) {
     }
 
     /* cover rhythm */
+    /**
+     * Level geometry does not get the props system's overlap test, so a crate stack
+     * authored on top of a lamp column just goes in and the pole comes out of the
+     * middle of it. Anything that would land on a column is skipped here.
+     */
+    const clearOfLamps = (cx, cz, rad) => {
+      for (const [lx, lz] of LAMPS) {
+        if (Math.abs(lx - cx) < rad && Math.abs(lz - cz) < rad) return false;
+      }
+      return true;
+    };
     for (const c of COVER) {
       const cx = c.x ?? (c.x0 + c.x1) * 0.5;
       const cz = c.z ?? (c.z0 + c.z1) * 0.5;
+      if (c.kind !== 'bollards' && !clearOfLamps(cx, cz, 1.7)) continue;
       const b = streetBat(cx, cz);
       const gy = c.y !== undefined ? c.y : terrain.groundY(cx, cz);
       try {
@@ -528,6 +621,9 @@ export default function createLevel(ctx) {
       const gy = terrain.groundY(x, z);
       const yaw = x < 5 ? 0 : Math.PI;
       b.instance('lamp', 'metal.paintGreen', () => lampGeometry(4.7), instMatrix(x, gy, z), geomCache);
+      // The glazed bowl is its own instance in the emissive key, so the column reads
+      // as a lit fitting at night instead of terminating in a small grey box.
+      b.instance('lampBowl', 'sign.lit', () => lampBowlGeometry(4.7), instMatrix(x, gy, z), geomCache);
       b.box(x, gy + 2.3, z, 0.11, 2.3, 0.11, 'metal', { occlude: false });
       b.occluder({ type: 'box', pos: { x, y: gy + 2.4, z }, halfExtents: { x: 0.12, y: 2.4, z: 0.12 } });
       void yaw;
@@ -580,57 +676,188 @@ export default function createLevel(ctx) {
       mat: 'metal.rust',
     });
 
-    // Scaffold against the shophouses in Souk Street. It now runs the full height of
-    // the facade (7.2 m deck, 0.85 m parapet) instead of stopping at the balcony, so
-    // the "mantle onto a roof" route the layout promises actually exists.
+    // Scaffold against the shophouses in Souk Street: three bays along the facade,
+    // running the full height so the "mantle onto a roof" route the layout promises
+    // actually exists.
     const bs = getBatcher('street_11');
-    const sx = -1.2;
-    const sz = 16.5;
-    const gy = terrain.groundY(sx, sz);
-    const topY = 7.55;
-    const sc = bs.b('metal.galv');
-    for (const ox of [-1.4, 1.4]) {
-      for (const oz of [-0.55, 0.55]) {
-        sc.cylinder([sx + ox, gy, sz + oz], [sx + ox, gy + topY, sz + oz], 0.038, 8);
-        // Diagonal bracing — a scaffold without it reads as four floating poles.
-        for (let d = 0; d < 5; d++) {
-          const ya = gy + 1.35 * d;
-          const yb = gy + 1.35 * (d + 1);
-          if (yb > gy + topY) break;
-          sc.cylinder([sx + ox, ya, sz - 0.55], [sx + ox, yb, sz + 0.55], 0.018, 5);
-        }
+    // Standing on the Souk Street pavement against the shophouses' east wall (x = -2),
+    // so the run goes along Z and the ties reach the wall in -X.
+    scaffoldRun(bs, { x: -1.2, z: 18.0, axis: 'z', bays: 3, pitch: 2.9, lifts: 5, lift: 1.35, depth: 1.1, face: -1 });
+  }
+
+  /**
+   * A scaffold that could actually stand up.
+   *
+   * What was here before failed every basic test: one isolated bay on a 20 m facade,
+   * a single 7.5 m ladder flight running straight *through* all five decks, bare
+   * plywood with no toe boards or guard rails, bracing only across the 1.1 m depth and
+   * never in the plane of the face, no base plates and no wall ties — so it read as a
+   * gameplay ladder wearing a costume.
+   *
+   * This builds it the way a real one goes up:
+   *   • standards on **base plates and sole boards**, three bays along the facade;
+   *   • ledgers and transoms at every lift, decks made of five separate boards;
+   *   • a **hatch cut in every deck**, with the ladder in a stagger — a short flight
+   *     per lift, alternating end to end, never one continuous 7.5 m run;
+   *   • **toe boards** on both edges and a **guard rail + mid rail** on the outboard
+   *     face of every lift;
+   *   • **face bracing** in the plane of the 2.9 m bay, not just across the depth;
+   *   • **wall ties** back to the building, two per lift.
+   */
+  function scaffoldRun(bat, o) {
+    const bays = Math.max(1, o.bays ?? 3);
+    const pitch = o.pitch ?? 2.9; // bay length along the facade
+    const lifts = o.lifts ?? 5;
+    const lh = o.lift ?? 1.35; // lift height
+    const dep = o.depth ?? 1.1; // inner-to-outer standard spacing
+    const face = o.face ?? -1; // which side of the run the building is on
+    const alongZ = o.axis === 'z';
+    const gy = terrain.groundY(o.x, o.z);
+    const topY = lifts * lh + 0.8;
+    const run = bays * pitch;
+    /** local (u along the facade, v across the depth) -> world [x, z] */
+    const W = (u, v) => (alongZ ? [o.x + v, o.z + u] : [o.x + u, o.z + v]);
+    const P = (u, y, v) => {
+      const w = W(u, v);
+      return [w[0], y, w[1]];
+    };
+    const u0 = -run / 2;
+    const u1 = run / 2;
+    const vIn = face * dep * 0.5; // standard line nearest the wall
+    const vOut = -face * dep * 0.5;
+    const sc = bat.b('metal.galv');
+    const nStd = bays + 1;
+    const hx = alongZ ? dep * 0.5 + 0.06 : run * 0.5;
+    const hz = alongZ ? run * 0.5 : dep * 0.5 + 0.06;
+
+    /* standards on base plates and sole boards */
+    for (let i = 0; i < nStd; i++) {
+      const u = u0 + i * pitch;
+      for (const v of [vIn, vOut]) {
+        sc.cylinder(P(u, gy + 0.06, v), P(u, gy + topY, v), 0.038, 8);
+        // base plate on a timber sole board — a standard resting straight on the
+        // tarmac is what makes a scaffold read as dropped in rather than erected
+        sc.box(P(u, gy + 0.035, v), [0.075, 0.025, 0.075], { chamfer: 0.006 });
+        bat.b('wood.weathered').box(P(u, gy + 0.012, v), [0.16, 0.012, 0.16], { chamfer: 0.005 });
+        // joint collar where two tubes couple
+        sc.cylinder(P(u, gy + topY * 0.52, v), P(u, gy + topY * 0.52 + 0.14, v), 0.048, 8);
+        const w = W(u, v);
+        bat.box(w[0], gy + topY * 0.5, w[1], 0.09, topY * 0.5, 0.09, 'metal', { occlude: false });
       }
-      sc.cylinder([sx + ox, gy - 0.06, sz - 0.55], [sx + ox, gy - 0.06, sz + 0.55], 0.03, 6);
-      bs.box(sx + ox, gy + topY * 0.5, sz, 0.06, topY * 0.5, 0.62, 'metal', { occlude: false });
     }
-    for (const y of [1.35, 2.7, 4.05, 5.4, 6.75]) {
-      sc.cylinder([sx - 1.4, gy + y, sz - 0.55], [sx + 1.4, gy + y, sz - 0.55], 0.03, 6);
-      sc.cylinder([sx - 1.4, gy + y, sz + 0.55], [sx + 1.4, gy + y, sz + 0.55], 0.03, 6);
-      const pl = bs.b('wood.ply');
-      pl.box([sx, gy + y + 0.05, sz], [1.4, 0.03, 0.55], { chamfer: 0.008 });
-      bs.box(sx, gy + y + 0.05, sz, 1.4, 0.06, 0.6, 'wood');
-      bs.occluder({
-        type: 'box',
-        pos: { x: sx, y: gy + y + 0.05, z: sz },
-        halfExtents: { x: 1.45, y: 0.09, z: 0.62 },
-      });
+
+    for (let l = 1; l <= lifts; l++) {
+      const y = gy + l * lh;
+      /* ledgers along the facade, both standard lines, plus a lower rail */
+      for (const v of [vIn, vOut]) {
+        sc.cylinder(P(u0 - 0.14, y, v), P(u1 + 0.14, y, v), 0.03, 6);
+        sc.cylinder(P(u0 - 0.14, y - 0.42, v), P(u1 + 0.14, y - 0.42, v), 0.022, 5);
+      }
+      /* transoms across the depth at every standard */
+      for (let i = 0; i < nStd; i++) {
+        const u = u0 + i * pitch;
+        sc.cylinder(P(u, y + 0.012, vIn), P(u, y + 0.012, vOut), 0.028, 6);
+      }
+
+      /* decking: five boards per bay, with a real hatch cut in one bay per lift */
+      const hatchBay = l % 2 === 0 ? 0 : bays - 1;
+      const nBoards = 5;
+      const bw = (dep - 0.06) / (2 * nBoards);
+      const hv = -face * 0.24; // the hatch sits on the outboard side of the deck
+      const ha = hatchBay === 0 ? u0 + 0.16 : u1 - 0.88;
+      const hb = ha + 0.72;
+      const pl = bat.b('wood.ply');
+      for (let b = 0; b < bays; b++) {
+        const ba = u0 + b * pitch;
+        const bb = ba + pitch;
+        for (let k = 0; k < nBoards; k++) {
+          const v = ((k + 0.5) / nBoards - 0.5) * (dep - 0.06);
+          const cut = b === hatchBay && Math.abs(v - hv) < 0.28;
+          const spans = cut ? [[ba + 0.02, ha], [hb, bb - 0.02]] : [[ba + 0.02, bb - 0.02]];
+          for (const [sa, sb] of spans) {
+            if (sb - sa < 0.12) continue;
+            const c = (sa + sb) * 0.5;
+            const half = (sb - sa) * 0.5;
+            pl.box(P(c, y + 0.055, v), alongZ ? [bw, 0.028, half] : [half, 0.028, bw], { chamfer: 0.006 });
+          }
+        }
+        // steel end band on each deck
+        sc.box(P(ba + 0.06, y + 0.055, 0), alongZ ? [dep * 0.46, 0.035, 0.02] : [0.02, 0.035, dep * 0.46], { chamfer: 0.004 });
+        const cw = W(ba + pitch * 0.5, 0);
+        bat.box(cw[0], y + 0.055, cw[1], alongZ ? dep * 0.48 : pitch * 0.5, 0.055, alongZ ? pitch * 0.5 : dep * 0.48, 'wood');
+        bat.occluder({
+          type: 'box',
+          pos: { x: cw[0], y: y + 0.055, z: cw[1] },
+          halfExtents: { x: alongZ ? dep * 0.5 : pitch * 0.5, y: 0.09, z: alongZ ? pitch * 0.5 : dep * 0.5 },
+        });
+      }
+
+      /* toe boards on both edges */
+      for (const s of [-1, 1]) {
+        const c = W(0, s * (dep * 0.5 - 0.03));
+        bat.b('wood.weathered').box([c[0], y + 0.16, c[1]], alongZ ? [0.018, 0.11, run * 0.5] : [run * 0.5, 0.11, 0.018], {
+          chamfer: 0.004,
+        });
+      }
+      /* guard rail + mid rail on the outboard face, and returns at both ends */
+      sc.cylinder(P(u0 - 0.14, y + 0.98, vOut), P(u1 + 0.14, y + 0.98, vOut), 0.024, 5);
+      sc.cylinder(P(u0 - 0.14, y + 0.56, vOut), P(u1 + 0.14, y + 0.56, vOut), 0.02, 5);
+      for (const u of [u0 - 0.02, u1 + 0.02]) {
+        sc.cylinder(P(u, y + 0.98, vIn), P(u, y + 0.98, vOut), 0.022, 5);
+      }
+
+      /* wall ties: two per lift, tube plus wall plate, back into the building */
+      for (const f of [0.26, 0.76]) {
+        const u = u0 + run * f;
+        sc.cylinder(P(u, y - 0.1, vIn), P(u, y - 0.1, vIn + face * 0.62), 0.024, 5);
+        bat.b('metal.rust').box(P(u, y - 0.1, vIn + face * 0.66), [0.06, 0.06, 0.06], { chamfer: 0.008 });
+      }
+
+      /* the climb: one short flight per lift, staggered end to end and landing
+         through the hatch, instead of one 7.5 m run passing through every deck */
+      const lu = hatchBay === 0 ? u0 + 0.52 : u1 - 0.52;
+      const lw = W(lu, hv);
+      const n = alongZ ? [-face, 0] : [0, -face];
+      ladder(bat, lw[0], lw[1], y - lh, y + 0.95, n[0], n[1], { offset: 0.2, mat: 'metal.galv' });
     }
-    ladder(bs, sx + 1.15, sz + 0.55, gy, gy + topY - 0.1, 0, 1, { offset: 0.24, mat: 'metal.galv' });
-    // A tarp slung over the top lift: the silhouette this needs from Souk Street.
-    const tp = bs.b('fabric.canvas');
-    for (let i = 0; i < 6; i++) {
-      const u0 = lerp(sx - 1.42, sx + 1.42, i / 6);
-      const u1 = lerp(sx - 1.42, sx + 1.42, (i + 1) / 6);
-      const s0 = Math.sin((i / 6) * Math.PI) * 0.12;
-      const s1 = Math.sin(((i + 1) / 6) * Math.PI) * 0.12;
-      tp.quad(
-        [u0, gy + 6.78 - s0, sz - 0.57],
-        [u1, gy + 6.78 - s1, sz - 0.57],
-        [u1, gy + 5.5 - s1, sz - 0.62],
-        [u0, gy + 5.5 - s0, sz - 0.62],
-        [0, 0.04, -0.999]
+
+    /* face bracing IN THE PLANE OF THE FACADE, alternating bay to bay: without it the
+       frame is a parallelogram and would rack flat under its own weight */
+    for (let b = 0; b < bays; b++) {
+      for (let l = 0; l < lifts; l++) {
+        if ((b + l) % 2) continue;
+        const a = u0 + b * pitch;
+        const c = a + pitch;
+        sc.cylinder(P(a, gy + l * lh + 0.1, vOut), P(c, gy + (l + 1) * lh + 0.1, vOut), 0.019, 5);
+      }
+    }
+    /* ledger bracing across the depth, every other standard */
+    for (let b = 0; b <= bays; b += 2) {
+      const a = u0 + b * pitch;
+      for (let l = 0; l < lifts; l++) {
+        sc.cylinder(P(a, gy + l * lh + 0.1, vIn), P(a, gy + (l + 1) * lh + 0.1, vOut), 0.018, 5);
+      }
+    }
+
+    /* debris sheeting over the outboard face of the top lifts — the silhouette this
+       needs from the street, and a real solid so the hem catches light */
+    const tp = bat.b('fabric.canvas');
+    const ty1 = gy + lifts * lh + 0.9;
+    const ty0 = gy + Math.max(0, lifts - 2) * lh;
+    const segs = bays * 3;
+    const vf = vOut - face * 0.05;
+    for (let i = 0; i < segs; i++) {
+      const a = lerp(u0, u1, i / segs);
+      const c = lerp(u0, u1, (i + 1) / segs);
+      const s0 = Math.sin((i / segs) * Math.PI * 2.2) * 0.09;
+      const s1 = Math.sin(((i + 1) / segs) * Math.PI * 2.2) * 0.09;
+      tp.prism(
+        [P(a, ty0 - s0, vf - face * 0.025), P(c, ty0 - s1, vf - face * 0.025), P(c, ty0 - s1, vf), P(a, ty0 - s0, vf)],
+        [P(a, ty1 - s0 * 0.4, vf - face * 0.025), P(c, ty1 - s1 * 0.4, vf - face * 0.025), P(c, ty1 - s1 * 0.4, vf), P(a, ty1 - s0 * 0.4, vf)]
       );
     }
+    void hx;
+    void hz;
   }
 
   /* ══════════════════════════════════════════════════════════════════ lights ══ */
@@ -676,6 +903,12 @@ export default function createLevel(ctx) {
       // South end of the hall — the half the interior review pose actually looks at.
       { p: [-12, 3.6, -6.5], k: 3000, i: 22, r: 10 },
       { p: [7, 3.1, 37], k: 2900, i: 22, r: 10 },
+      // The blue shophouse ground floor: the `weapon` review camera stands in it, and
+      // an unlit shop reads as a cave no matter how well it is dressed.
+      // Kept off the partition: at 1.5 m the falloff blew the plaster out to a flat
+      // cream gradient with no texture left in it at all.
+      { p: [-5.4, 2.85, 12.6], k: 2850, i: 11, r: 7 },
+      { p: [-13.4, 2.85, 11.4], k: 2850, i: 9, r: 6 },
       { p: [-33, 4.8, -18], k: 4200, i: 24, r: 12 },
       { p: [21, 4.4, -20], k: 5200, i: 34, r: 12 },
     ];
@@ -697,8 +930,16 @@ export default function createLevel(ctx) {
     // Keep the bake bounded on very slow machines without changing the look much.
     const samples = verts > 420000 ? 8 : verts > 240000 ? 10 : 13;
     for (const bat of batchers.values()) {
+      // Nothing beyond the play space gets a bake: proximity occlusion is a 2.7 m
+      // effect and these are 60 m to 1 km out, so every ray would miss. Skipping them
+      // is both correct and the cheapest thing we can do to the boot cost.
+      if (bat.name === 'horizon' || bat.name === 'backdrop') continue;
       const isTerrain = bat.name.startsWith('terrain');
-      for (const mb of bat.builders()) {
+      // LOD 0 only. Every building is authored three times and the shells are never
+      // seen closer than 62 m, where a 2.7 m proximity term is invisible — baking them
+      // was a third of the bake for nothing. Unbaked geometry reads codOcc = 0, which
+      // is the documented "render unoccluded" default, so this can only be safe.
+      for (const mb of bat.builders(0)) {
         bakeOcclusion(field, mb.p, mb.n, mb.o, {
           samples: isTerrain ? Math.max(8, samples - 3) : samples,
           strength: isTerrain ? 0.95 : 1.0,
@@ -727,9 +968,17 @@ export default function createLevel(ctx) {
         warn(`district ${bat.name} failed to build`, err);
       }
       if (!obj) continue;
+      // The far distance never casts or receives shadows. A 2 km ridge in the shadow
+      // caster set would drag every cascade's fit out to the horizon and turn the
+      // near shadows to mush — and none of it is resolvable at that range anyway.
+      const far = bat.name === 'horizon' || bat.name === 'backdrop';
       obj.traverse((o) => {
         if (o.isMesh) {
           groups++;
+          if (far) {
+            o.castShadow = false;
+            o.receiveShadow = false;
+          }
           const idx = o.geometry?.index;
           if (idx) tris += idx.count / 3;
         }
@@ -1280,6 +1529,11 @@ export default function createLevel(ctx) {
         authorMantles();
       } catch (err) {
         warn('mantles failed', err);
+      }
+      try {
+        authorCables();
+      } catch (err) {
+        warn('cables failed', err);
       }
 
       try {

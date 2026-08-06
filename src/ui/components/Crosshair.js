@@ -1,11 +1,18 @@
 /**
  * Crosshair.js — dynamic reticle + hitmarkers. Owner: ui agent.
  *
- * The reticle is a four-stroke SVG whose gap is the *real* projection of the
- * weapon's cone half-angle (`ctx.weapons.spread`) onto the framebuffer, so what you
- * see is genuinely where the bullets can go: it breathes with bloom, opens when you
- * sprint or jump, tightens when you crouch, and fades out as the sights come up
- * because the optic is the reticle then.
+ * The reticle is a four-stroke SVG whose gap tracks the projection of the weapon's
+ * cone half-angle (`ctx.weapons.spread`) onto the framebuffer, so what you see
+ * follows where the bullets can go: it breathes with bloom, opens when you sprint
+ * or jump, tightens when you crouch, and fades out as the sights come up because
+ * the optic is the reticle then. The mapping is scaled and hard-capped — see
+ * update() — because the raw cone at full bloom is wider than the useful part of
+ * the screen.
+ *
+ * Every stroke is painted twice: a black underlay then a white core. That hard
+ * 1 px outline is what keeps the mark findable over mid-grey concrete and red
+ * brick, where a soft drop-shadow just blends into the background it is meant to
+ * separate from.
  *
  * Hitmarkers use four distinct silhouettes so you never have to read a colour to
  * know what happened:
@@ -30,17 +37,23 @@ export class Crosshair {
     const s = svg('svg', { class: 'cx', viewBox: '-80 -80 160 160' }, this.wrap);
     this.svg = s;
 
-    // Centre dot.
-    this.dot = svg('circle', { class: 'dot', cx: 0, cy: 0, r: 1.05 }, s);
+    // Centre dot: black underlay, white core. Paint order, not a blur.
+    this.dotO = svg('circle', { class: 'dot-o', cx: 0, cy: 0, r: 1.45 }, s);
+    this.dot = svg('circle', { class: 'dot', cx: 0, cy: 0, r: 1.45 }, s);
 
-    // Four arms as groups so only one transform attribute changes per arm.
+    // Four arms as groups so only one transform attribute changes per arm. Each
+    // arm is two coincident lines — a heavy black one and a lighter white one on
+    // top — which is how the reticle keeps a hard 1 px edge over any background.
     this.arms = [];
+    this.armLines = [];
     const g = svg('g', { class: 'arms' }, s);
     this.armGroup = g;
     for (let i = 0; i < 4; i++) {
       const grp = svg('g', {}, g);
-      svg('line', { class: 'arm', x1: 0, y1: 0, x2: 0, y2: -7 }, grp);
+      const outline = svg('line', { class: 'arm-o', x1: 0, y1: 0, x2: 0, y2: -9 }, grp);
+      const core = svg('line', { class: 'arm', x1: 0, y1: 0, x2: 0, y2: -9 }, grp);
       this.arms.push(grp);
+      this.armLines.push([outline, core]);
     }
     // Rotations: up, right, down, left.
     this.armRot = [0, 90, 180, 270];
@@ -90,7 +103,17 @@ export class Crosshair {
     }
     let px = this._project(cone);
     if (!Number.isFinite(px)) px = 8;
-    this.gapGoal = clamp(px * 0.62 + 4.5, 4.5, 90);
+    /*
+     * The projected cone is the *whole* dispersion circle. Drawing all of it put
+     * a 126 px tip-to-tip reticle on a 720p frame — a hoop, not a sight. CoD tops
+     * hip-fire bloom out around 60–70 px total, so the response gets a 0.40
+     * coefficient and the gap a 24 px ceiling: with 9–14 px arms that is 2×(24+11)
+     * ≈ 71 px at full bloom, ~45 px resting hip-fire, ~31 px with no weapon or
+     * fully sighted. The ceiling is deliberately tighter than the gap number the
+     * review suggested (44), which would have landed at 114 px tip-to-tip and
+     * missed the 60–70 px target it asked for in the same breath.
+     */
+    this.gapGoal = clamp(px * 0.4 + 5, 6.5, 24);
 
     // Airborne / sprinting widen further even before the weapon reports it.
     if (player?.isGrounded === false) this.gapGoal *= 1.28;
@@ -106,12 +129,16 @@ export class Crosshair {
     // Only touch the DOM when something visibly moved.
     if (Math.abs(this.gap - this._lastGap) > 0.25) {
       this._lastGap = this.gap;
-      const len = clamp(7 + this.gap * 0.06, 6, 11);
+      // Longer arms than before: at the tight end the old 6 px stub collapsed the
+      // whole reticle into a 4.5 px bracket, so the same sight read as two
+      // different marks across one review set.
+      const len = clamp(9 + this.gap * 0.1, 9, 14).toFixed(1);
       for (let i = 0; i < 4; i++) {
         const rot = this.armRot[i];
         setAttr(this.arms[i], 'transform', `rotate(${rot}) translate(0 ${-this.gap})`);
-        const line = this.arms[i].firstChild;
-        setAttr(line, 'y2', (-len).toFixed(1));
+        const [outline, core] = this.armLines[i];
+        setAttr(outline, 'y2', -len);
+        setAttr(core, 'y2', -len);
       }
     }
     if (Math.abs(this.adsFade - this._lastOpacity) > 0.01) {
@@ -119,7 +146,9 @@ export class Crosshair {
       const o = this.adsFade.toFixed(3);
       setStyle(this.armGroup, 'opacity', o);
       // The dot survives a little longer than the arms: it is the last thing to go.
-      setStyle(this.dot, 'opacity', Math.min(1, this.adsFade * 1.4).toFixed(3));
+      const d = Math.min(1, this.adsFade * 1.4).toFixed(3);
+      setStyle(this.dot, 'opacity', d);
+      setStyle(this.dotO, 'opacity', d);
     }
   }
 

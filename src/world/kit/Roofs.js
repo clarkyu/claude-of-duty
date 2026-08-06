@@ -115,11 +115,19 @@ export function parapet(bat, r, y, height, opts = {}) {
       const stone = opts.stone ?? 0.78;
       const nStones = Math.max(1, Math.round(sl / stone));
       const sw = sl / nStones;
+      // The overhang the coping needs at a corner so the two runs mitre into each
+      // other instead of both stopping 8 mm short and leaving a notch in the skyline.
+      const over = t * 0.5 + 0.055;
+      const runsToStart = s0 <= 0.001;
+      const runsToEnd = s1 >= L - 0.001;
       bat.upTo(copeMat, 0, (mb) => {
         for (let i = 0; i < nStones; i++) {
-          const cu = -sl * 0.5 + sw * (i + 0.5);
+          let a = -sl * 0.5 + sw * i + 0.008;
+          let b = -sl * 0.5 + sw * (i + 1) - 0.008;
+          if (i === 0 && runsToStart) a -= over + 0.008;
+          if (i === nStones - 1 && runsToEnd) b += over + 0.008;
           const jitter = (hash3(Math.round(mx * 4), Math.round(mz * 4), i) - 0.5) * 0.012;
-          mb.box([cu, height + 0.055 + jitter, 0], [sw * 0.5 - 0.008, 0.055, t * 0.5 + 0.055], { chamfer: 0.016 });
+          mb.box([(a + b) * 0.5, height + 0.055 + jitter, 0], [(b - a) * 0.5, 0.055, over], { chamfer: 0.016 });
         }
       });
       bat.pop();
@@ -280,26 +288,57 @@ export function awning(bat, o) {
   });
   bat.upTo(o.mat || 'fabric.awning', 0, (mb) => {
     const n = 7;
-    // An awning is an up-facing surface, so its normal has to be authored. Left to
-    // the cross product of the quad's own edges it comes out pointing at the ground
-    // and the fabric renders black under an open sky.
+    /**
+     * Real thickness, not a single quad. A sheet that terminates in a one-pixel edge is
+     * the most common "cardboard cut-out" tell in the whole kit — canvas is 3 mm and it
+     * always shows a lit edge and a shadow line where it turns down over the front bar.
+     * Built as prisms so the top surface, the soffit and the edge are all real faces.
+     */
+    const th = 0.028;
     const sl = Math.hypot(d, drop) || 1;
-    const up = [0, d / sl, drop / sl];
-    // Slight scallop between the arms so the fabric is not a plane.
+    const uy = d / sl;
+    const uz = drop / sl;
     for (let i = 0; i < n; i++) {
       const u0 = lerp(-w * 0.5, w * 0.5, i / n);
       const u1 = lerp(-w * 0.5, w * 0.5, (i + 1) / n);
-      const sag = Math.sin(((i + 0.5) / n) * Math.PI) * 0.035;
-      mb.quad([u0, 0, 0], [u1, 0, 0], [u1, -drop - sag, d], [u0, -drop - sag, d], up);
+      const sag0 = Math.sin((i / n) * Math.PI) * 0.05;
+      const sag1 = Math.sin(((i + 1) / n) * Math.PI) * 0.05;
+      // bottom (soffit) quad, offset back along the sheet normal
+      mb.prism(
+        [
+          [u0, -th * uy, -th * uz],
+          [u1, -th * uy, -th * uz],
+          [u1, -drop - sag1 - th * uy, d - th * uz],
+          [u0, -drop - sag0 - th * uy, d - th * uz],
+        ],
+        [
+          [u0, 0, 0],
+          [u1, 0, 0],
+          [u1, -drop - sag1, d],
+          [u0, -drop - sag0, d],
+        ]
+      );
     }
-    // Valance hanging off the front bar.
-    const face = [0, 0.1, 0.995];
+    // Valance hanging off the front bar, also a solid so it has a lit edge.
     for (let i = 0; i < n; i++) {
       const u0 = lerp(-w * 0.5, w * 0.5, i / n);
       const u1 = lerp(-w * 0.5, w * 0.5, (i + 1) / n);
       const s0 = 0.2 + Math.sin((i / n) * Math.PI * 3.1) * 0.045;
       const s1 = 0.2 + Math.sin(((i + 1) / n) * Math.PI * 3.1) * 0.045;
-      mb.quad([u0, -drop, d], [u1, -drop, d], [u1, -drop - s1, d + 0.01], [u0, -drop - s0, d + 0.01], face);
+      mb.prism(
+        [
+          [u0, -drop - s0, d + 0.01 - th],
+          [u1, -drop - s1, d + 0.01 - th],
+          [u1, -drop - s1, d + 0.01],
+          [u0, -drop - s0, d + 0.01],
+        ],
+        [
+          [u0, -drop, d - th],
+          [u1, -drop, d - th],
+          [u1, -drop, d],
+          [u0, -drop, d],
+        ]
+      );
     }
   });
   bat.pop();
@@ -366,16 +405,72 @@ export function canopy(bat, o) {
   );
 }
 
-/** Roof clutter: AC condensers, vents, a water tank, satellite dishes. */
+/**
+ * Roof clutter: AC condensers, vents, water tanks, aerials and satellite dishes.
+ *
+ * The default used to be four items per roof with an 18 % chance of the water tank —
+ * the only element tall enough to break the parapet line — so five roofs shared about
+ * three visible boxes and the skyline was a row of empty grey trays. The count is now
+ * scaled to the roof's own area and the tall variants are biased up hard, because at
+ * 60-120 m the *only* thing a roof contributes to a frame is its silhouette.
+ */
 export function roofClutter(bat, r, y, rng, opts = {}) {
-  const n = opts.count ?? 4;
+  const area = Math.max(1, (r.x1 - r.x0) * (r.z1 - r.z0));
+  const base = opts.count ?? 4;
+  const n = opts.exact ?? Math.max(6, Math.min(12, Math.round(base * 2 + area / 34)));
   for (let i = 0; i < n; i++) {
     const fx = 0.16 + rng() * 0.68;
     const fz = 0.16 + rng() * 0.68;
     const x = lerp(r.x0, r.x1, fx);
     const z = lerp(r.z0, r.z1, fz);
+    // Tall first: tanks and aerials get 45 % of the roll between them, and the low
+    // condenser boxes take what is left.
     const kind = rng();
+    if (kind < 0.24) {
+      // Water tank on legs — the one element that reads above a parapet.
+      bat.upTo('metal.galv', 0, (mb) => {
+        const tr = 0.5 + rng() * 0.24;
+        const th = 1.0 + rng() * 0.7;
+        for (const sx of [-1, 1])
+          for (const sz of [-1, 1])
+            mb.cylinder([x + sx * tr * 0.72, y, z + sz * tr * 0.72], [x + sx * tr * 0.72, y + 0.78, z + sz * tr * 0.72], 0.038, 6);
+        mb.cylinder([x, y + 0.78, z], [x, y + 0.78 + th, z], tr, 14);
+        mb.cylinder([x, y + 0.78 + th, z], [x, y + 0.86 + th, z], tr * 0.9, 14);
+        mb.cylinder([x + tr * 0.3, y + 0.86 + th, z], [x + tr * 0.3, y + 0.92 + th, z], 0.12, 8);
+      });
+      bat.box(x, y + 1.3, z, 0.6, 0.9, 0.6, 'metal');
+      continue;
+    }
+    if (kind < 0.36) {
+      // TV aerial / dish mast: pure silhouette, almost no triangles.
+      bat.upTo('metal.rust', 0, (mb) => {
+        const mh = 1.6 + rng() * 1.5;
+        mb.cylinder([x, y, z], [x, y + mh, z], 0.026, 6);
+        mb.box([x, y + 0.06, z], [0.13, 0.06, 0.13], { chamfer: 0.02 });
+        const nEl = 4 + Math.floor(rng() * 4);
+        for (let k = 0; k < nEl; k++) {
+          const yy = y + mh * (0.45 + (0.5 * k) / nEl);
+          const ew = 0.5 - (0.32 * k) / nEl;
+          mb.cylinder([x - ew, yy, z], [x + ew, yy, z], 0.011, 4);
+        }
+        mb.cylinder([x, y + mh * 0.44, z], [x, y + mh * 0.44, z + 0.02], 0.03, 6);
+        // guy wire down to the deck, which is what stops a mast looking pasted on
+        mb.cylinder([x + 0.01, y + mh * 0.9, z], [x + 0.8, y + 0.04, z + 0.5], 0.007, 4);
+      });
+      continue;
+    }
     if (kind < 0.45) {
+      // Stair / lift head housing: a hard rectangular mass against the sky.
+      bat.upTo(opts.mat || 'struct.concrete', 0, (mb) => {
+        const hw = 0.7 + rng() * 0.38;
+        const hh = 1.5 + rng() * 0.8;
+        mb.box([x, y + hh * 0.5, z], [hw, hh * 0.5, hw * 0.8], { chamfer: 0.03 });
+        mb.box([x, y + hh + 0.07, z], [hw + 0.09, 0.07, hw * 0.8 + 0.09], { chamfer: 0.02 });
+      });
+      bat.box(x, y + 1.2, z, 1.0, 1.2, 0.85, 'concrete');
+      continue;
+    }
+    if (kind < 0.62) {
       // Condenser unit on a plinth.
       bat.upTo('metal.galv', 0, (mb) => {
         mb.box([x, y + 0.06, z], [0.52, 0.06, 0.42], { chamfer: 0.012 });

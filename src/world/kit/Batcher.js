@@ -193,10 +193,17 @@ export class Batcher {
     return n;
   }
 
-  /** Flat list of every builder across every LOD (for the AO bake). */
-  builders() {
+  /**
+   * Flat list of builders, for the AO bake.
+   * @param {number} [lod] restrict to one level of detail; omit for all of them.
+   */
+  builders(lod) {
     const out = [];
-    for (const map of this.levels) for (const mb of map.values()) if (!mb.empty) out.push(mb);
+    const levels = Number.isInteger(lod) ? [this.levels[lod]] : this.levels;
+    for (const map of levels) {
+      if (!map) continue;
+      for (const mb of map.values()) if (!mb.empty) out.push(mb);
+    }
     return out;
   }
 

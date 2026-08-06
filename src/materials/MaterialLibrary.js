@@ -90,21 +90,31 @@ import {
  * physically defensible.
  */
 const TAG_DEFAULTS = {
-  concrete: { rough: [0.42, 1.0], metal: [0, 0.04], detail: 1.0, dust: 1.0, wet: 1.0, porosity: 0.85, tileBreak: 0.6 },
-  plaster: { rough: [0.55, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.9, wet: 0.9, porosity: 0.9, tileBreak: 0.5 },
-  metal: { rough: [0.14, 0.95], metal: [0, 1], detail: 0.8, dust: 0.7, wet: 1.0, porosity: 0.12, tileBreak: 0.25, env: 1.05 },
-  wood: { rough: [0.35, 1.0], metal: [0, 0.05], detail: 1.0, dust: 0.9, wet: 1.0, porosity: 0.75, tileBreak: 0.45 },
-  dirt: { rough: [0.6, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.5, wet: 1.0, porosity: 0.95, tileBreak: 0.85, triplanar: true },
-  sand: { rough: [0.65, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.3, wet: 1.0, porosity: 0.95, tileBreak: 0.9, triplanar: true },
-  grass: { rough: [0.55, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.4, wet: 1.0, porosity: 0.9, tileBreak: 0.9, triplanar: true },
-  glass: { rough: [0.02, 0.5], metal: [0, 0.1], detail: 0.4, dust: 0.5, wet: 0.5, porosity: 0.05, tileBreak: 0, env: 1.2 },
-  water: { rough: [0.0, 1.0], metal: [0, 0], detail: 0, dust: 0, wet: 0, porosity: 0, tileBreak: 0, env: 1.2 },
-  fabric: { rough: [0.55, 1.0], metal: [0, 0.05], detail: 1.0, dust: 1.0, wet: 0.8, porosity: 0.95, tileBreak: 0.4 },
-  flesh: { rough: [0.28, 0.72], metal: [0, 0.02], detail: 1.0, dust: 0.2, wet: 0.6, porosity: 0.3, tileBreak: 0 },
-  rubber: { rough: [0.5, 1.0], metal: [0, 0.05], detail: 0.9, dust: 0.8, wet: 0.9, porosity: 0.25, tileBreak: 0.3 },
-  ceramic: { rough: [0.05, 0.9], metal: [0, 0.08], detail: 0.8, dust: 0.9, wet: 1.0, porosity: 0.3, tileBreak: 0.35, env: 1.1 },
-  foliage: { rough: [0.4, 0.9], metal: [0, 0.02], detail: 0.7, dust: 0.5, wet: 0.8, porosity: 0.6, tileBreak: 0 },
-  snow: { rough: [0.35, 0.95], metal: [0, 0.02], detail: 1.0, dust: 0, wet: 0.7, porosity: 0.5, tileBreak: 0.9, triplanar: true, env: 1.1 },
+  concrete: { rough: [0.42, 1.0], metal: [0, 0.04], detail: 1.0, dust: 1.0, wet: 1.0, porosity: 0.85, tileBreak: 0.6, edgeWear: 0.5, streak: 1.0 },
+  plaster: { rough: [0.55, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.9, wet: 0.9, porosity: 0.9, tileBreak: 0.5, edgeWear: 0.45, streak: 1.15 },
+  metal: { rough: [0.14, 0.95], metal: [0, 1], detail: 0.8, dust: 0.7, wet: 1.0, porosity: 0.12, tileBreak: 0.25, env: 1.05, edgeWear: 0.7, streak: 0.9 },
+  wood: { rough: [0.35, 1.0], metal: [0, 0.05], detail: 1.0, dust: 0.9, wet: 1.0, porosity: 0.75, tileBreak: 0.45, edgeWear: 0.6, streak: 0.8 },
+  dirt: { rough: [0.6, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.5, wet: 1.0, porosity: 0.95, tileBreak: 0.85, triplanar: true, edgeWear: 0.2, streak: 0 },
+  sand: { rough: [0.65, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.3, wet: 1.0, porosity: 0.95, tileBreak: 0.9, triplanar: true, edgeWear: 0.2, streak: 0 },
+  grass: { rough: [0.55, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.4, wet: 1.0, porosity: 0.9, tileBreak: 0.9, triplanar: true, edgeWear: 0.15, streak: 0 },
+  glass: { rough: [0.02, 0.5], metal: [0, 0.1], detail: 0.4, dust: 0.5, wet: 0.5, porosity: 0.05, tileBreak: 0, env: 1.2, edgeWear: 0, streak: 0 },
+  water: { rough: [0.0, 1.0], metal: [0, 0], detail: 0, dust: 0, wet: 0, porosity: 0, tileBreak: 0, env: 1.2, edgeWear: 0, streak: 0 },
+  // Thin coated cloth: light comes through an awning, and without it a canopy is a
+  // painted plane. `snow_packed` had this configured and the fabric tag did not.
+  fabric: {
+    rough: [0.55, 1.0], metal: [0, 0.05], detail: 1.0, dust: 1.0, wet: 0.8, porosity: 0.95, tileBreak: 0.4,
+    edgeWear: 0.3, streak: 0.9,
+    sss: { strength: 0.34, power: 3.2, distortion: 0.32, ambient: 0.03, color: 0xb8a98a },
+  },
+  flesh: { rough: [0.28, 0.72], metal: [0, 0.02], detail: 1.0, dust: 0.2, wet: 0.6, porosity: 0.3, tileBreak: 0, edgeWear: 0, streak: 0 },
+  rubber: { rough: [0.5, 1.0], metal: [0, 0.05], detail: 0.9, dust: 0.8, wet: 0.9, porosity: 0.25, tileBreak: 0.3, edgeWear: 0.4, streak: 0.5 },
+  ceramic: { rough: [0.05, 0.9], metal: [0, 0.08], detail: 0.8, dust: 0.9, wet: 1.0, porosity: 0.3, tileBreak: 0.55, env: 1.1, edgeWear: 0.55, streak: 0.7 },
+  foliage: {
+    rough: [0.4, 0.9], metal: [0, 0.02], detail: 0.7, dust: 0.5, wet: 0.8, porosity: 0.6, tileBreak: 0,
+    edgeWear: 0, streak: 0,
+    sss: { strength: 0.8, power: 2.4, distortion: 0.4, ambient: 0.09, color: 0x6f9a3c },
+  },
+  snow: { rough: [0.35, 0.95], metal: [0, 0.02], detail: 1.0, dust: 0, wet: 0.7, porosity: 0.5, tileBreak: 0.9, triplanar: true, env: 1.1, edgeWear: 0.2, streak: 0 },
 };
 
 /**
@@ -158,13 +168,16 @@ const RECIPES = {
   /* ── glass & ceramic ─────────────────────────────────────────────────── */
   glass_dirty: {
     physical: true,
-    glass: { alpha: 0.1, fresnel: 0.85, dirt: 0.55, dirtTiling: 1.2 },
-    rough: [0.02, 0.45],
+    // Lower base alpha + a full-strength fresnel term: a pane you can see through
+    // head-on that goes to a near-mirror at grazing incidence. That transition is the
+    // single signature of glass and it was being flattened by a constant dirt film.
+    glass: { alpha: 0.055, fresnel: 1.0, dirt: 0.6, dirtTiling: 1.2 },
+    rough: [0.015, 0.55],
     transparent: true,
     depthWrite: false,
     side: 'double',
     parallax: 0,
-    env: 1.25,
+    env: 1.55,
     ior: 1.52,
   },
   glass_clear: {
@@ -299,6 +312,7 @@ const RECIPES = {
 
   skin: {
     physical: true,
+    macro: 0,
     set: 'carpet_worn',
     surface: 'flesh',
     sss: { strength: 0.55, power: 3.4, distortion: 0.28, ambient: 0.06, color: 0x9c3a2a },
@@ -314,6 +328,7 @@ const RECIPES = {
   },
   skin_head: {
     physical: true,
+    macro: 0,
     set: 'carpet_worn',
     surface: 'flesh',
     sss: { strength: 0.7, power: 3.0, distortion: 0.3, ambient: 0.08, color: 0xa8402c },
@@ -328,7 +343,10 @@ const RECIPES = {
     tileBreak: 0,
   },
   fabric_uniform: {
+    // Characters walk through the world; a world-locked macro band would make their
+    // kit change colour as they move. Same for webbing and skin.
     physical: true,
+    macro: 0,
     set: 'fabric_canvas',
     surface: 'fabric',
     sheen: { amount: 0.85, roughness: 0.62, color: 0x7d8464 },
@@ -341,6 +359,7 @@ const RECIPES = {
   },
   fabric_webbing: {
     physical: true,
+    macro: 0,
     set: 'fabric_canvas',
     surface: 'fabric',
     sheen: { amount: 0.6, roughness: 0.5, color: 0x5f6350 },
@@ -494,23 +513,65 @@ class Library {
 
   /* --------------------------------------------------------------- quality */
 
+  /**
+   * The tier table is the authority on what the extension compiles, not the legacy
+   * `parallax` boolean.
+   *
+   * Why: the stock `medium` preset ships `parallax:false` and this method used to give
+   * `medium` zero POM layers and no tile break-up at all. Medium is the tier the review
+   * harness renders (high is ~5x the frame cost on a software rasteriser), so *every*
+   * screenshot anyone has ever looked at was missing parallax, tiling break-up and the
+   * distance detail band — the recipe library was strictly better than what reached the
+   * screen. `low` still gets 0 layers, so POM is genuinely compiled out there, and a
+   * caller that explicitly asks for `parallax` can opt `low` back in.
+   *
+   * Budget: medium buys 6 POM layers with a 4 m fade (near-field only, which is the
+   * only place parallax is legible anyway) on the deep-relief recipes, plus tile
+   * break-up from 2.5 m out on everything. That is the cheapest set of switches that
+   * still answers findings 2, 3 and 4; the SwiftShader review build cannot afford POM
+   * on every wall in the map as well.
+   */
   _quality() {
     const s = this.ctx.settings;
     const tier = s?.tier || 'high';
     const headless = !!s?.get?.('headless');
-    const parallax = !!s?.get?.('parallax');
     const detail = s?.get?.('detailTextures') !== false;
-    const layers = headless ? 10 : { low: 0, medium: 0, high: 18, ultra: 26 }[tier] ?? 18;
+
+    let layers = { low: 0, medium: 6, high: 18, ultra: 26 }[tier] ?? 18;
+    if (layers === 0 && s?.get?.('parallax') === true) layers = 6;
+    // The software rasteriser pays for every step of the ray march; cap it there.
+    if (headless) layers = Math.min(layers, 8);
+
+    let pomFade = { low: 0, medium: 4, high: 9, ultra: 14 }[tier] ?? 9;
+    if (layers > 0 && pomFade <= 0) pomFade = 4;
+    if (headless) pomFade = Math.min(pomFade, 5);
+
+    // Medium buys parallax only where it is legible: deep, near-field relief — brick
+    // courses, cobble, ceramic joints, corrugation, rubble. A 0.5-amplitude surface
+    // (ply, plaster, sheet steel) gains almost nothing from POM and there is a lot of
+    // it on screen, so it stays flat and the budget goes where the depth is.
+    const pomMin = tier === 'medium' ? 1.2 : 0;
+
+    let detailFade = { low: 4, medium: 14, high: 14, ultra: 20 }[tier] ?? 14;
+    if (headless) detailFade = Math.min(detailFade, 14);
+
     return {
       tier,
       headless,
-      parallax: parallax && layers > 0,
+      parallax: layers > 0,
       pomLayers: layers,
       pomShadow: !headless && (tier === 'ultra' || tier === 'high'),
       detail,
-      tileBreak: tier === 'high' || tier === 'ultra',
-      detailFade: headless ? 14 : { low: 4, medium: 8, high: 14, ultra: 20 }[tier] ?? 14,
-      pomFade: headless ? 8 : { low: 0, medium: 0, high: 9, ultra: 14 }[tier] ?? 9,
+      // Three extra fetches beyond 2.5 m, and it is the only thing standing between the
+      // plaza and a chequerboard. Everything except `low` pays for it.
+      tileBreak: tier !== 'low',
+      // World-space macro variation + convex edge wear: one fetch, plus a second on
+      // vertical faces only (the streak source). No distance fade — it is what stops
+      // the *far* field looking tiled, which is exactly where it has to keep working.
+      macro: tier !== 'low',
+      pomMin,
+      detailFade,
+      pomFade,
     };
   }
 
@@ -522,6 +583,8 @@ class Library {
       q.pomShadow === this._q.pomShadow &&
       q.detail === this._q.detail &&
       q.tileBreak === this._q.tileBreak &&
+      q.macro === this._q.macro &&
+      q.pomMin === this._q.pomMin &&
       q.detailFade === this._q.detailFade &&
       q.pomFade === this._q.pomFade;
     if (same) return;
@@ -558,7 +621,8 @@ class Library {
 
     // Parallax and triplanar are mutually exclusive: the triplanar path resamples in
     // world space and would throw the offset away, so paying for it would be a lie.
-    const wantPom = q.parallax && r.parallaxAmount > 0 && !r.water && !r.triplanar;
+    const wantPom =
+      q.parallax && r.parallaxAmount > 0 && r.parallaxAmount >= (q.pomMin || 0) && !r.water && !r.triplanar;
     set('COD_POM', wantPom);
     set('COD_POM_SHADOW', wantPom && q.pomShadow && r.pomShadow);
     set('COD_POM_CLIP', wantPom && r.pomClip > 0);
@@ -566,6 +630,8 @@ class Library {
     set('COD_DETAIL', wantDetail);
     const wantBreak = q.tileBreak && r.tileBreakAmount > 0 && !r.water;
     set('COD_TILEBREAK', wantBreak);
+    const wantMacro = q.macro && r.macroAmount > 0 && !r.water && !r.screen;
+    set('COD_MACRO', wantMacro);
 
     if (u.uCodPom) {
       u.uCodPom.value.set(r.pomScale, q.pomLayers, q.pomFade, r.pomClip);
@@ -577,6 +643,24 @@ class Library {
       u.uCodBreak.value.set(r.breakScale, r.tileBreakAmount, 2.5, 14.0);
     }
     if (dirty) mat.needsUpdate = true;
+  }
+
+  /**
+   * Does this material want the world-space macro / staining / edge-wear block?
+   *
+   * Only world-space geometry does. The viewmodel and the characters move *through*
+   * the field, so a world-locked band would make their albedo swim as the player walks
+   * and would paint rain streaks down a rifle receiver. `aerial:false` is already the
+   * established "this is not world geometry" hint (the viewmodel sets it to keep Sky's
+   * aerial perspective off), so it doubles as the opt-out here.
+   */
+  _macroFor(r, opts, recipeRaw) {
+    if (opts.aerial === false) return 0;
+    if (r.water || r.screen) return 0;
+    const tag = r.tag;
+    if (tag === 'flesh') return 0;
+    const base = num(recipeRaw.macro, tag === 'glass' ? 0.35 : tag === 'foliage' ? 0.6 : 1.0);
+    return clamp(num(opts.macro, 1) * base, 0, 2);
   }
 
   /* ----------------------------------------------------------------- get() */
@@ -722,7 +806,9 @@ class Library {
       water: recipeRaw.water || null,
       glass: recipeRaw.glass || null,
       screen: recipeRaw.screen || null,
-      sss: recipeRaw.sss || null,
+      // A tag may supply translucency (fabric, foliage) so a recipe that never thought
+      // about it still reads as a thin sheet with light behind it rather than card.
+      sss: recipeRaw.sss || (recipeRaw.sss === false ? null : tagDef.sss || null),
       sheen: recipeRaw.sheen || null,
       wind: recipeRaw.wind || null,
       pomShadow: recipeRaw.pomShadow !== false,
@@ -733,7 +819,13 @@ class Library {
       detailAmount: num(recipeRaw.detail, num(tagDef.detail, 1)) * (opts.detail ?? 1),
       tileBreakAmount: num(recipeRaw.tileBreak, num(tagDef.tileBreak, 0)) * (opts.tileBreak ?? 1),
       detailMetres: num(recipeRaw.detailMetres, 0.16),
+      // Convex wear: how strongly the proud parts of the height field lose their finish.
+      edgeWear: num(recipeRaw.edgeWear, num(tagDef.edgeWear, 0.35)) * (opts.edgeWear ?? 1),
+      edgeMetal: num(recipeRaw.edgeMetal, tag === 'metal' ? 0.55 : 0),
+      // Vertical world-space staining. Ground and glass do not want it.
+      streak: num(recipeRaw.streak, num(tagDef.streak, 0.75)) * (opts.streak ?? 1),
     };
+    r.macroAmount = this._macroFor(r, opts, recipeRaw);
 
     /* -- UV scale (metre space -> texture space) ------------------------ */
     const projection =
@@ -876,6 +968,15 @@ class Library {
       };
     }
     if (r.tileBreakAmount > 0) u.uCodBreak = { value: new THREE.Vector4(r.breakScale, r.tileBreakAmount, 2.5, 14) };
+    if (r.macroAmount > 0) {
+      // x macro strength, y convex edge-wear strength, z edge metalness lift,
+      // w vertical world-space staining. All world-space: none of it repeats with the
+      // tile, which is the whole point — the old macro pass lived in tile UV space and
+      // therefore *advertised* the repeat instead of hiding it.
+      u.uCodMacro = {
+        value: new THREE.Vector4(r.macroAmount, r.edgeWear, r.edgeMetal, r.streak),
+      };
+    }
     if (useVCol) {
       defines.COD_VCOL = '';
       u.uCodVCol = { value: new THREE.Vector4(num(opts.grime, 1), 1 / Math.max(1e-4, 1.6 * uvScale), 0.85, 0) };

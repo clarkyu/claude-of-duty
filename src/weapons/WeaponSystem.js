@@ -42,7 +42,7 @@
  */
 import * as THREE from 'three';
 import { WEAPON_DEFS, WEAPON_IDS, getWeaponDef, damageAt, rpmToInterval, recoilStep, spreadOf } from './WeaponDefs.js';
-import { makeWeaponMaterials, buildWeapon, buildArms, makeBrassPool, makeMuzzleFlash } from './ViewmodelBuilder.js';
+import { makeWeaponMaterials, buildWeapon, buildArms, makeBrassPool, makeMuzzleFlash, bakeViewmodel } from './ViewmodelBuilder.js';
 import { resolveLoadout, applyStats, buildAttachment, ATTACHMENTS, SLOTS } from './Attachments.js';
 import { createProcAnim } from './ProcAnim.js';
 
@@ -138,6 +138,14 @@ export default function createWeaponSystem(ctx) {
       // sight line stays exact whatever the scale is.
       const vs = def.view?.scale ?? 0.78;
       gun.scale.setScalar(vs);
+      // Re-solve cavity occlusion over the gun and the hands together. Built
+      // separately they cannot see each other, so the fingers land on the grip with no
+      // darkening underneath them and read as floating. This is the contact shadow.
+      try {
+        bakeViewmodel(gun, { cell: 0.0032, maxDist: 0.03, amount: 1 });
+      } catch (err) {
+        console.warn('[weapons] cavity bake failed', err);
+      }
       gun.visible = false;
       rig.add(gun);
 
@@ -302,6 +310,39 @@ export default function createWeaponSystem(ctx) {
     lights.fill = mk(0x93aecd, 0.95, [0.72, -0.18, 0.5]);
     lights.rim = mk(0xdfe8f6, 1.7, [0.34, 0.52, -0.86]);
     lights.bounce = mk(0x6a5e4c, 0.55, [0.1, -0.9, 0.2]);
+
+    // Exactly one of them casts. Without it nothing in the viewmodel scene occludes
+    // anything: the hands float clear of the receiver, the optic leaves no mark on the
+    // rail, and the magazine reads as painted onto the magwell. It is a ~25k-triangle
+    // depth pass into a small map, so it is affordable even on the software rasteriser.
+    /* Exactly one of them casts a real shadow, and only outside the capture harness.
+     * A shadow-casting light in the viewmodel scene doubles the program variants for
+     * every weapon material, and on the SwiftShader rasteriser that is minutes of
+     * compile time on the first frame the gun appears — long enough to blow the
+     * screenshot timeout. Headless gets the same read from the baked contact
+     * occlusion in ensureBuilt(), which costs nothing per frame. */
+    const shadowsOn =
+      ctx.settings?.get?.('shadows') !== false &&
+      ctx.renderer?.shadowMap?.enabled !== false &&
+      !ctx.settings?.get?.('headless');
+    if (shadowsOn) {
+      const res = ctx.settings?.tier === 'low' ? 512 : 1024;
+      lights.key.castShadow = true;
+      lights.key.shadow.mapSize.set(res, res);
+      const c = lights.key.shadow.camera;
+      c.left = -0.42;
+      c.right = 0.42;
+      c.top = 0.42;
+      c.bottom = -0.42;
+      c.near = 0.05;
+      c.far = 3.2;
+      c.updateProjectionMatrix();
+      lights.key.shadow.bias = -0.00055;
+      lights.key.shadow.normalBias = 0.0019;
+      // The light sits on a unit vector from the rig origin; push it out so the whole
+      // viewmodel is inside the near/far window.
+      lights.key.position.multiplyScalar(1.15);
+    }
   }
 
   function syncEnvironment() {
@@ -310,11 +351,9 @@ export default function createWeaponSystem(ctx) {
     const env = ctx.lighting?.envMap ?? ctx.lighting?.envTexture ?? null;
     if (env && env !== envApplied) {
       scene.environment = env;
-      scene.environmentIntensity = 1;
       envApplied = env;
     }
-    // Match the viewmodel key to how bright the world actually is, but never let it
-    // go dark enough to lose the silhouette.
+    // How bright the world is right now, as seen by an up-facing surface.
     let lum = 0.6;
     try {
       const c = ctx.lighting?.ambientIrradiance?.(_v.set(0, 1, 0));
@@ -322,13 +361,29 @@ export default function createWeaponSystem(ctx) {
     } catch {
       /* lighting may still be half-built */
     }
-    const k = clamp(0.45 + Math.sqrt(lum) * 0.85, 0.55, 2.1);
-    if (lights.key) lights.key.intensity = 2.5 * k;
-    if (lights.fill) lights.fill.intensity = 0.95 * k;
-    if (lights.rim) lights.rim.intensity = 1.7 * k;
-    if (lights.bounce) lights.bounce.intensity = 0.55 * k;
+
+    // Clamp the environment's hold on the viewmodel. The viewmodel scene carries the
+    // world's full HDR sky, and a gun lit primarily by that sky *is* a mirror of the
+    // sky: white at noon, and — worse — a glowing blue-white beacon at night, when it
+    // was the brightest object on screen in a black courtyard. The gun is lit by its
+    // own rig; the environment is only allowed to contribute reflection and bounce.
+    // It scales *down* with the world, not up: a dark scene is exactly where a residual
+    // sky reflection becomes the brightest thing on screen. The rim light, which has
+    // its own floor below, is what keeps the gun readable at night — not the sky.
+    scene.environmentIntensity = clamp(0.34 * Math.sqrt(lum / 0.6), 0.09, 0.42);
+
+    // Key tracks the world, but with a hard floor: a COD viewmodel is always readable
+    // because a camera-relative rig lights it, not the room it is standing in.
+    const k = clamp(0.5 + Math.sqrt(lum) * 0.75, 0.62, 1.7);
+    if (lights.key) lights.key.intensity = 2.15 * k;
+    if (lights.fill) lights.fill.intensity = 0.6 * k;
+    // Rim carries the silhouette; it is deliberately the last thing to fade at night.
+    if (lights.rim) lights.rim.intensity = 1.45 * clamp(k, 0.78, 1.5);
+    if (lights.bounce) lights.bounce.intensity = 0.38 * k;
     const sc = ctx.lighting?.sunColor;
-    if (sc?.isColor && lights.key) lights.key.color.copy(sc).lerp(_col.setRGB(1, 1, 1), 0.45);
+    // Only part-way to the sun's colour: steel and anodising are neutral, and a low warm
+    // sun was pushing the entire weapon sepia until it read as one brown substance.
+    if (sc?.isColor && lights.key) lights.key.color.copy(sc).lerp(_col.setRGB(1, 1, 1), 0.66);
   }
 
   /* ====================================================================== */
@@ -692,7 +747,9 @@ export default function createWeaponSystem(ctx) {
     if (optic.reticleMat) {
       const u = optic.reticleMat.uniforms;
       u.uJitter.value = Math.sin((ctx.time?.elapsed ?? 0) * 41.3) * 0.5 + 0.5;
-      u.uIntensity.value = (5.6 + 3.2 * clamp01(anim?.adsBlend ?? 0)) * aperture;
+      // Enough to blow the core to white and bloom, not enough to make the white core
+      // itself large: the dot has to stay an aiming point, not a splash of light.
+      u.uIntensity.value = (3.3 + 2.2 * clamp01(anim?.adsBlend ?? 0)) * aperture;
     }
     // Reticle bleed onto the front element.
     for (const g of optic.glass || []) {

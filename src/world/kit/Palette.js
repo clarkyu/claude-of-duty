@@ -24,10 +24,18 @@ import { attachVertexAO } from './VertexAO.js';
  */
 export const PALETTE = {
   /* ── render/structural concrete ─────────────────────────────────────── */
+  /* `concreteClean` is the *trim* key: lintels, sills, copings, cornices, string
+     courses, arch voussoirs, parapet caps, kerbs and pilaster ribs all resolve to it.
+     Those are 0.15-0.30 m pieces, and at the recipe's native 3 m tile a lintel sampled
+     ~7% of one tile — every aggregate speckle, form-board seam and tie hole in the
+     recipe fell outside the piece, so forty lintels rendered as forty identical flat
+     pale-grey slabs. `repeat: 2.6` puts the tile at 1.15 m so the detail actually
+     lands on the moulding. Big cast surfaces keep the 3 m tile through
+     `struct.concrete`. */
   'struct.concrete': { m: 'concrete_cast', o: { vertexColors: true, grime: 0.85 } },
-  'struct.concreteClean': { m: 'concrete_cast', o: { vertexColors: true, grime: 0.35 }, tint: 0xb8b3a8 },
+  'struct.concreteClean': { m: 'concrete_cast', o: { vertexColors: true, grime: 0.35, repeat: 2.6 }, tint: 0xb8b3a8 },
   'struct.panel': { m: 'concrete_precast_panel', o: { vertexColors: true, grime: 0.9 } },
-  'struct.panelPale': { m: 'concrete_precast_panel', o: { vertexColors: true, grime: 0.6 }, tint: 0xc4bfb2 },
+  'struct.panelPale': { m: 'concrete_precast_panel', o: { vertexColors: true, grime: 0.6, repeat: 1.5 }, tint: 0xc4bfb2 },
 
   /* ── plaster / stucco facades — the Mediterranean colour story ──────── */
   'wall.sand': { m: 'stucco', o: { vertexColors: true, grime: 1.05 }, tint: 0xd8c39a },
@@ -50,6 +58,12 @@ export const PALETTE = {
      asphalt breaking back to its aggregate base, paving silted over with dirt. The
      blend is height-aware, so it fills the joints and the low spots first — which is
      what stops 100 x 100 m of road reading as one tiled texture. */
+  /* `layerAmount` was 0 on all three, so the whole second-material machinery was
+     switched off and the ground was one uniform speckle from kerb to horizon. A small
+     global amount, multiplied by the world-space macro band in the shader and biased
+     into the cavities, gives grit collecting in the ruts of the road, silt over the
+     paving joints and wind-drifted sand banking up on the dirt — patchy, at 20 m
+     scale, and only on up-facing geometry so it never smears up a wall. */
   'ground.road': {
     m: 'asphalt',
     o: {
@@ -57,8 +71,9 @@ export const PALETTE = {
       grime: 0.7,
       puddleLevel: 0.5,
       layer: 'gravel',
-      layerAmount: 0.0,
+      layerAmount: 0.2,
       layerCavityBias: 0.85,
+      layerUpFacing: 1,
       layerContrast: 1.9,
       layerRepeat: 1.35,
     },
@@ -70,14 +85,26 @@ export const PALETTE = {
       grime: 0.9,
       puddleLevel: 0.45,
       layer: 'dirt_packed',
-      layerAmount: 0.0,
+      layerAmount: 0.24,
       layerCavityBias: 0.9,
+      layerUpFacing: 1,
       layerContrast: 1.7,
     },
   },
   'ground.dirt': {
     m: 'dirt_packed',
-    o: { vertexColors: true, layer: 'sand', layerAmount: 0.0, layerCavityBias: 0.0, grime: 0.5, puddleLevel: 0.55 },
+    o: {
+      vertexColors: true,
+      layer: 'sand',
+      layerAmount: 0.32,
+      // Drifted sand fills the hollows and banks against anything standing in it.
+      layerCavityBias: 0.78,
+      layerUpFacing: 1,
+      layerContrast: 2.1,
+      layerRepeat: 0.75,
+      grime: 0.5,
+      puddleLevel: 0.55,
+    },
   },
   'ground.gravel': { m: 'gravel', o: { vertexColors: true, grime: 0.6 } },
   'ground.rubble': { m: 'rubble', o: { vertexColors: true, grime: 1.0 } },
@@ -88,25 +115,33 @@ export const PALETTE = {
   'roof.corrugatedRust': { m: 'corrugated_metal', o: { vertexColors: true, grime: 1.35 }, tint: 0x9c7a5e },
 
   /* ── metal ──────────────────────────────────────────────────────────── */
+  /* `galv` is what every rooftop AC unit, water tank and duct is made of; at the
+     recipe's 1.6 m tile an 0.8 m casing showed half a spangle and read as flat grey
+     card against the sky. `paintCream` is the window-frame key — a 5 cm mullion needs
+     the chip and orange-peel detail an order of magnitude tighter than a door does. */
   'metal.rust': { m: 'rusted_steel', o: { vertexColors: true, grime: 1.1 } },
-  'metal.galv': { m: 'galvanised_metal', o: { vertexColors: true, grime: 0.85 } },
+  'metal.galv': { m: 'galvanised_metal', o: { vertexColors: true, grime: 0.85, repeat: 2.2 } },
   'metal.paintBlue': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 1.0 }, tint: 0x5f7e8c },
   'metal.paintRed': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 1.1 }, tint: 0x9c4a38 },
   'metal.paintGreen': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 1.05 }, tint: 0x53664a },
-  'metal.paintCream': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 0.95 }, tint: 0xc3bda6 },
+  'metal.paintCream': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 0.95, repeat: 3.4 }, tint: 0xc3bda6 },
 
   /* ── timber ─────────────────────────────────────────────────────────── */
   'wood.weathered': { m: 'wood_plank_weathered', o: { vertexColors: true, grime: 1.05 } },
-  'wood.painted': { m: 'plywood_painted', o: { vertexColors: true, grime: 1.0 }, tint: 0x6d7f6a },
-  'wood.paintedBlue': { m: 'plywood_painted', o: { vertexColors: true, grime: 1.05 }, tint: 0x4a6272 },
+  /* `painted` is the joinery key — frames, shutters, door leaves. Same argument as the
+     metal frames: the paint chipping and grain telegraph have to be at joinery scale. */
+  'wood.painted': { m: 'plywood_painted', o: { vertexColors: true, grime: 1.0, repeat: 2.6 }, tint: 0x6d7f6a },
+  'wood.paintedBlue': { m: 'plywood_painted', o: { vertexColors: true, grime: 1.05, repeat: 2.6 }, tint: 0x4a6272 },
   'wood.ply': { m: 'wood_ply', o: { vertexColors: true, grime: 1.2 } },
 
   /* ── glass & fabric ─────────────────────────────────────────────────── */
-  'glass.window': { m: 'glass_dirty', o: { side: 'double' } },
+  /* One tile ~= one pane, so the recipe's edge dirt, runoff and cracks land at the
+     size of the sheet they are meant to describe. */
+  'glass.window': { m: 'glass_dirty', o: { side: 'double', repeat: 1.6 } },
   'glass.shop': { m: 'glass_dirty', o: { side: 'double', variant: 'shop' }, tint: 0xa8b2ae },
   'fabric.awning': { m: 'tarp', o: { side: 'double', vertexColors: true, grime: 1.0 }, tint: 0xa8564a },
   'fabric.awning2': { m: 'tarp', o: { side: 'double', vertexColors: true, grime: 1.0 }, tint: 0x4a6a86 },
-  'fabric.canvas': { m: 'fabric_canvas', o: { side: 'double', vertexColors: true, grime: 1.1 }, tint: 0xbcb096 },
+  'fabric.canvas': { m: 'fabric_canvas', o: { side: 'double', vertexColors: true, grime: 1.1, repeat: 1.6 }, tint: 0xbcb096 },
 
   /* ── interior ───────────────────────────────────────────────────────── */
   'int.tile': { m: 'ceramic_tile', o: { vertexColors: true, grime: 1.0 } },

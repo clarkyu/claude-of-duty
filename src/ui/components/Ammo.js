@@ -9,7 +9,7 @@
  *
  * API: new Ammo(root, ctx) → { update(dt), setVisible(b), flashReload(on) }
  */
-import { div, setText, setClass, setStyle, Counter, clamp01, replay } from './dom.js';
+import { div, el, setText, setClass, setStyle, Counter, clamp01, replay } from './dom.js';
 
 export class Ammo {
   constructor(root, ctx) {
@@ -21,7 +21,9 @@ export class Ammo {
     div('cod-slash', row, '/');
     this.res = div('cod-res num', row, '0');
     const bar = div('cod-ammo-bar', this.root);
-    this.fill = div('', bar);
+    // `.cod-ammo-bar i` is the styled selector — a <div> here is an unstyled,
+    // invisible element and the magazine bar never renders.
+    this.fill = el('i', '', bar);
     this.mode = div('cod-firemode', this.root, '');
     this.reload = div('cod-reload', this.root, 'RELOADING');
 
@@ -33,10 +35,13 @@ export class Ammo {
     this._state = '';
     this._lastFill = -1;
     this._lowAudio = 0;
+    this._wanted = false;
+    this._unarmed = false;
   }
 
   setVisible(v) {
-    setClass(this.root, 'on', !!v);
+    this._wanted = !!v;
+    setClass(this.root, 'on', this._wanted && !this._unarmed);
   }
 
   update(dt) {
@@ -56,6 +61,24 @@ export class Ammo {
       } catch {
         /* the weapon may be mid-swap */
       }
+    }
+
+    /*
+     * Empty hands is a real state — a weapon swap, a downed player, a debug pose
+     * with no loadout — and the answer to it is not to print the word NONE over a
+     * red zero. There is nothing to report, so the readout goes away, which is
+     * both what CoD does and the only thing that cannot be mistaken for a bug.
+     */
+    const unarmed = !name || /^none$/i.test(String(name));
+    if (unarmed !== this._unarmed) {
+      this._unarmed = unarmed;
+      setClass(this.root, 'on', this._wanted && !unarmed);
+    }
+    if (unarmed) {
+      this._mag = -1;
+      this._name = '';
+      this._state = '';
+      return;
     }
 
     if (ammo !== this._mag) {

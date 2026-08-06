@@ -3,17 +3,33 @@
  *
  * The map is not an illustration: at init it bakes `ctx.level.navRegions.walkable`
  * (the actual raycast walkable grid) as the street surface and every box collider in
- * `ctx.level.colliders` as a building footprint into one offscreen canvas. Per frame
- * it blits a rotated crop of that bake — player-up, like CoD — and stamps blips on
- * top. One drawImage plus a dozen tiny paths, at 30 Hz, on a 178 px canvas.
+ * `ctx.level.colliders` as a filled building footprint into one offscreen canvas.
+ * Per frame it blits a rotated crop of that bake — player-up, like CoD — and stamps
+ * blips on top. One drawImage plus a dozen tiny paths, at 30 Hz, on a 178 px canvas.
+ *
+ * Three things the bake has to get right, all of which it previously did not:
+ *   • the bake extends PAD_M past the level bounds, so the rotated crop can never
+ *     run off the image and leave a black wedge in the corner of the widget;
+ *   • the walkable wash is ONE path filled ONCE — per-run fills at the same alpha
+ *     double-composite on every seam and the plate reads as scanline banding;
+ *   • footprints are solid, not outlines, so solid and walkable are distinguishable
+ *     at a glance rather than by inference.
  *
  * API: new Minimap(root, ctx) → { bake(), update(dt), setContacts(list),
  *                                 setZones(list), setUav(bool), dispose() }
  */
 import { div, setClass, clamp01 } from './dom.js';
 
-const BAKE = 700; // px across the whole level bake
+const BAKE = 700; // px across the playable span of the level bake
 const VIEW_M = 62; // metres visible across the widget
+/**
+ * How far past the level bounds the bake extends, in metres. The widget shows a
+ * rotated square crop of the bake; at 45° the corner of that crop reaches
+ * VIEW_M/√2 ≈ 0.71·VIEW_M past the centre. Without this margin the crop runs off
+ * the baked image near the map edge and you get a hard black wedge eating a
+ * corner of the widget — and the dashed boundary sweeping across it as you turn.
+ */
+const PAD_M = VIEW_M * 0.71;
 
 export class Minimap {
   constructor(root, ctx) {
@@ -28,6 +44,7 @@ export class Minimap {
     this.g = this.canvas.getContext('2d', { alpha: true });
     this.baked = null;
     this.bakeCtx = null;
+    this.pad = 0;
     this.bounds = { minX: -60, maxX: 60, minZ: -60, maxZ: 60 };
     this.contacts = [];
     this.zones = [];
@@ -63,21 +80,36 @@ export class Minimap {
       const span = Math.max(spanX, spanZ);
       this.mPerPx = span / BAKE;
       this.pxPerM = BAKE / span;
-      // Centre the level in a square bake.
+      // Centre the level in a square bake, then grow the canvas by the rotation
+      // margin on every side so the rotated crop can never leave the image.
       this.cx = (this.bounds.minX + this.bounds.maxX) * 0.5;
       this.cz = (this.bounds.minZ + this.bounds.maxZ) * 0.5;
+      this.pad = Math.ceil(PAD_M * this.pxPerM);
+      const size = BAKE + this.pad * 2;
 
       const c = document.createElement('canvas');
-      c.width = BAKE;
-      c.height = BAKE;
+      c.width = size;
+      c.height = size;
       const g = c.getContext('2d');
       if (!g) return;
 
-      g.fillStyle = '#070a0e';
-      g.fillRect(0, 0, BAKE, BAKE);
+      // Out of bounds: a dark hatched apron, so leaving the map reads as "there is
+      // nothing there" rather than as a rendering hole.
+      g.fillStyle = '#05070a';
+      g.fillRect(0, 0, size, size);
+      this._drawHatch(g, size);
 
+      const [ix0, iz0] = this._toPx(this.bounds.minX, this.bounds.minZ);
+      const [ix1, iz1] = this._toPx(this.bounds.maxX, this.bounds.maxZ);
+      g.save();
+      g.beginPath();
+      g.rect(ix0, iz0, ix1 - ix0, iz1 - iz0);
+      g.clip();
+      g.fillStyle = '#0b1016';
+      g.fillRect(ix0, iz0, ix1 - ix0, iz1 - iz0);
       this._drawWalkable(g, level);
       this._drawColliders(g, level);
+      g.restore();
       this._drawBorder(g);
 
       this.baked = c;
@@ -91,10 +123,26 @@ export class Minimap {
   }
 
   _toPx(x, z) {
+    const pad = this.pad || 0;
     return [
-      BAKE * 0.5 + (x - this.cx) * this.pxPerM,
-      BAKE * 0.5 + (z - this.cz) * this.pxPerM,
+      pad + BAKE * 0.5 + (x - this.cx) * this.pxPerM,
+      pad + BAKE * 0.5 + (z - this.cz) * this.pxPerM,
     ];
+  }
+
+  /** Diagonal hatch for the out-of-bounds apron. */
+  _drawHatch(g, size) {
+    g.save();
+    g.strokeStyle = 'rgba(148,166,186,0.10)';
+    g.lineWidth = Math.max(1, this.pxPerM * 0.14);
+    const step = Math.max(6, this.pxPerM * 2.4);
+    g.beginPath();
+    for (let x = -size; x < size * 2; x += step) {
+      g.moveTo(x, 0);
+      g.lineTo(x + size, size);
+    }
+    g.stroke();
+    g.restore();
   }
 
   _drawWalkable(g, level) {
@@ -104,8 +152,12 @@ export class Minimap {
     const origin = nav.origin || [this.bounds.minX, this.bounds.minZ];
     const w = nav.walkable;
     const size = cell * this.pxPerM;
-    // Streets: a light wash so the layout reads instantly.
-    g.fillStyle = 'rgba(164,186,206,0.22)';
+    // One path, one fill. Filling each row-run separately at alpha 0.22 with a
+    // +0.6 px overlap double-composites every seam, which is what turned the
+    // plate into horizontal scanline banding; a single Path2D composites once.
+    const path = typeof Path2D === 'function' ? new Path2D() : null;
+    const add = (x, y, w2, h2) => (path ? path.rect(x, y, w2, h2) : g.rect(x, y, w2, h2));
+    if (!path) g.beginPath();
     for (let j = 0; j < rows; j++) {
       let runStart = -1;
       for (let i = 0; i <= cols; i++) {
@@ -113,11 +165,14 @@ export class Minimap {
         if (on && runStart < 0) runStart = i;
         else if (!on && runStart >= 0) {
           const [x0, z0] = this._toPx(origin[0] + runStart * cell, origin[1] + j * cell);
-          g.fillRect(x0, z0, (i - runStart) * size + 0.6, size + 0.6);
+          add(x0, z0, (i - runStart) * size + 0.6, size + 0.6);
           runStart = -1;
         }
       }
     }
+    g.fillStyle = 'rgba(150,175,200,0.16)';
+    if (path) g.fill(path);
+    else g.fill();
   }
 
   _drawColliders(g, level) {
@@ -151,10 +206,13 @@ export class Minimap {
         g.save();
         g.translate(x, z);
         if (f.yaw) g.rotate(f.yaw);
-        g.fillStyle = f.tall ? 'rgba(228,234,240,0.30)' : 'rgba(228,234,240,0.15)';
+        // Solid, not an outline. A hollow footprint over a lit street wash tells
+        // you nothing about what you can walk through; buildings read as filled
+        // masses well above the walkable surface, low cover a step below them.
+        g.fillStyle = f.tall ? 'rgba(214,226,238,0.62)' : 'rgba(176,194,212,0.34)';
         g.fillRect(-w / 2, -d / 2, w, d);
-        if (f.tall && (w > 3 || d > 3)) {
-          g.strokeStyle = 'rgba(232,238,244,0.46)';
+        if (w > 3 || d > 3) {
+          g.strokeStyle = f.tall ? 'rgba(20,26,32,0.55)' : 'rgba(228,238,248,0.34)';
           g.lineWidth = 1;
           g.strokeRect(-w / 2 + 0.5, -d / 2 + 0.5, w - 1, d - 1);
         }
@@ -368,6 +426,37 @@ export class Minimap {
     cone.addColorStop(1, 'rgba(255,182,72,0)');
     g.fillStyle = cone;
     g.fill();
+    g.restore();
+
+    this._drawNorth(g, size, yaw);
+  }
+
+  /**
+   * North marker. The map is player-up and rotates, so a marker painted on the
+   * frame would be a lie four fifths of the time — this one rides the tape and
+   * clamps to the inside of the border, which is what a rotating minimap does.
+   */
+  _drawNorth(g, size, yaw) {
+    const dx = Math.sin(yaw);
+    const dy = -Math.cos(yaw);
+    const m = Math.max(Math.abs(dx), Math.abs(dy)) || 1;
+    const h = size / 2 - 12 * this._dpr;
+    const x = size / 2 + (dx / m) * h;
+    const y = size / 2 + (dy / m) * h;
+    g.save();
+    g.translate(x, y);
+    g.beginPath();
+    g.arc(0, 0, 8 * this._dpr, 0, Math.PI * 2);
+    g.fillStyle = 'rgba(5,7,10,0.82)';
+    g.fill();
+    g.lineWidth = 1;
+    g.strokeStyle = 'rgba(255,182,72,0.6)';
+    g.stroke();
+    g.font = `700 ${Math.round(10 * this._dpr)}px ui-sans-serif, system-ui, sans-serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillStyle = '#ffb648';
+    g.fillText('N', 0, 0.5 * this._dpr);
     g.restore();
   }
 

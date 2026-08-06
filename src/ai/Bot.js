@@ -539,10 +539,12 @@ export function createBot(ctx, deps, opts = {}) {
   /** Where to shoot at: the target's chest, led by its velocity over the flight time. */
   function solveAimPoint(track, out) {
     const e = track.entity;
-    const src = track.visible ? (e.position || track.lastKnownPos) : track.lastKnownPos;
-    const h = (e?.stance === 'crouch' ? 0.78 : 1.16);
+    const src = (track.visible && e?.position) || track.lastKnownPos;
+    // A synthetic contact can carry no entity at all (debug poses aim a soldier at a
+    // bearing rather than at a body); its lastKnownPos is already an aim point.
+    const h = e ? (e.stance === 'crouch' ? 0.78 : 1.16) : 0;
     out.set(src.x, src.y + h, src.z);
-    const v = track.visible ? (e.velocity || track.lastKnownVel) : track.lastKnownVel;
+    const v = (track.visible && e?.velocity) || track.lastKnownVel;
     if (v) {
       const dist = bot.eyePosition.distanceTo(out);
       const flight = dist / Math.max(120, bot.weapon.muzzleVelocity);
@@ -952,6 +954,7 @@ export function createBot(ctx, deps, opts = {}) {
     footAt: [-99, -99],
     pelvisDrop: 0,
     peek: 0,
+    ready: 0,
   };
 
   const legLen = {
@@ -1012,18 +1015,31 @@ export function createBot(ctx, deps, opts = {}) {
     anim.peek = damp(anim.peek, wantPeek, 6, dt);
 
     // ── pelvis / spine base
+    //
+    // A fighting stance is never symmetric. The hips are bladed off the aim line,
+    // the shoulders counter-rotate back square to it, the weight sits on the rear
+    // foot and *both* knees carry a break. Standing the rig bolt upright with the
+    // feet level and the shoulders parallel to the hips is the loudest "mannequin"
+    // tell a character has, and it is what the last capture was doing.
+    //
+    // The knee break has to come from dropping the pelvis, not from rotating the
+    // shin: the foot IK below pins each ankle to the ground it is standing on, so
+    // any bend authored into the leg is solved straight back out again unless the
+    // hip is genuinely closer to the floor. 32 mm buys ~30 degrees of knee.
     const bob = Math.cos(p * 2) * 0.022 * w;
     const sway = Math.sin(p) * 0.028 * w;
-    anim.pelvisDrop = damp(anim.pelvisDrop, cr * 0.34 + anim.peek * 0.12, 8, dt);
+    const settle = (1 - w) * (1 - cr * 0.35);
+    const blade = settle * 0.30;
+    anim.pelvisDrop = damp(anim.pelvisDrop, cr * 0.34 + anim.peek * 0.12 + settle * 0.032, 8, dt);
     B.pelvis.position.set(
-      Math.sin(p) * 0.012 * w,
+      Math.sin(p) * 0.012 * w - settle * 0.018,
       L.hipY - anim.pelvisDrop + bob,
-      0
+      -settle * 0.012
     );
     B.pelvis.rotation.set(
-      0.06 * w + cr * 0.20,
-      -sway * 0.5,
-      Math.sin(p) * 0.05 * w
+      0.06 * w + cr * 0.20 + settle * 0.055,
+      -sway * 0.5 - blade,
+      Math.sin(p) * 0.05 * w + settle * 0.062
     );
 
     // Upper body: split the aim pitch between spine, chest and head so the whole
@@ -1036,15 +1052,18 @@ export function createBot(ctx, deps, opts = {}) {
 
     const pitch = clamp(bot.pitch, -0.9, 0.8);
     const breathe = Math.sin(anim.breathe) * 0.012 * (1 - w);
+    // The `blade` terms are the counter-rotation: spine and chest give back exactly
+    // what the pelvis took, so the chest ends up square to the weapon while the hips
+    // sit ~17 degrees off it.
     B.spine.rotation.set(
       0.05 + pitch * 0.16 + cr * 0.14 + breathe - hitReact.pitch * 0.5,
-      sway * 0.35,
-      -anim.lean * 0.25
+      sway * 0.35 + blade * 0.45,
+      -anim.lean * 0.25 - settle * 0.035
     );
     B.chest.rotation.set(
       0.04 + pitch * 0.26 + breathe * 0.6 - hitReact.pitch * 0.8,
-      sway * 0.5,
-      -anim.lean * 0.4 + hitReact.roll * 0.5
+      sway * 0.5 + blade * 0.55,
+      -anim.lean * 0.4 + hitReact.roll * 0.5 - settle * 0.045
     );
     B.head.rotation.set(pitch * 0.34 + hitReact.head * 0.5, -sway * 0.3, hitReact.roll * 0.4);
 
@@ -1062,15 +1081,34 @@ export function createBot(ctx, deps, opts = {}) {
     const throwing = anim.throwT > 0;
     if (throwing) anim.throwT = Math.max(0, anim.throwT - dt);
     const tf = throwing ? clamp01(anim.throwT / 0.55) : 0;
+    //
+    // The anchor's origin is the pistol grip. It used to sit at `chestY * 0.99` —
+    // 1.20 m, the height of a man's navel — so the rifle hung in front of the belly
+    // with the muzzle level: from the front that is a four-pixel dark stick and from
+    // any angle it reads as "carrying a plank", not "holding a weapon". Shouldered,
+    // the grip belongs just under the shoulder line so the stock lands in the
+    // shoulder pocket and the optic comes up near the eye. Patrol keeps the old low
+    // ready, muzzle depressed. Everything else — the hands, the elbows, the fire
+    // vector — follows the anchor, so this one number moves the whole upper body.
     const anchor = character.weaponAnchor;
     if (anchor && anchor.parent === root) {
-      const lowered = tf * 0.45 + (1 - clamp01(bot.state === 'patrol' ? 0.35 : 1)) * 0.25;
+      const passive = bot.state === 'patrol' || bot.state === 'idle';
+      anim.ready = damp(anim.ready, throwing ? 0.1 : (passive ? 0.28 : 1), 4.5, dt);
+      const rdy = anim.ready;
       anchor.position.set(
-        (0.055 - tf * 0.16) * L.s + Math.sin(p) * 0.008 * w,
-        L.chestY * 0.99 - anim.pelvisDrop * 0.85 + bob * 0.8 - lowered * 0.16,
-        (0.27 - anim.recoil * 0.012 - tf * 0.05) * L.s
+        (lerp(0.070, 0.102, rdy) - tf * 0.16) * L.s + Math.sin(p) * 0.008 * w,
+        lerp(L.chestY * 0.90, L.shoulderY - 0.048 * L.s, rdy)
+          - anim.pelvisDrop * 0.85 + bob * 0.8 - tf * 0.14,
+        (lerp(0.205, 0.238, rdy) - anim.recoil * 0.012 - tf * 0.05) * L.s
       );
-      anchor.rotation.set(-bot.pitch + anim.recoil * 0.035 + lowered * 0.5, 0, anim.lean * 0.2 - tf * 0.35);
+      anchor.rotation.set(
+        -bot.pitch + anim.recoil * 0.035 + (1 - rdy) * 0.52,
+        (1 - rdy) * 0.10,
+        anim.lean * 0.2 - tf * 0.35 - rdy * 0.07
+      );
+      // Cheek down to the stock once the weapon is up.
+      B.head.rotation.x += rdy * 0.10;
+      B.head.rotation.z += rdy * 0.06;
     }
 
     // ── legs: swing cycle then IK to the real ground
@@ -1085,11 +1123,22 @@ export function createBot(ctx, deps, opts = {}) {
       const th = B[`thigh${sfx}`];
       const sh = B[`shin${sfx}`];
       const ft = B[`foot${sfx}`];
-      const swing = Math.sin(ph) * hipAmp * w - crouchHip;
-      const flex = Math.max(0, Math.sin(ph + 0.95)) * kneeAmp * w + crouchKnee + 0.05;
-      th.rotation.set(swing, 0, (i === 0 ? -1 : 1) * (0.02 + cr * 0.09));
+      // Standing: left foot leads, right trails and carries the weight. Positive X
+      // rotation swings a leg *backwards*, so the lead leg is the negative one.
+      // Keep the displacement small — the foot IK still has to be able to reach the
+      // ground, and with the pelvis 32 mm down the leg only has ~230 mm of horizontal
+      // reach left before it comes up short and the boot floats.
+      const stagger = settle * (i === 0 ? -0.16 : 0.10);
+      const swing = Math.sin(ph) * hipAmp * w - crouchHip + stagger;
+      const flex = Math.max(0, Math.sin(ph + 0.95)) * kneeAmp * w + crouchKnee + 0.05
+        + settle * (i === 0 ? 0.0 : 0.08);
+      th.rotation.set(
+        swing,
+        (i === 0 ? 1 : -1) * settle * 0.11,
+        (i === 0 ? -1 : 1) * (0.02 + cr * 0.09 + settle * 0.055)
+      );
       sh.rotation.set(flex, 0, 0);
-      ft.rotation.set(-swing * 0.35 - flex * 0.42 + 0.06, 0, 0);
+      ft.rotation.set(-swing * 0.35 - flex * 0.42 + 0.06, (i === 0 ? 1 : -1) * settle * 0.16, 0);
     }
 
     root.updateMatrixWorld(true);
@@ -1097,7 +1146,11 @@ export function createBot(ctx, deps, opts = {}) {
     // ── arms: two-bone IK onto the weapon's grips. The elbow poles point down and
     // outward, which is what makes a shouldered rifle read as "held" rather than
     // "stuck to the hands".
-    if (character.gripR && character.gripL) {
+    // Only while the weapon still hangs off the root anchor. Once `stowWeapon(true)`
+    // has parented it to the right hand the grips are *downstream* of the arm, and
+    // IK-ing the arm onto them is a feedback loop that walks both hands out in front
+    // of the chest at the same height — the rotated T-pose the review caught.
+    if (character.gripR && character.gripL && anchor && anchor.parent === root) {
       character.gripR.getWorldPosition(_gripW);
       _poleR.set(Math.cos(bot.yaw) * 0.85, -0.55, -Math.sin(bot.yaw) * 0.85);
       if (tf > 0.02) {
@@ -1145,6 +1198,28 @@ export function createBot(ctx, deps, opts = {}) {
     hitReact.head = damp(hitReact.head, 0, 5, dt);
   }
 
+  /**
+   * Snap every smoothed animation value onto its steady state and re-pose.
+   *
+   * The capture harness warms 8 frames — 0.13 s. A 4.5/s damp gets 45 % of the way
+   * there in that time, so a soldier posed into a firefight was photographed with
+   * his weapon still coming up and his stance half-settled. Anything a debug pose
+   * sets has to be *instant*.
+   */
+  function settlePose() {
+    const passive = bot.state === 'patrol' || bot.state === 'idle';
+    anim.blendWalk = clamp01(bot.speed / SPEED.stand);
+    anim.blendCrouch = bot.stance === 'crouch' ? 1 : 0;
+    anim.peek = bot.state === 'cover' && !bb.peekOut ? 1 : 0;
+    anim.ready = passive ? 0.28 : 1;
+    anim.lean = 0;
+    const settle = (1 - anim.blendWalk) * (1 - anim.blendCrouch * 0.35);
+    anim.pelvisDrop = anim.blendCrouch * 0.34 + anim.peek * 0.12 + settle * 0.032;
+    animate(1 / 60);
+    cacheBonePositions();
+    updateHitboxes();
+  }
+
   /* ══════════════════════════════════════════════════════ behaviour states ══ */
 
   const bb = {
@@ -1186,6 +1261,8 @@ export function createBot(ctx, deps, opts = {}) {
    */
   const forced = {
     entity: null,
+    /** When set, this contact outranks a live one for the duration of the hold. */
+    override: false,
     awareness: 3,
     visible: true,
     seen: true,
@@ -1206,21 +1283,31 @@ export function createBot(ctx, deps, opts = {}) {
   function bestTrack() {
     const now = ctx.time?.elapsed ?? 0;
     if (now < bb.holdUntil) {
-      const real = bot.sensor?.best;
-      if (real?.visible) return real;
+      if (!forced.override) {
+        const real = bot.sensor?.best;
+        if (real?.visible) return real;
+        forced.entity = forced.entity || ctx.player || null;
+      }
       forced.lastSeen = now;
-      forced.entity = forced.entity || ctx.player || null;
       return forced;
     }
     return bot.sensor?.best || null;
   }
 
-  /** Pin this bot into a firefight with `point` for `seconds`. Used by debug poses. */
-  function forceCombat(point, seconds = 30) {
+  /**
+   * Pin this bot into a firefight with `point` for `seconds`. Used by debug poses.
+   * `opts.entity` names the body being shot at (default: the player); pass `null`
+   * with `opts.override` to aim at the bare point instead — that is how a pose puts
+   * a soldier onto a *bearing* rather than onto the lens, which is the only way the
+   * weapon ever presents in anything but full foreshortening.
+   */
+  function forceCombat(point, seconds = 30, opts = {}) {
     const now = ctx.time?.elapsed ?? 0;
     bb.holdUntil = now + seconds;
-    forced.entity = ctx.player || null;
+    forced.entity = opts.entity !== undefined ? opts.entity : (ctx.player || null);
+    forced.override = !!opts.override;
     forced.lastKnownPos.set(point.x, point.y, point.z);
+    forced.lastKnownVel.set(0, 0, 0);
     forced.lastSeen = now;
     aim.committed = true;
     aim.reactionAt = -1;
@@ -1705,6 +1792,7 @@ export function createBot(ctx, deps, opts = {}) {
     clearGoal,
     setState,
     forceCombat,
+    settlePose,
     get deathTime() {
       return deathAt;
     },

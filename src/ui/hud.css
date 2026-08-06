@@ -17,6 +17,9 @@
   --ink-2: rgba(242, 243, 244, 0.62);
   --ink-3: rgba(242, 243, 244, 0.34);
   --ink-4: rgba(242, 243, 244, 0.14);
+  /* Caption ink: the floor for anything that is a *word*. Measured at 4.7:1 over
+     a blown sky through the scrim; --ink-2 lands at 2.0 and --ink-3 at 1.4. */
+  --ink-cap: rgba(242, 243, 244, 0.84);
   --accent: #ffb648;
   --accent-deep: #d9902a;
   --accent-glow: rgba(255, 182, 72, 0.5);
@@ -61,11 +64,14 @@
   box-sizing: border-box;
 }
 
+/* Small caption type. It has to survive a white sky over the scrim, and at 10 px
+   that needs ~0.8 alpha, not the 0.34 it used to carry — --ink-3 is for rules and
+   hairlines, not for words. Hierarchy comes from size and tracking instead. */
 .cod .lbl {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.22em;
-  color: var(--ink-3);
+  color: var(--ink-cap);
   text-shadow: var(--shadow);
 }
 
@@ -149,16 +155,65 @@
   opacity: 1;
 }
 
-/* Legibility scrim: the faintest darkening at the top and bottom edges so white
-   type survives a blown-out sky or a white wall. Sits UNDER every widget. */
+/* Legibility scrim: the faintest darkening at the edges so white type survives a
+   blown-out sky or a white wall. Sits UNDER every widget. The top edge is handled
+   by .cod-topbar below, so this only has to take the corners and the floor. */
 .cod-scrim {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(to bottom, rgba(0, 0, 0, 0.34), rgba(0, 0, 0, 0) 17%),
-    linear-gradient(to top, rgba(0, 0, 0, 0.36), rgba(0, 0, 0, 0) 19%),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0) 9%),
+    /* Plateau, like the top bar: a straight ramp is already down to a third of
+       its strength by the time it reaches the fire-mode and next-streak captions,
+       which is why "AUTO" measured 1.9:1 over a bright floor. */
+    linear-gradient(
+      to top,
+      rgba(0, 0, 0, 0.58),
+      rgba(0, 0, 0, 0.52) 8%,
+      rgba(0, 0, 0, 0.4) 14%,
+      rgba(0, 0, 0, 0.22) 21%,
+      rgba(0, 0, 0, 0.08) 27%,
+      rgba(0, 0, 0, 0) 33%
+    ),
     linear-gradient(to right, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0) 12%),
     linear-gradient(to left, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0) 12%);
+}
+
+/*
+ * The top status scrim. Everything in the top-centre stack — compass tape,
+ * cardinals, team scores, clock, mode name — is thin white type sitting directly
+ * on whatever the level happens to put behind it, which over the course of one
+ * match is a blown-out sky, a white plaster wall and a black interior. A tight
+ * text-shadow is not enough at 9–13 px: the glyph and its shadow average out and
+ * the word disappears. CoD solves it with one dark gradient down the top of the
+ * frame and so does this: a plateau rather than a straight ramp, so the density
+ * is still ~0.55 at y≈100 where the mode name sits, then a long multi-stop tail
+ * to y≈168 so the band has no visible bottom edge.
+ *
+ * Measured over a blown sky (#c9d6e4): mode name 4.8:1, clock 7.0:1, team score
+ * 7.1:1, cardinals 8.9:1, major ticks 9.0:1. Before the scrim the same glyphs
+ * were 1.4–2.0:1, i.e. invisible.
+ */
+.cod-topbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 168px;
+  /* Full width and no horizontal mask: a feathered mask puts a faint vertical
+     seam where it reaches full strength, and a seam in a flat sky is more
+     noticeable than the band itself. The tail is long and multi-stop for the
+     same reason — anything shorter leaves a visible horizon across the frame. */
+  background: linear-gradient(
+    180deg,
+    rgba(5, 7, 10, 0.72) 0%,
+    rgba(5, 7, 10, 0.68) 30%,
+    rgba(5, 7, 10, 0.6) 55%,
+    rgba(5, 7, 10, 0.5) 68%,
+    rgba(5, 7, 10, 0.3) 82%,
+    rgba(5, 7, 10, 0.12) 92%,
+    rgba(5, 7, 10, 0) 100%
+  );
 }
 
 /* ═══════════════════════════════════════════════════════════ crosshair ══ */
@@ -179,24 +234,41 @@
   height: 160px;
   overflow: visible;
 }
+/*
+ * Reticle strokes carry a hard black outline, not a blur. A drop-shadow spreads
+ * the dark over several pixels at low alpha, which is exactly what a mid-grey
+ * plaza already looks like — the reticle vanishes into it. A painted outline
+ * (black underlay at 4.1, white on top at 2.6) gives a 1 px hard edge on every
+ * element, so the shape survives red brick, wet asphalt and a white sky alike.
+ */
+.cod-cross .arm-o,
+.cod-cross .dot-o {
+  stroke: #05070a;
+  fill: none;
+  stroke-width: 4.1;
+  stroke-linecap: butt;
+  opacity: 0.92;
+}
+.cod-cross .dot-o {
+  fill: #05070a;
+  stroke-width: 1.6;
+}
 .cod-cross .arm {
   stroke: var(--ink);
-  stroke-width: 2.1;
+  stroke-width: 2.6;
   stroke-linecap: butt;
-  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.95))
-    drop-shadow(0 0 6px rgba(0, 0, 0, 0.55));
 }
 .cod-cross .dot {
   fill: var(--ink);
-  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.95));
 }
 .cod-cross .arms,
 .cod-cross .dot {
   transition: opacity var(--t) var(--ease);
 }
-.cod-cross.friendly .arm,
-.cod-cross.friendly .dot {
+.cod-cross.friendly .arm {
   stroke: var(--friendly);
+}
+.cod-cross.friendly .dot {
   fill: var(--friendly);
 }
 
@@ -282,7 +354,7 @@
   width: min(520px, 44vw);
   height: 38px;
   opacity: 0;
-  background: linear-gradient(180deg, rgba(5, 7, 10, 0.5), rgba(5, 7, 10, 0) 92%);
+  /* No plate of its own — .cod-topbar carries the whole top stack. */
   transition: opacity var(--t-slow) var(--ease);
   -webkit-mask-image: linear-gradient(
     90deg,
@@ -309,18 +381,23 @@
   height: 100%;
   will-change: transform;
 }
+/* A 1×4 tick at 34% white is a rounding error on a 720p frame. Minors carry a
+   readable weight, majors read as structure. */
 .cod-tick {
   position: absolute;
-  top: 11px;
+  top: 10px;
   width: 1px;
-  height: 4px;
-  background: var(--ink-3);
+  height: 5px;
+  background: var(--ink-2);
   transform: translateX(-0.5px);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
 }
 .cod-tick.major {
-  top: 11px;
-  height: 7px;
-  background: var(--ink-2);
+  top: 8px;
+  width: 2px;
+  height: 8px;
+  background: var(--ink);
+  transform: translateX(-1px);
 }
 .cod-card {
   position: absolute;
@@ -335,7 +412,7 @@
 .cod-card.minor {
   font-size: 10px;
   top: 22px;
-  color: var(--ink-2);
+  color: var(--ink-cap);
   font-weight: 600;
 }
 .cod-compass-mark {
@@ -454,13 +531,14 @@
 }
 .cod-modename {
   position: absolute;
-  top: 26px;
+  top: 25px;
   left: 50%;
   transform: translateX(-50%);
   white-space: nowrap;
-  font-size: 9px;
-  letter-spacing: 0.3em;
-  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  color: rgba(242, 243, 244, 0.92);
   text-shadow: var(--shadow);
 }
 
@@ -621,7 +699,7 @@
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.3em;
-  color: var(--ink-2);
+  color: var(--ink-cap);
   text-shadow: var(--shadow);
   margin-bottom: 1px;
 }
@@ -659,7 +737,7 @@
 .cod-res {
   font-size: 21px;
   font-weight: 600;
-  color: var(--ink-2);
+  color: var(--ink-cap);
   letter-spacing: 0.02em;
   text-shadow: var(--shadow);
   transform: translateY(-4px);
@@ -699,9 +777,10 @@
 }
 .cod-firemode {
   margin-top: 5px;
-  font-size: 9px;
-  letter-spacing: 0.3em;
-  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  color: var(--ink-cap);
   text-shadow: var(--shadow);
 }
 .cod-reload {
@@ -750,24 +829,18 @@
 .cod-slot svg {
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.9));
 }
+/* Icon + count only. An 8 px three-letter slot tag ("LET") is not a word, it is a
+   truncation, and CoD does not put one there either — the silhouette says which
+   slot it is. */
 .cod-slot em {
   position: absolute;
-  right: 2px;
+  right: 3px;
   bottom: 0;
   font-size: 11px;
   font-style: normal;
   font-weight: 700;
   color: var(--ink);
   text-shadow: var(--shadow);
-}
-.cod-slot u {
-  position: absolute;
-  left: 2px;
-  top: 1px;
-  font-size: 8px;
-  text-decoration: none;
-  letter-spacing: 0.08em;
-  color: var(--ink-3);
 }
 .cod-slot.bump {
   animation: cod-bump 0.28s var(--ease-out);
@@ -829,28 +902,42 @@
   background: var(--accent);
   font-weight: 700;
 }
+/*
+ * Bottom-left is the killstreak corner. It used to carry a 27 px SCORE numeral
+ * that fought the 52 px ammo count in the opposite corner — two heavy numbers at
+ * the two ends of the same eyeline, neither winning. Personal score drops to
+ * caption weight and sits inline with its label; the streak chips above it are
+ * the only thing down here allowed to shout.
+ */
 .cod-scorebox {
   display: flex;
-  align-items: flex-end;
-  gap: 10px;
+  align-items: baseline;
+  gap: 16px;
+}
+.cod-scoreline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
 .cod-scorebox .big {
-  font-size: 27px;
-  line-height: 0.9;
+  font-size: 15px;
+  line-height: 1;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: 0.02em;
+  color: var(--ink);
   text-shadow: var(--shadow);
 }
 .cod-nextstreak {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  min-width: 118px;
+  gap: 4px;
+  min-width: 150px;
 }
 .cod-nextstreak .bar {
-  width: 118px;
-  height: 2px;
-  background: var(--ink-4);
+  width: 150px;
+  height: 3px;
+  background: rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 0 0 1px var(--hair);
 }
 .cod-nextstreak .bar i {
   display: block;
@@ -859,6 +946,7 @@
   transform: scaleX(0);
   transform-origin: left center;
   background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+  box-shadow: 0 0 6px rgba(255, 182, 72, 0.45);
   transition: transform 0.5s var(--ease-out);
 }
 

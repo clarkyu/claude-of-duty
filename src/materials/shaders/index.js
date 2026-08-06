@@ -348,15 +348,16 @@ void main(){
 
   Surf s = mSurface(ci);
 
-  // --- universal macro variation -------------------------------------------
-  // Low frequency albedo + roughness drift at two scales. Without this, tiling
-  // reads instantly; it is the single biggest amateur/professional tell.
-  float m1 = tFbm(vUv, vec2(2.0), 3, uSeed + 101.0);
-  float m2 = tFbm(vUv, vec2(6.0), 3, uSeed + 211.0);
-  float macro = m1 * 0.68 + m2 * 0.32;
-  s.albedo *= 1.0 + macro * 0.14 * uMacro;
-  s.albedo = mix(s.albedo, s.albedo * vec3(1.05, 1.0, 0.94), sat(n01(m1)) * 0.6 * uMacro);
-  s.rough = sat(s.rough + macro * 0.09 * uMacro + uRoughBias);
+  // --- macro variation moved to world space --------------------------------
+  // This used to sample vUv, which is 0..1 across *one tile*. Every instance of the
+  // tile therefore got the identical bright/dark blotch in the identical place, so the
+  // block made the grid MORE visible, not less — the eye locks onto a repeating
+  // feature far faster than onto a repeating texture. The real low-frequency drift now
+  // happens at shading time from world position (COD_MACRO in materialExtensions.js)
+  // where the period is 20-80 m and nothing can line up with a tile boundary.
+  // uMacro survives as the per-recipe strength the runtime block reads through
+  // opts.macro; only the per-set roughness bias is still applied here.
+  s.rough = sat(s.rough + uRoughBias);
 
   float aoFinal = sat(s.ao * ci.ao);
   // A touch of the occlusion baked into albedo, exactly like a photoscan.
@@ -487,7 +488,9 @@ Surf mSurface(SurfIn c){
     worldSize: 2.4, depth: 0.016, surface: 'concrete',
     glsl: /* glsl */ `
 vec4 mHeight(vec2 uv){
-  Cell p = brickCell(uv, vec2(2.0, 2.0), 0.0, vec2(0.009, 0.009), uSeed);
+  // 3x3 slabs, not 2x2: 0.8 m is the real size of a paving flag, and nine distinct
+  // slabs per tile instead of four is nine times harder for the eye to count.
+  Cell p = brickCell(uv, vec2(3.0, 3.0), 0.0, vec2(0.010, 0.010), uSeed);
   // broom finish: fine parallel grooves with a slight arc
   vec2 q = uv + vec2(0.0, 0.02 * sin(uv.x * TAU));
   float broom = n01(tFbm(q, vec2(3.0, 260.0), 3, uSeed + 5.0));
@@ -502,9 +505,13 @@ vec4 mHeight(vec2 uv){
 }
 Surf mSurface(SurfIn c){
   Surf s = defaultSurf(c);
-  Cell p = brickCell(c.uv, vec2(2.0, 2.0), 0.0, vec2(0.009, 0.009), uSeed);
+  Cell p = brickCell(c.uv, vec2(3.0, 3.0), 0.0, vec2(0.010, 0.010), uSeed);
   vec3 col = mix(vec3(0.46, 0.455, 0.445), vec3(0.685, 0.680, 0.660), sat(c.h.y * 0.8 + 0.25));
-  col *= 0.90 + 0.20 * p.rnd.x;
+  // Slabs are laid from whatever pallet turned up: tone AND cast colour vary per flag,
+  // and roughly one in six is a visibly different batch.
+  col *= 0.86 + 0.30 * p.rnd.x;
+  col = shiftHSV(col, (p.rnd.y - 0.5) * 0.02, (p.rnd.z - 0.5) * 0.35, 0.0);
+  col = mix(col, col * vec3(0.86, 0.88, 0.95), step(0.83, p.rnd.z) * 0.6);
   col *= 0.93 + 0.14 * tWorley(c.uv, vec2(130.0), 1.0, uSeed + 19.0).z;
   float joint = 1.0 - c.h.w;
   col = mix(col, vec3(0.155, 0.150, 0.135), joint * 0.8);
@@ -620,33 +627,62 @@ Surf mSurface(SurfIn c){
   plaster_cracked: {
     worldSize: 3.0, depth: 0.010, surface: 'plaster',
     glsl: /* glsl */ `
+/*
+ * Cracked render, authored the way it actually fails.
+ *
+ * The previous version ran crackField unmasked at two scales, so every square metre
+ * of every plaster surface in the map carried an evenly-spaced Voronoi cell network:
+ * crackle-glazed pottery, not a building. Real stucco is *sound* over ~90% of a wall
+ * and fails in discrete patches — around a lintel, at a downpipe, where the substrate
+ * moved. Where it has failed you get a hole with a hard chipped rim and a different
+ * material visible inside it, with the crack net radiating out from that hole.
+ *
+ * So one warped low-frequency field (fail) decides everything, and both the cracks
+ * and the spall hang off it. Roughly four fifths of any wall never crosses the first
+ * threshold at all and stays sound.
+ */
 vec4 mHeight(vec2 uv){
   float base = n01(tFbm(uv, vec2(7.0), OCT(5), uSeed));
   float trowel = n01(tFbm(shearX(uv, 1.0), vec2(6.0, 40.0), OCT(4), uSeed + 3.0));
-  float c1 = crackField(uv, vec2(6.0), 0.030, 0.16, uSeed + 21.0);
-  float c2 = crackField(uv, vec2(15.0), 0.020, 0.05, uSeed + 37.0)
-           * smoothstep(0.45, 0.85, n01(tFbm(uv, vec2(3.0), OCT(4), uSeed + 39.0)));
-  float crack = sat(c1 + c2 * 0.8);
-  // spalled patches where the render has come off
-  float spallN = n01(tWarpedFbm(uv, vec2(4.0), OCT(5), 0.10, uSeed + 51.0));
-  float spall = smoothstep(0.66, 0.74, spallN);
+
+  float fail  = n01(tWarpedFbm(uv, vec2(1.7), OCT(5), 0.13, uSeed + 51.0));
+  float zone  = smoothstep(0.575, 0.685, fail);   // sparse: cracks live only in here
+  float spall = smoothstep(0.700, 0.748, fail);   // the middle of a zone has let go
+  // The rim of the hole: a narrow band at the spall boundary. 4s(1-s) peaks exactly
+  // on the transition, so the surface pass can rebuild it from spall alone.
+  float lip = 4.0 * spall * (1.0 - spall);
+
+  float c1 = crackField(uv, vec2(9.0),  0.024, 0.18, uSeed + 21.0);
+  float c2 = crackField(uv, vec2(24.0), 0.014, 0.06, uSeed + 37.0);
+  // Cracks are gated by the same field, densest right at the edge of the spall and
+  // gone inside it (there is no render left there to crack).
+  float crack = sat(c1 + c2 * 0.65) * zone * (1.0 - spall * 0.9);
+
   Cell sb = brickCell(uv, vec2(8.0, 26.0), 0.5, vec2(0.05, 0.11), uSeed + 71.0);
   float sub = n01(tFbm(uv, vec2(70.0), OCT(4), uSeed + 67.0)) * 0.5 + sb.face * 0.5;
+
   float h = 0.66 + base * 0.10 + trowel * 0.07;
-  h -= crack * 0.22;
-  h = mix(h, 0.34 + sub * 0.14, spall);
+  h -= crack * 0.30;
+  h += lip * lip * 0.055;                  // the render stands proud of the hole
+  h = mix(h, 0.28 + sub * 0.16, spall);    // and steps down hard into the blockwork
   return vec4(h, base, crack, spall);
 }
 Surf mSurface(SurfIn c){
   Surf s = defaultSurf(c);
+  float spall = c.h.w;
+  float crack = sat(c.h.z);
+  float lip = 4.0 * spall * (1.0 - spall);
+
   vec3 plaster = vec3(0.700, 0.680, 0.635);
   plaster = shiftHSV(plaster, 0.0, (c.h.y - 0.5) * 0.25, (c.h.y - 0.5) * 0.13);
   Cell sb = brickCell(c.uv, vec2(8.0, 26.0), 0.5, vec2(0.05, 0.11), uSeed + 71.0);
   vec3 substrate = mix(vec3(0.500, 0.485, 0.455), vec3(0.400, 0.215, 0.165) * (0.7 + 0.6 * sb.rnd.x), sb.face);
   substrate *= 0.85 + 0.3 * n01(tFbm(c.uv, vec2(40.0), 3, uSeed + 67.0));
-  vec3 col = mix(plaster, substrate, c.h.w);
-  // crack interiors are dark and dirty
-  col = mix(col, vec3(0.155, 0.145, 0.130), sat(c.h.z) * 0.7);
+  vec3 col = mix(plaster, substrate, spall);
+  // Fresh break: the exposed edge of the render is paler than the weathered face.
+  col = mix(col, vec3(0.815, 0.795, 0.745), lip * 0.5 * (1.0 - spall));
+  // A crack is a slot with the substrate at the bottom of it, not a pencil line.
+  col = mix(col, mix(vec3(0.150, 0.140, 0.126), substrate * 0.5, 0.45), crack * 0.85);
   float grime = sat(c.cav * 2.5);
   col = mix(col, vec3(0.21, 0.20, 0.18), grime * 0.45);
   float st = runoff(c.uv, 18.0, uSeed + 81.0);
@@ -656,8 +692,9 @@ Surf mSurface(SurfIn c){
   col = mix(col, col * vec3(0.66, 0.66, 0.70), damp * 0.7);
   col = mix(col, vec3(0.60, 0.575, 0.52), dustField(c.uv, c.up, 0.0, uSeed + 105.0) * 0.28);
   s.albedo = col;
-  s.rough = 0.86 + c.h.w * 0.08 - damp * 0.18 + sat(c.h.z) * 0.05 - st * 0.08;
-  s.ao = 1.0 - sat(c.h.z) * 0.45 - c.h.w * 0.15;
+  // Exposed blockwork is coarser than the finished render; the chipped lip is not.
+  s.rough = 0.86 + spall * 0.10 - damp * 0.18 + crack * 0.05 - st * 0.08 - lip * 0.06;
+  s.ao = 1.0 - crack * 0.5 - spall * 0.18;
   return s;
 }`,
   },
@@ -700,10 +737,28 @@ Surf mSurface(SurfIn c){
   rusted_steel: {
     worldSize: 2.0, depth: 0.007, surface: 'metal',
     glsl: /* glsl */ `
+/*
+ * Three genuinely different materials on one plate, not one material with a pattern.
+ *
+ * The failure before was that a single soft rustField drove colour, roughness AND
+ * metalness, so the specular band ran continuously from oxide into bare steel without
+ * ever changing character — which is physically impossible and reads as one plastic
+ * object. Loose scale does not fade into steel: it lifts, cracks and falls off, and
+ * the boundary is a hard chipped outline with a proud lip that catches the key light.
+ *
+ *   bare steel   metal 1.0   rough ~0.35  (after the [0.22,1] remap)
+ *   oxide film   metal 0.45  rough ~0.68  thin, still specular, no relief
+ *   loose scale  metal 0.0   rough ~0.95  matte, pitted, sits above the steel
+ */
 vec4 mHeight(vec2 uv){
-  float rust = rustField(uv, 6.0, 0.36, uSeed);
+  float stain = rustField(uv, 6.0, 0.36, uSeed);                       // soft oxide bloom
+  float fn = n01(tWarpedFbm(uv, vec2(24.0), OCT(4), 0.07, uSeed + 29.0));
+  // Hard cut across a field that already has ragged edges, so the scale gets a flake
+  // outline instead of an airbrushed gradient. The window is ~2 texels at 1K, which is
+  // as hard as it can be without the rim aliasing into a crawling white line.
+  float rust = smoothstep(0.478, 0.522, stain * 0.74 + fn * 0.26);
   float scale = n01(tFbm(uv, vec2(40.0), OCT(5), uSeed + 13.0));
-  float flake = smoothstep(0.5, 0.62, n01(tWarpedFbm(uv, vec2(22.0), OCT(4), 0.06, uSeed + 29.0))) * rust;
+  float flake = smoothstep(0.54, 0.62, fn) * rust;
   float pit = sat(1.0 - tWorley(uv, vec2(110.0), 1.0, uSeed + 37.0).x * 6.0) * rust;
   float dent = n01(tFbm(uv, vec2(3.0), OCT(4), uSeed + 51.0));
   // weld seam across the plate
@@ -712,13 +767,19 @@ vec4 mHeight(vec2 uv){
   // rivet line along the seam
   float rivRow = smoothstep(0.03, 0.0, abs(fract(uv.y * 2.0 + 0.25) - 0.5) * 2.0 - 0.02);
   float riv = sat(1.0 - length(vec2(fract(uv.x * 24.0) - 0.5, (fract(uv.y * 2.0 + 0.25) - 0.5) * 12.0)) * 4.0) * rivRow;
-  float h = 0.60 + dent * 0.10 + rust * scale * 0.16;
-  h += flake * 0.07 - pit * 0.20 + bead * 0.16 + riv * 0.22;
-  return vec4(h, rust, flake, dent);
+  // The scale sits ON the steel — a real step up, and a lip around its edge.
+  float lip = 4.0 * rust * (1.0 - rust);
+  float h = 0.58 + dent * 0.10 + rust * (0.06 + scale * 0.12);
+  h += lip * lip * 0.05 + flake * 0.06 - pit * 0.22 + bead * 0.16 + riv * 0.22;
+  return vec4(h, rust, flake, stain);
 }
 Surf mSurface(SurfIn c){
   Surf s = defaultSurf(c);
-  float rust = c.h.y;
+  float rust = c.h.y;                       // hard-edged loose scale
+  float stain = c.h.w;                      // soft oxide film on otherwise sound steel
+  float film = sat(stain * 1.25 - 0.25) * (1.0 - rust);
+  float lip = 4.0 * rust * (1.0 - rust);
+
   vec3 steel = vec3(0.345, 0.350, 0.360);
   steel *= 0.88 + 0.22 * n01(tFbm(c.uv, vec2(70.0), OCT(3), uSeed + 7.0));
   float rn = n01(tFbm(c.uv, vec2(30.0), OCT(4), uSeed + 19.0));
@@ -727,7 +788,12 @@ Surf mSurface(SurfIn c){
   vec3 rustPale = vec3(0.605, 0.330, 0.155);
   vec3 rustCol = mix(rustDark, rustMid, sat(rn * 1.3));
   rustCol = mix(rustCol, rustPale, smoothstep(0.62, 0.95, rn));
-  vec3 col = mix(steel, rustCol, sat(rust * 1.05));
+  // Pitting is visible as dark speckle inside the scale, not just as relief.
+  rustCol *= 1.0 - sat(1.0 - tWorley(c.uv, vec2(110.0), 1.0, uSeed + 37.0).x * 6.0) * 0.45;
+  vec3 col = mix(steel, rustCol, rust);
+  col = mix(col, mix(steel, rustMid, 0.55), film * 0.8);          // the thin film
+  // A freshly exposed flake edge is bright metal for a while.
+  col = mix(col, vec3(0.60, 0.60, 0.61), lip * 0.28 * (1.0 - film));
   // rust bleeding downwards over clean steel
   float bleed = runoff(c.uv, 20.0, uSeed + 83.0) * (1.0 - rust);
   col = mix(col, vec3(0.395, 0.180, 0.080), bleed * 0.55);
@@ -735,8 +801,12 @@ Surf mSurface(SurfIn c){
   col = mix(col, vec3(0.52, 0.53, 0.545), scr * 0.5);
   col = mix(col, vec3(0.17, 0.09, 0.05), sat(c.cav * 2.2) * rust * 0.5);
   s.albedo = col;
-  s.metal = sat((1.0 - rust) * (1.0 - bleed * 0.5));
-  s.rough = mix(0.34, 0.93, sat(rust * 1.15)) + c.h.z * 0.05 - scr * 0.18 + bleed * 0.12;
+  // Metalness follows the *same* hard mask as the colour, so a boundary in the albedo
+  // is always a boundary in the specular response too.
+  float bare = (1.0 - rust) * (1.0 - film * 0.62);
+  s.metal = sat(bare * (1.0 - bleed * 0.55));
+  // uCodMetal/uCodRough remap [0.22,1] on top of this: 0.16 -> ~0.35, 0.94 -> ~0.95.
+  s.rough = mix(0.94, 0.16, bare) + c.h.z * 0.06 - scr * 0.20 + bleed * 0.10 - lip * 0.12;
   s.ao = 1.0 - sat(c.cav) * 0.35;
   return s;
 }`,
@@ -751,11 +821,15 @@ vec4 mHeight(vec2 uv){
   float orange = n01(tFbm(uv, vec2(38.0), OCT(3), uSeed + 11.0));      // orange-peel paint
   float chipN = n01(tWarpedFbm(uv, vec2(13.0), OCT(4), 0.07, uSeed + 23.0));
   float chipF = n01(tWarpedFbm(uv, vec2(38.0), OCT(4), 0.05, uSeed + 29.0));
-  float chip = smoothstep(0.50, 0.58, chipN * (0.72 + 0.5 * (1.0 - p.edge)));
-  chip = sat(chip + smoothstep(0.62, 0.70, chipF) * 0.75);
+  // Paint does not fade out, it lets go: a hard boundary with a raised lip of coating
+  // around the bare patch. Two texels of window, same reasoning as rusted_steel.
+  float chip = smoothstep(0.512, 0.552, chipN * (0.72 + 0.5 * (1.0 - p.edge)));
+  chip = sat(chip + smoothstep(0.645, 0.675, chipF) * 0.75);
   float rust = rustField(uv, 9.0, 0.72, uSeed + 41.0) * chip;
+  float lip = 4.0 * chip * (1.0 - chip);
   float h = 0.66 + dent * 0.12 + orange * 0.05 + p.face * 0.06;
   h -= chip * 0.13 + rust * 0.07;
+  h += lip * lip * 0.035;                 // the coating stands proud of the bare metal
   return vec4(h, chip, rust, dent);
 }
 Surf mSurface(SurfIn c){
@@ -946,38 +1020,57 @@ Surf mSurface(SurfIn c){
   },
 
   wood_ply: {
-    worldSize: 2.4, depth: 0.004, surface: 'wood',
+    // 1.6 m, not 2.4 m. This is the board stock crates and hoardings are cut from, and
+    // a crate face is 0.6-0.8 m: at 2.4 m the veneer fbm became a 50 cm smear and the
+    // fibre collapsed sub-pixel, so a stack of crates read as laminate worktop. At
+    // 1.6 m (and 0.76 m once props apply their own repeat) the boards, the fibre and
+    // the mill stamp all land at the size they are in life.
+    worldSize: 1.6, depth: 0.005, surface: 'wood',
     glsl: /* glsl */ `
 vec4 mHeight(vec2 uv){
+  // Sawn boards, not one continuous sheet: crates and hoardings are made of strips.
+  Cell b = plankCell(uv, vec2(1.0, 4.0), vec2(0.004, 0.010), uSeed + 61.0);
   vec2 q = tWarp(uv, vec2(3.0, 14.0), 0.03, 3, uSeed + 3.0);
-  float veneer = n01(tFbm(q, vec2(5.0, 90.0), OCT(4), uSeed));
-  float fibre = n01(tFbm(uv, vec2(12.0, 420.0), 3, uSeed + 7.0));
+  float veneer = n01(tFbm(q, vec2(7.0, 130.0), OCT(4), uSeed + b.rnd.x * 23.0));
+  float fibre = n01(tFbm(uv, vec2(16.0, 520.0), 3, uSeed + 7.0));
   // oval repair patches ("football" plugs)
   vec4 w = tWorley(uv, vec2(4.0, 3.0), 1.0, uSeed + 13.0);
   float plug = smoothstep(0.30, 0.24, w.x) * step(0.82, w.z);
-  float h = 0.62 + veneer * 0.16 + fibre * 0.10 - plug * 0.06;
+  // A nail line just inside each board edge, punched below the surface.
+  float dy = min(abs(b.luv.y - 0.15), abs(b.luv.y - 0.85));
+  float nail = sat(1.0 - length(vec2(fract(uv.x * 9.0) - 0.5, dy * 6.0)) * 12.0);
+  // Splintered arris where the board has been knocked about.
+  float splint = n01(tFbm(uv, vec2(220.0, 30.0), 3, uSeed + 37.0)) * (1.0 - b.face);
+  float h = 0.58 + b.face * 0.16 + veneer * 0.12 + fibre * 0.09 - plug * 0.05;
+  h -= (1.0 - b.face) * 0.20 + splint * 0.05 + nail * 0.10;
+  h += (b.rnd.y - 0.5) * 0.045 * b.face;
   float ding = sat(1.0 - tWorley(uv, vec2(20.0), 1.0, uSeed + 19.0).x * 7.0) * step(0.9, cellHash(uv, vec2(20.0), uSeed + 21.0));
   h -= ding * 0.16;
-  return vec4(h, veneer, plug, fibre);
+  return vec4(h, veneer, plug, b.face);
 }
 Surf mSurface(SurfIn c){
   Surf s = defaultSurf(c);
+  Cell b = plankCell(c.uv, vec2(1.0, 4.0), vec2(0.004, 0.010), uSeed + 61.0);
   vec3 pale = vec3(0.700, 0.560, 0.360);
   vec3 warm = vec3(0.390, 0.270, 0.150);
-  vec3 col = mix(warm, pale, sat(contrastf(c.h.y, 1.7)));
-  col *= 0.88 + 0.22 * c.h.w;
+  vec3 col = mix(warm, pale, sat(contrastf(c.h.y, 1.9)));
+  // Board-to-board colour: no two strips out of a mill come the same.
+  col = shiftHSV(col, (b.rnd.x - 0.5) * 0.018, (b.rnd.y - 0.5) * 0.22, (b.rnd.z - 0.5) * 0.20);
   col = mix(col, vec3(0.395, 0.290, 0.180), c.h.z * 0.8);                 // repair plug is darker
-  float glue = smoothstep(0.80, 0.96, n01(tFbm(c.uv, vec2(16.0), OCT(3), uSeed + 31.0)));
+  float glue = smoothstep(0.80, 0.96, n01(tFbm(c.uv, vec2(22.0), OCT(3), uSeed + 31.0)));
   col = mix(col, vec3(0.560, 0.520, 0.450), glue * 0.4);
   float stampM = smoothstep(0.90, 0.99, n01(tWarpedFbm(c.uv, vec2(6.0, 4.0), OCT(3), 0.15, uSeed + 71.0)));
   col = mix(col, vec3(0.170, 0.165, 0.160), stampM * 0.55);               // mill stamp ink
+  // The gap between boards, and the end grain you see down it.
+  float gap = 1.0 - c.h.w;
+  col = mix(col, vec3(0.105, 0.085, 0.065), gap * 0.82);
   float grime = sat(c.cav * 2.2);
   col = mix(col, vec3(0.230, 0.190, 0.140), grime * 0.4);
   float dust = dustField(c.uv, c.up, 0.0, uSeed + 83.0);
   col = mix(col, vec3(0.52, 0.48, 0.42), dust * 0.2);
   s.albedo = col;
-  s.rough = 0.83 + c.h.w * 0.08 - glue * 0.18 + dust * 0.06;
-  s.ao = 1.0 - grime * 0.2;
+  s.rough = 0.83 + gap * 0.10 - glue * 0.18 + dust * 0.06;
+  s.ao = 1.0 - grime * 0.2 - gap * 0.45;
   return s;
 }`,
   },
@@ -1249,28 +1342,45 @@ Surf mSurface(SurfIn c){
   },
 
   tarp: {
-    worldSize: 2.0, depth: 0.012, surface: 'fabric',
+    // 0.9 m, not 2.0 m. On a ~4 m canopy the old tile put the ripstop grid at 4 cm and
+    // the hue noise at 60-100 cm, which is why an awning read as a khaki plane with
+    // green marker squiggles on it. At 0.9 m the ripstop lands at ~1.6 cm, the weave is
+    // sub-centimetre, and the colour variation is fabric mottling rather than blotches.
+    worldSize: 0.9, depth: 0.011, surface: 'fabric',
     glsl: /* glsl */ `
 vec4 mHeight(vec2 uv){
-  // ripstop grid + big soft wrinkles
-  vec2 g = abs(fract(uv * 48.0) - 0.5) * 2.0;
+  // ripstop grid + wrinkles + a stitched panel seam
+  vec2 g = abs(fract(uv * 56.0) - 0.5) * 2.0;
   float grid = max(smoothstep(0.86, 1.0, g.x), smoothstep(0.86, 1.0, g.y));
-  vec3 w = weave(uv, vec2(180.0), uSeed + 3.0);
+  vec3 w = weave(uv, vec2(200.0), uSeed + 3.0);
   vec2 q = tWarp(uv, vec2(3.0), 0.07, 3, uSeed + 5.0);
-  float wrinkle = n01(tFbm(q, vec2(6.0, 3.0), OCT(5), uSeed + 11.0));
-  float crease = 1.0 - smoothstep(0.0, 0.09, abs(n01(tFbm(q, vec2(5.0, 3.0), OCT(4), uSeed + 17.0)) - 0.5));
-  float h = 0.44 + wrinkle * 0.30 + w.x * 0.10 + grid * 0.08 - crease * 0.18;
-  return vec4(h, wrinkle, crease, grid);
+  float wrinkle = n01(tFbm(q, vec2(4.0, 2.0), OCT(5), uSeed + 11.0));
+  float crease = 1.0 - smoothstep(0.0, 0.09, abs(n01(tFbm(q, vec2(3.5, 2.0), OCT(4), uSeed + 17.0)) - 0.5));
+  // Panel seam: canvas comes in widths, so a canopy is stitched out of strips. One
+  // felled seam per tile, with the needle holes actually modelled.
+  float sd = abs(fract(uv.y + 0.5) - 0.5) * 2.0;
+  float seam = smoothstep(0.055, 0.012, sd);
+  float stitch = smoothstep(0.030, 0.016, sd) * step(0.45, fract(uv.x * 90.0));
+  // Frayed selvedge along the same line where the coating has worn through.
+  float fray = n01(tFbm(uv, vec2(160.0, 20.0), 3, uSeed + 43.0)) * smoothstep(0.10, 0.045, sd);
+  float h = 0.44 + wrinkle * 0.28 + w.x * 0.11 + grid * 0.07 - crease * 0.17;
+  h += seam * 0.09 + stitch * 0.06 - fray * 0.05;
+  return vec4(h, wrinkle, crease, seam + grid * 0.25);
 }
 Surf mSurface(SurfIn c){
   Surf s = defaultSurf(c);
   vec3 base = vec3(0.130, 0.235, 0.185);
-  base = shiftHSV(base, (n01(tFbm(c.uv, vec2(2.0), 3, uSeed + 2.0)) - 0.5) * 0.02, 0.0,
-                  (n01(tFbm(c.uv, vec2(3.0), OCT(4), uSeed + 7.0)) - 0.5) * 0.24);
+  // Weave-scale hue/value drift, not 60 cm blotches: the frequencies here are the whole
+  // difference between "fabric" and "someone drew on it".
+  base = shiftHSV(base, (n01(tFbm(c.uv, vec2(11.0), 3, uSeed + 2.0)) - 0.5) * 0.022, 0.0,
+                  (n01(tFbm(c.uv, vec2(17.0), OCT(4), uSeed + 7.0)) - 0.5) * 0.20);
   vec3 col = base * (0.96 + 0.07 * c.h.y);
+  // Per-thread value variation — a woven surface is never one value.
+  vec3 wv = weave(c.uv, vec2(200.0), uSeed + 3.0);
+  col *= 0.86 + 0.26 * wv.x;
   col = mix(col, col * 1.16 + 0.012, smoothstep(0.72, 1.0, c.h.y) * 0.5);    // sun-faded crests
   col = mix(col, vec3(0.170, 0.160, 0.140), sat(c.h.z * 1.1) * 0.45);        // dirt in creases
-  col *= 0.94 + 0.11 * n01(tFbm(c.uv, vec2(140.0), 3, uSeed + 91.0));        // coating speckle
+  col *= 0.94 + 0.11 * n01(tFbm(c.uv, vec2(240.0), 3, uSeed + 91.0));        // coating speckle
   float grime = sat(c.cav * 2.2);
   col = mix(col, vec3(0.145, 0.140, 0.125), grime * 0.5);
   float dust = dustField(c.uv, c.up, 0.0, uSeed + 61.0);
@@ -1279,6 +1389,7 @@ Surf mSurface(SurfIn c){
   s.albedo = col;
   // coated fabric: plasticky sheen on the taut areas, dull where dirty
   s.rough = 0.52 + c.h.z * 0.22 + grime * 0.18 + dust * 0.16 - smoothstep(0.6, 1.0, c.h.y) * 0.12;
+  s.rough += (1.0 - wv.x) * 0.10;
   s.ao = 1.0 - sat(c.cav) * 0.35;
   return s;
 }`,

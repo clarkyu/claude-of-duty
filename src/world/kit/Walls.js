@@ -140,6 +140,15 @@ export function wallRun(bat, o) {
   }
 
   /* ── banding: plinth / splash-back and cornice ─────────────────────────── */
+  /**
+   * The bands run *through* the segment joints, so they must not take the per-segment
+   * UV phase the wall field uses to hide its tiling. With it, the texture jumps at
+   * every unit boundary and a continuous dado band reads as a band that steps — which
+   * is exactly what it looked like along the shophouse wall base. One phase per whole
+   * facade, handed down from the caller, keeps the band continuous.
+   */
+  const fieldUv = bat.uvOffset;
+  if (o.bandUv) bat.uvOffset = o.bandUv;
   if (o.plinth !== null) {
     const pl = o.plinth || {};
     const ph = pl.h ?? 0.86;
@@ -193,6 +202,7 @@ export function wallRun(bat, o) {
       );
     });
   }
+  bat.uvOffset = fieldUv;
 
   /* ── openings: reveals, sills, lintels, frames, glass ──────────────────── */
   for (const op of openings) {
@@ -309,16 +319,55 @@ export function addWindowFurniture(bat, frame, op, cfg) {
   }
 
   if (style === 'shutter') {
-    const sw = w * 0.5 - 0.02;
+    /**
+     * Hinged, not painted on. Each leaf swings out about a real hinge line at the edge
+     * of the reveal, stands 55 mm proud of the wall so there is a shadow gap behind it,
+     * carries slats on its face and hangs off two pintles. A shutter drawn as a flat
+     * rectangle flush against the plaster is the loudest "this is a decal" tell on a
+     * facade, and it kills the whole three-quarter-light read.
+     */
+    const sw = w * 0.52;
+    const leafT = 0.032;
+    const gap = 0.055;
     bat.upTo(cfg.frameMat === 'wood.painted' ? 'wood.paintedBlue' : 'wood.painted', 0, (mb) => {
-      const z = half + 0.03;
-      const open = 0.62 + r * 0.3;
+      const open = 0.34 + r * 0.55; // radians the leaf stands off the wall
+      const co = Math.cos(open);
+      const so = Math.sin(open);
       for (const s of [-1, 1]) {
-        const cx = u + s * (w * 0.5 + sw * 0.5 * open);
-        mb.box([cx, (y0 + y1) * 0.5, z], [sw * 0.5, h * 0.5 - 0.02, 0.022], { chamfer: 0.008 });
-        for (let i = 0; i < 5; i++) {
-          const yy = lerp(y0 + 0.16, y1 - 0.16, i / 4);
-          mb.box([cx, yy, z + 0.024], [sw * 0.42, 0.024, 0.008], { chamfer: 0.004 });
+        const hu = u + s * (w * 0.5 + 0.03); // hinge line
+        const hz = half + gap;
+        // leaf plane: along (s*co, so) from the hinge, thickness along (-s*so, co)
+        const plate = (offset, thick, u0, u1, yA, yB) => {
+          const pts = (yy) => {
+            const out = [];
+            for (const [du, dt] of [
+              [u0, -thick],
+              [u1, -thick],
+              [u1, thick],
+              [u0, thick],
+            ]) {
+              const ou = du * co - (dt + offset) * s * so;
+              const oz = du * so + (dt + offset) * co;
+              out.push([hu + s * ou, yy, hz + oz]);
+            }
+            return out;
+          };
+          mb.prism(pts(yA), pts(yB));
+        };
+        plate(0, leafT * 0.5, 0.012, sw, y0 + 0.01, y1 - 0.01);
+        // slats on the outer face
+        for (let i = 0; i < 4; i++) {
+          const yy = lerp(y0 + 0.16, y1 - 0.16, i / 3);
+          plate(leafT * 0.5 + 0.008, 0.008, 0.07, sw - 0.05, yy - 0.026, yy + 0.026);
+        }
+      }
+    });
+    // Pintles: two per leaf, on the reveal edge.
+    bat.upTo('metal.rust', 0, (mb) => {
+      for (const s of [-1, 1]) {
+        const hu = u + s * (w * 0.5 + 0.03);
+        for (const yy of [y0 + 0.18, y1 - 0.18]) {
+          mb.box([hu, yy, half + gap * 0.5], [0.03, 0.028, gap * 0.5 + 0.01], { chamfer: 0.006 });
         }
       }
     });

@@ -561,6 +561,80 @@ export function downpipe(a, r, o = {}) {
   return { colliders: [], height: h, radius: 0.14 };
 }
 
+/**
+ * Surface-run electrical conduit with saddle clips, a junction box and a drop to a
+ * meter. Origin at the wall face, +Z out of the wall.
+ *
+ * This is the cheapest silhouette-breaker there is — six cylinders and two boxes — and
+ * it is the reason a real wall never reads as a flat plane at grazing light. Every
+ * facade sample that gets nothing else gets one of these.
+ */
+export function wallConduit(a, r, o = {}) {
+  const h = o.height ?? r.range(2.1, 4.2);
+  const drop = o.drop ?? r.range(0.9, 1.6);
+  const z = 0.045;
+  const mat = r.chance(0.45) ? 'galv' : 'rust';
+  /* the vertical run */
+  a.add(mat, cyl(0.019, h, 7, { chamfer: 0.003 }), xf(0, h / 2, z), { grimeHeight: 0.5 });
+  /* a horizontal spur at the head, kicked round the corner */
+  a.add(mat, cyl(0.019, r.range(0.5, 1.4), 7, { chamfer: 0.003 }), xf(r.range(0.25, 0.7), h - 0.03, z, 0, 0, Math.PI / 2), {
+    grime: 1.2,
+  });
+  /* saddle clips every ~700 mm */
+  for (let y = 0.28; y < h - 0.1; y += r.range(0.6, 0.9)) {
+    a.add('galv', chamferBox(0.055, 0.018, 0.055, 0.004), xf(0, y, z * 0.55), { grime: 1.35 });
+  }
+  /* junction box on the run */
+  const jy = Math.min(h - 0.35, drop + r.range(0.3, 0.9));
+  a.add('galv', chamferBox(0.13, 0.17, 0.075, 0.012), xf(0, jy, 0.04), { grime: 1.1 });
+  a.add('rust', chamferBox(0.1, 0.13, 0.008, 0.003), xf(0, jy, 0.082), { grime: 0.9 });
+  /* a soft cable dropping away from it — nothing in a street hangs dead straight */
+  const cab = [];
+  for (let i = 0; i <= 5; i++) {
+    const t = i / 5;
+    cab.push([-0.06 - t * r.range(0.05, 0.22), jy - t * drop, 0.05 + Math.sin(t * 2.4) * 0.035]);
+  }
+  a.add('rust', tube(cab, 0.009, 5, { cap: false }), null, { grime: 1.25 });
+  return { colliders: [], height: h, radius: 0.22 };
+}
+
+/** Louvred wall vent with a hood and a stain trail. Origin at the wall face, +Z out. */
+export function wallVent(a, r, o = {}) {
+  const w = o.w ?? r.range(0.34, 0.52);
+  const h = o.h ?? r.range(0.28, 0.42);
+  a.add('galv', chamferBox(w, h, 0.06, 0.01), xf(0, 0, 0.03), { grime: 1.2 });
+  const n = Math.max(3, Math.round(h / 0.075));
+  for (let i = 0; i < n; i++) {
+    const y = -h / 2 + 0.045 + (i * (h - 0.09)) / Math.max(1, n - 1);
+    a.add('rust', chamferBox(w - 0.06, 0.016, 0.03, 0.004), xf(0, y, 0.075, 0.35, 0, 0), { grime: 1.35 });
+  }
+  /* hood over the top so it throws a shadow line */
+  a.add('galv', sheet(3, 2, (u, v) => [(u - 0.5) * (w + 0.09), h / 2 + 0.035 - v * 0.03, 0.01 + v * 0.11]), null, { grime: 1.3 });
+  if (r.chance(0.5)) {
+    a.add('rust', chamferBox(0.03, 0.03, 0.03, 0.006), xf(w / 2 + 0.03, -h / 2, 0.05), { grime: 1.5 });
+  }
+  return { colliders: [], height: h, radius: w * 0.6 };
+}
+
+/** Domestic electricity meter in a box with the tails running away. +Z out of the wall. */
+export function meterBox(a, r, o = {}) {
+  const w = o.w ?? r.range(0.3, 0.4);
+  const h = o.h ?? r.range(0.4, 0.52);
+  const d = 0.13;
+  a.add('ply', chamferBox(w, h, d, 0.012), xf(0, 0, d / 2), { grime: 1.1 });
+  a.add('galv', chamferBox(w - 0.05, h - 0.06, 0.012, 0.004), xf(0, 0, d + 0.004), { grime: 0.85 });
+  a.add('glass', chamferBox(w * 0.42, h * 0.3, 0.006, 0.002), xf(0, h * 0.12, d + 0.012), { grime: 0.5 });
+  a.add('rust', cyl(0.012, 0.05, 6, { chamfer: 0.002 }), xf(w / 2 - 0.05, -h * 0.3, d + 0.02, Math.PI / 2, 0, 0), { grime: 1.2 });
+  /* the two tails, dropping and disappearing into the wall */
+  for (const s of [-1, 1]) {
+    a.add('rust', tube(
+      [[s * w * 0.24, -h / 2, d * 0.6], [s * w * 0.24 + s * 0.03, -h / 2 - 0.32, d * 0.4], [s * w * 0.2, -h / 2 - 0.6, 0.05]],
+      0.011, 5, { cap: false }
+    ), null, { grime: 1.3 });
+  }
+  return { colliders: [], height: h, radius: w * 0.6 };
+}
+
 export default {
   lampPost,
   bollard,
@@ -576,4 +650,7 @@ export default {
   acUnit,
   rubbishBin,
   downpipe,
+  wallConduit,
+  wallVent,
+  meterBox,
 };

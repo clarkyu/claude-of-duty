@@ -147,22 +147,26 @@ const SITE_SIN = Math.sin(SITE_AZIMUTH);
  * Altitude alone is not sufficient, though: clearance also depends on the *bearing*
  * the light arrives on, because the near occluders are two long walls, not a ring.
  * That half of the problem is solved by `SITE_AZIMUTH` above; do not tune one without
- * checking the other — and solving it there buys altitude back here, which is why the
- * morning keys are now lower than the "12.4 deg" floor the paragraph above derives:
+ * checking the other.
  *
- *   6.6 -> 7.09 -> 8.6 deg  (shadows 6.6x height)
- *   7.4 -> 7.42 -> 12.8 deg (shadows 4.4x height)
- *   8.2 -> 7.86 -> 14.4 deg
+ * **Altitude is bounded from below by the canyon, and the bound is hard.** Raycasting
+ * the real colliders from 23 camera-visible ground points in the hero frame, with the
+ * key already aimed down the street at azimuth 31, the sunlit fraction of that ground
+ * measures 0.44 at 16 deg, 0.26 at 12 deg and 0.09 at 8 deg. A 6 deg sun — the
+ * textbook golden-hour altitude, 9.5x shadows — lights essentially none of the
+ * playable floor on this map, and an unlit floor is the defect we are fixing, not a
+ * stylistic preference. 7.4 therefore sits at 15.4 deg, where the street is lit and
+ * shadows still run 3.6x their casters' height.
  *
- * Below ~8 deg on this map even a well-aimed key loses the carriageway again
- * (measured sunlit ground: 0.44 at 16 deg, 0.26 at 12, 0.09 at 8), so 12.8 is the
- * floor at which the hero frame still has a lit street to cast shadows across. The
- * remaining colour-temperature gap to a true 4 deg sun is closed by the `kelvin`
- * field of `ctx.lighting.setSunStaging()` — a warm key over an honest sun reads
- * correct, an honest key over an unlit street does not.
+ * The colour that altitude *cannot* buy is bought separately and cheaply: the disc's
+ * own transmittance at 15 deg is about 4900 K, a good 1400 K cooler than a camera
+ * records at golden hour, so Lighting.js grades the key toward ~3300 K on an
+ * altitude-driven curve (see `_syncFromSky`). A warm key over an honest sun reads
+ * correct; an honest key over an unlit street does not. Per-pose overrides for both
+ * live on `ctx.lighting.setSunStaging({ altitude, kelvin })`.
  */
 const WARP_X = [0, 5.5, 6.6, 7.4, 8.2, 12, 19.5, 21.5, 24];
-const WARP_Y = [0, 5.94, 7.09, 7.42, 7.86, 12.4, 19.11, 20.45, 24];
+const WARP_Y = [0, 5.94, 7.16, 7.62, 7.97, 12.4, 19.11, 20.45, 24];
 
 /** Monotone cubic (Fritsch-Carlson) — smooth, and never folds the clock backwards. */
 function buildPchip(xs, ys) {
@@ -957,7 +961,23 @@ class Sky {
       uSkyAmbientColor: v3(0.3, 0.38, 0.52),
       uSkySunDir: v3(0, 1, 0),
       uSkyCamPos: v3(0, 1.7, 0),
-      uSkyFog: { value: new THREE.Vector4(1.0, 1 / 900, 0.0, 1.0) },
+      /**
+       * x density, y 1/heightScale, z ground Y, w strength.
+       *
+       * A 900 m scale height and unit density is *clean air over an ocean*: with
+       * beta_R+M summing to 1.86-4.05e-4 per metre it put 2-5% of extinction on a
+       * 120 m building, so the backdrop ring punched through at essentially full
+       * contrast with a razor roofline — measured (54,52,57) on the far tower, as
+       * dark and as saturated as blocks four times closer. There is no aerial
+       * perspective at that strength, only a haze band lying on the ground.
+       *
+       * 10x density puts ~26% extinction plus inscatter on that same 120 m (and ~7%
+       * at 30 m, so the near field is untouched), and a 140 m scale height gives the
+       * vertical gradient a dusty urban basin actually has — rooftops and the minaret
+       * gallery clear noticeably faster than the street they stand over, which is the
+       * cue that sells depth. Weather still scales all of it through `haze`.
+       */
+      uSkyFog: { value: new THREE.Vector4(10.0, 1 / 140, 0.0, 1.0) },
       uSkyMist: { value: new THREE.Vector4(2.4e-5, 26.0, 0.0035, 1.0) },
       uSkyMistWind: v2(0, 0),
     };
@@ -1448,12 +1468,26 @@ class Sky {
       this.moonIntensity * 0.98,
       this.moonIntensity * 1.25
     );
-    u.uNightSkyColor.value.set(0.0021, 0.0031, 0.0068);
-    u.uPollutionColor.value.set(
-      this.lightPollution * 1.0,
-      this.lightPollution * 0.52,
-      this.lightPollution * 0.2
-    );
+    /**
+     * **The night floor has to ride `adaptLift` like everything else.** It was the one
+     * term that did not. At full night the exposure curve lifts the ambient, the moon,
+     * the IBL and the scattered sky by 26x while these two constants stayed at their
+     * raw physical value, so the dome — the thing that is *emitting* that ambient —
+     * came out ~50x darker than the ground it was lighting: measured zenith sRGB
+     * (1,1,2) against unlit courtyard (37,32,32). Outdoors at night the sky is the
+     * source and has to be the brightest thing in frame.
+     *
+     * The bases are retuned down by the same order the lift adds, so the *product*
+     * lands where the old hand-tuned constants were aiming rather than 26x past it.
+     */
+    const nightLift = this.adaptLift;
+    u.uNightSkyColor.value.set(0.00042 * nightLift, 0.00062 * nightLift, 0.00136 * nightLift);
+    // Light pollution is sodium and LED spill scattered by the air *above* the city:
+    // a broad dome-wide wash that is strongest at the horizon, not a 10-degree band.
+    // The shader's falloff was pow(1 - dir.y, 9), which is dead by 20 degrees up and
+    // left the sky neutral and gradientless everywhere the camera actually looks.
+    const poll = this.lightPollution * nightLift * 0.42;
+    u.uPollutionColor.value.set(poll * 1.0, poll * 0.52, poll * 0.2);
     u.uGroundLit.value.set(this.groundColor.r, this.groundColor.g, this.groundColor.b);
 
     // Cirrus sits at ~8 km, so it keeps direct sun long after the ground is dark.

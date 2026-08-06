@@ -856,8 +856,16 @@ void main() {
   }
   if ( uNightFade > 0.001 ) {
     float zen = sat1( dir.y );
-    night = uNightSkyColor * ( 0.55 + 0.45 * zen ) * uNightFade;
-    night += uPollutionColor * pow( sat1( 1.0 - dir.y ), 9.0 ) * uNightFade;
+    // Airglow + residual Rayleigh: brightest a little above the horizon, never black
+    // at the zenith. A night sky that crushes to 0 reads as a hole, not as sky.
+    night = uNightSkyColor * ( 0.62 + 0.38 * ( 1.0 - zen ) ) * uNightFade;
+    // Light-pollution dome. Sodium spill scattered by the whole air column: a broad
+    // horizon-weighted wash with a real gradient into the upper sky, plus a small
+    // isotropic floor. pow(., 9) put the entire term inside 20 degrees of the horizon,
+    // which is below the frame in every pose we review.
+    float below = sat1( 1.0 - dir.y );
+    float dome = 0.22 + 0.78 * pow( below, 3.2 );
+    night += uPollutionColor * dome * uNightFade;
     night += moonHalo * uNightFade;
   }
 

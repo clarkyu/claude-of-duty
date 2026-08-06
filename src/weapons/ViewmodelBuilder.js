@@ -10,8 +10,22 @@
  * geometry so the bevels can take a brighter, smoother material — that edge highlight
  * is most of the reason a gun reads as machined metal rather than as a grey box.
  *
+ * Two things decide whether the result reads as a weapon or as a grey box, and neither
+ * of them is triangle count:
+ *
+ *  1. **It must not track the sky.** Coated weapon finishes are dark dielectrics, not
+ *     bare metal, so anodising and phosphate are authored at metalness ~0 and full
+ *     metal is reserved for chamfers, wear points, the bolt, pins and brass. Authored
+ *     as metal, the albedo becomes a specular tint that never shows and the gun turns
+ *     into a mirror: white at noon, a glowing beacon at night. See MATSPEC.
+ *  2. **Something has to occlude something.** There is no AO pass on the viewmodel
+ *     scene, so every recess, slot, port and chamfer machined here would otherwise
+ *     render as a flat plane. `bakeCavity` solves short-range occlusion into the
+ *     vertex-colour red channel, which the MaterialLibrary reads as its grime mask.
+ *
  * Exports
  *   makeWeaponMaterials(ctx)          -> material bag keyed by MATSPEC below
+ *   VIEWMODEL_ENV_SCALE               global weight on the viewmodel's IBL response
  *   buildWeapon(ctx, def, mats)       -> { root, nodes, meshes, tris }
  *                                        nodes: bolt, charging, dustCover, trigger,
  *                                        selector, boltCatch, magazine, follower,
@@ -34,6 +48,7 @@
  *   latheG(profile, radial)     turned profile around Z, hard/soft normal breaks
  *   sweepG(section, path)       sweep a 2D section along a polyline
  *   capsuleY / lensG / discG / stippleG / railG / chamferPoly / rectSection
+ *   bakeCavity(items) / bakeTree(root)   short-range AO into vertex red
  *
  * Everything is metres. Weapon-local space: +X right, +Y up, **−Z down the bore**.
  * The origin sits on the bore axis at the rear face of the upper receiver.
@@ -151,22 +166,44 @@ const AO_DIRS = (() => {
  * Method: splat every triangle into a coarse occupancy grid, then cone-trace a short
  * distance out of each vertex. Roughly 40 ms for a whole rifle; it runs once per build.
  *
- * @param {THREE.BufferGeometry[]} geoms  all parts, already in one common space
- * @param {{cell?:number, maxDist?:number, amount?:number, bias?:number}} o
+ * @param {{geom:THREE.BufferGeometry, mtx:THREE.Matrix4}[]} items  parts plus the
+ *        transform that carries each into the common space they occlude each other in
+ * @param {{cell?:number, maxDist?:number, amount?:number}} o
  */
-function bakeCavity(geoms, o = {}) {
-  const list = geoms.filter((g) => g && g.attributes?.position && g.index);
+function bakeCavity(items, o = {}) {
+  const list = items.filter((it) => it?.geom?.attributes?.position && it.geom.index);
   if (!list.length) return;
   const cell = o.cell ?? 0.0032;
   const maxDist = o.maxDist ?? 0.028;
   const amount = o.amount ?? 1;
   const inv = 1 / cell;
 
+  /* -- transform every part into the common space once -------------------- */
+  const _p = new THREE.Vector3();
+  const _n = new THREE.Vector3();
+  const _nm = new THREE.Matrix3();
+  for (const it of list) {
+    const src = it.geom.attributes.position.array;
+    const sn = it.geom.attributes.normal.array;
+    const count = it.geom.attributes.position.count;
+    const wp = new Float32Array(count * 3);
+    const wn = new Float32Array(count * 3);
+    _nm.getNormalMatrix(it.mtx);
+    for (let v = 0; v < count; v++) {
+      _p.set(src[v * 3], src[v * 3 + 1], src[v * 3 + 2]).applyMatrix4(it.mtx);
+      wp[v * 3] = _p.x; wp[v * 3 + 1] = _p.y; wp[v * 3 + 2] = _p.z;
+      _n.set(sn[v * 3], sn[v * 3 + 1], sn[v * 3 + 2]).applyMatrix3(_nm).normalize();
+      wn[v * 3] = _n.x; wn[v * 3 + 1] = _n.y; wn[v * 3 + 2] = _n.z;
+    }
+    it.wp = wp;
+    it.wn = wn;
+  }
+
   /* -- bounds ------------------------------------------------------------- */
   let x0 = Infinity, y0 = Infinity, z0 = Infinity;
   let x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
-  for (const g of list) {
-    const p = g.attributes.position.array;
+  for (const it of list) {
+    const p = it.wp;
     for (let i = 0; i < p.length; i += 3) {
       if (p[i] < x0) x0 = p[i];
       if (p[i] > x1) x1 = p[i];
@@ -196,9 +233,9 @@ function bakeCavity(geoms, o = {}) {
   };
 
   /* -- splat every triangle ----------------------------------------------- */
-  for (const g of list) {
-    const p = g.attributes.position.array;
-    const idx = g.index.array;
+  for (const it of list) {
+    const p = it.wp;
+    const idx = it.geom.index.array;
     for (let t = 0; t < idx.length; t += 3) {
       const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
       const ax = p[a], ay = p[a + 1], az = p[a + 2];
@@ -229,9 +266,10 @@ function bakeCavity(geoms, o = {}) {
     return grid[i * nyz + j * nz + k];
   };
 
-  for (const g of list) {
-    const p = g.attributes.position.array;
-    const nrm = g.attributes.normal.array;
+  for (const it of list) {
+    const g = it.geom;
+    const p = it.wp;
+    const nrm = it.wn;
     const count = g.attributes.position.count;
     const col = new Float32Array(count * 3);
     for (let v = 0; v < count; v++) {
@@ -268,24 +306,47 @@ function bakeCavity(geoms, o = {}) {
           }
         }
       }
-      const a = clamp((occ / (wsum || 1)) * 1.55, 0, 1);
-      col[v * 3] = clamp(Math.pow(a, 0.8) * amount, 0, 1);
+      // Gamma above 1 keeps open faces open and reserves the mask for real crevices —
+      // a flat outer panel that picks up a few grazing hits must not go grey.
+      const a = clamp((occ / (wsum || 1)) * 1.34, 0, 1);
+      col[v * 3] = clamp(Math.pow(a, 1.3) * amount, 0, 1);
       col[v * 3 + 1] = 0;
       col[v * 3 + 2] = 0;
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    it.wp = null;
+    it.wn = null;
   }
 }
 
-/** Every mesh under `root`, with a zeroed colour attribute where the bake missed. */
+/**
+ * Bake every mesh under `root`, in `root`'s space, so parts on different animated nodes
+ * (dust cover, magazine, bolt, each finger joint) occlude each other correctly instead
+ * of each being solved as if it sat at the origin.
+ *
+ * Exported as `bakeViewmodel` so WeaponSystem can re-bake the gun and the hands *as one
+ * object* once they are assembled: that is what puts a contact shadow under each finger
+ * on the grip and the handguard, and unlike a real shadow-casting light it costs
+ * nothing per frame and adds no shader variants — which matters on a software
+ * rasteriser where every new program variant is seconds of compile time.
+ */
 function bakeTree(root, o) {
-  const geoms = [];
+  root.updateMatrixWorld(true);
+  const invRoot = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const items = [];
+  const seen = new Set();
   root.traverse((m) => {
-    if (m.isMesh && m.geometry) geoms.push(m.geometry);
+    if (!m.isMesh || !m.geometry?.attributes?.position) return;
+    // One bake per geometry: an instanced geometry (the brass pool) would otherwise be
+    // solved once per instance and keep only the last answer.
+    if (seen.has(m.geometry)) return;
+    seen.add(m.geometry);
+    items.push({ geom: m.geometry, mtx: new THREE.Matrix4().multiplyMatrices(invRoot, m.matrixWorld) });
   });
-  bakeCavity(geoms, o);
-  for (const g of geoms) {
-    if (!g.attributes.color && g.attributes.position) {
+  bakeCavity(items, o);
+  for (const it of items) {
+    const g = it.geom;
+    if (!g.attributes.color) {
       g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 3), 3));
     }
   }
@@ -1075,6 +1136,11 @@ const G = {
  * for the surfaces that genuinely are bare metal — chamfers where the finish has rubbed
  * through, handling wear, the bolt, pins, springs and brass.
  *
+ * `det` is the detail-normal feature size in metres (the shader tiling works out to
+ * exactly 1/det), and it is deliberately different for every substance: four parts
+ * wearing the same normal at the same pitch is what made the stock, the pad, the grip
+ * and the gloves all read as the same corduroy.
+ *
  * `env` is the per-material environment weight; the viewmodel scene carries the world's
  * HDR sky, so this is the last line of defence against the whole gun becoming one
  * sky-coloured specular sheet. `grime` scales how strongly baked cavity occlusion
@@ -1082,27 +1148,27 @@ const G = {
  */
 const MATSPEC = {
   /* ── anodised aluminium: receiver, handguard, rails, optic bodies ──────── */
-  anodised: { base: 'brushed_aluminium', color: 0x1a1c1f, rough: [0.52, 0.72], metal: [0.0, 0.16], uv: 62, det: 0.006, nrm: 0.9, env: 0.42, grime: 1.0 },
-  anodisedEdge: { base: 'brushed_aluminium', color: 0x656c75, rough: [0.26, 0.46], metal: [0.9, 1.0], uv: 78, det: 0.004, nrm: 0.55, env: 0.7, grime: 0.7 },
+  anodised: { base: 'brushed_aluminium', color: 0x191c21, rough: [0.5, 0.7], metal: [0.0, 0.16], uv: 62, det: 0.006, nrm: 0.9, env: 0.46, grime: 0.9 },
+  anodisedEdge: { base: 'brushed_aluminium', color: 0x7e8791, rough: [0.24, 0.44], metal: [0.9, 1.0], uv: 78, det: 0.004, nrm: 0.55, env: 0.75, grime: 0.55 },
   /* ── manganese phosphate: barrel, gas block, controls, small steel ─────── */
-  phosphate: { base: 'painted_steel_chipped', color: 0x141517, rough: [0.62, 0.84], metal: [0.0, 0.14], uv: 66, det: 0.006, nrm: 1.05, env: 0.34, grime: 1.15 },
-  phosphateEdge: { base: 'brushed_aluminium', color: 0x757c85, rough: [0.28, 0.48], metal: [0.9, 1.0], uv: 78, det: 0.004, nrm: 0.55, env: 0.68, grime: 0.7 },
+  phosphate: { base: 'painted_steel_chipped', color: 0x111214, rough: [0.62, 0.86], metal: [0.0, 0.14], uv: 66, det: 0.006, nrm: 1.05, env: 0.3, grime: 1.05 },
+  phosphateEdge: { base: 'brushed_aluminium', color: 0x8b939d, rough: [0.26, 0.46], metal: [0.9, 1.0], uv: 78, det: 0.004, nrm: 0.55, env: 0.72, grime: 0.55 },
   /* ── bare steel worn through the finish at handling points ─────────────── */
-  wearBright: { base: 'brushed_aluminium', color: 0x9aa1aa, rough: [0.19, 0.34], metal: [0.95, 1.0], uv: 86, det: 0.003, nrm: 0.45, env: 0.85, grime: 0.5 },
+  wearBright: { base: 'brushed_aluminium', color: 0xb4bbc4, rough: [0.17, 0.32], metal: [0.95, 1.0], uv: 86, det: 0.003, nrm: 0.45, env: 0.9, grime: 0.4 },
   steelBright: { base: 'brushed_aluminium', color: 0x848b94, rough: [0.22, 0.4], metal: [0.94, 1.0], uv: 82, det: 0.004, nrm: 0.5, env: 0.8, grime: 0.8 },
   /* parkerised steel — dark, matte, and emphatically not a mirror */
   steelDark: { base: 'galvanised_metal', color: 0x0f1012, rough: [0.5, 0.78], metal: [0.0, 0.2], uv: 64, det: 0.005, nrm: 0.8, env: 0.22, grime: 1.1 },
   /* ── the inside of anything: bores, slots, recesses, the ejection port ─── */
   bore: { base: 'rusted_steel', color: 0x040405, rough: [0.7, 0.98], metal: [0.0, 0.12], env: 0.07, uv: 52, det: 0.006, nrm: 0.8, grime: 1.3 },
   /* ── moulded polymer: stock, grip, magazine ────────────────────────────── */
-  polymer: { base: 'rubber_tyre', color: 0x21231d, rough: [0.7, 0.92], metal: [0.0, 0.03], uv: 96, det: 0.0032, nrm: 1.2, env: 0.24, grime: 1.0 },
-  polymerEdge: { base: 'rubber_tyre', color: 0x373b2f, rough: [0.56, 0.8], metal: [0.0, 0.04], uv: 104, det: 0.0028, nrm: 0.85, env: 0.34, grime: 0.8 },
-  rubber: { base: 'rubber_tyre', color: 0x0b0c0e, rough: [0.88, 1.0], metal: [0.0, 0.02], uv: 70, det: 0.0045, nrm: 1.5, env: 0.12, grime: 1.0 },
+  polymer: { base: 'rubber_tyre', color: 0x2b3021, rough: [0.7, 0.92], metal: [0.0, 0.03], uv: 96, det: 0.0032, nrm: 1.2, env: 0.22, grime: 0.9 },
+  polymerEdge: { base: 'rubber_tyre', color: 0x4a5138, rough: [0.56, 0.8], metal: [0.0, 0.04], uv: 104, det: 0.0028, nrm: 0.85, env: 0.3, grime: 0.7 },
+  rubber: { base: 'rubber_tyre', color: 0x0b0c0e, rough: [0.88, 1.0], metal: [0.0, 0.02], uv: 44, det: 0.0068, nrm: 1.6, env: 0.12, grime: 1.0 },
   brass: { base: 'brushed_aluminium', color: 0x8f7130, rough: [0.26, 0.5], metal: [0.9, 1.0], uv: 96, det: 0.003, nrm: 0.5, env: 0.8, grime: 0.6 },
   /* ── hands ─────────────────────────────────────────────────────────────── */
-  glove: { base: 'fabric_webbing', color: 0x191b1f, rough: [0.76, 1.0], metal: [0.0, 0.03], uv: 54, det: 0.0045, nrm: 1.3, env: 0.24, grime: 1.0 },
-  glovePad: { base: 'rubber_tyre', color: 0x0f1013, rough: [0.66, 0.94], metal: [0.0, 0.03], uv: 80, det: 0.0035, nrm: 1.35, env: 0.2, grime: 0.9 },
-  sleeve: { base: 'fabric_uniform', color: 0x2e3328, rough: [0.78, 1.0], metal: [0.0, 0.02], uv: 40, det: 0.0055, nrm: 1.2, env: 0.24, grime: 1.05 },
+  glove: { base: 'fabric_webbing', color: 0x171a20, rough: [0.76, 1.0], metal: [0.0, 0.03], uv: 62, det: 0.0034, nrm: 1.3, env: 0.26, grime: 0.9 },
+  glovePad: { base: 'rubber_tyre', color: 0x0f1013, rough: [0.66, 0.94], metal: [0.0, 0.03], uv: 124, det: 0.0022, nrm: 1.4, env: 0.2, grime: 0.9 },
+  sleeve: { base: 'fabric_uniform', color: 0x272c22, rough: [0.78, 1.0], metal: [0.0, 0.02], uv: 34, det: 0.0058, nrm: 1.25, env: 0.22, grime: 1.0 },
   skin: { base: 'skin', color: 0x8a6349, rough: [0.42, 0.72], metal: [0.0, 0.02], uv: 52, det: 0.004, nrm: 0.85, env: 0.3, grime: 0.7 },
 };
 
@@ -1131,7 +1197,7 @@ export function makeWeaponMaterials(ctx) {
           // soot and handling residue collect in exactly the places AO darkens.
           vertexColors: true,
           grime: 1,
-          grimeColor: 0x6c665c,
+          grimeColor: 0x69696d,
           envMapIntensity: (s.env ?? 0.5) * VIEWMODEL_ENV_SCALE,
         }) || null;
     } catch {
@@ -1155,9 +1221,11 @@ export function makeWeaponMaterials(ctx) {
       if (u?.uCodMetal) u.uCodMetal.value.set(s.metal[0], s.metal[1]);
       if (u?.uCodDetail) u.uCodDetail.value.set(1 / Math.max(1e-4, s.det * s.uv), 0.62, 0.4, 40);
       if (u?.uCodVCol) {
-        // x: grime strength, y: grunge tiling. The library's default tiling is fitted
-        // to metre-scale walls; on a 40 cm part it would be one flat value.
-        u.uCodVCol.value.set(0.62 * (s.grime ?? 1), 46, 0.85, 0);
+        // x: grime strength, y: grunge tiling in *texture* space. The library's default
+        // is fitted to metre-scale walls, where one blotch spans 1.6 m; on a 40 cm part
+        // that is a single flat value. 18 mm blotches are the right scale for soot and
+        // handling residue on a receiver.
+        u.uCodVCol.value.set(0.62 * (s.grime ?? 1), 1 / (0.018 * s.uv), 0.85, 0);
       }
     } catch {
       /* a fallback material has no extension uniforms */
@@ -1233,12 +1301,13 @@ uniform float uJitter;
 void main() {
   vec2 p = vLocal / max( 1e-5, uSize );
   float d = length( p );
-  // Slight bloom-friendly falloff: emitters are never a hard disc in real glass.
-  float dot0 = exp( -d * d * 3.4 ) + 0.55 * exp( -d * d * 0.55 );
+  // A real dot is a hard, blown-out core with a *tight* bloom skirt. The wide skirt
+  // that used to be here read as a 14 px pink smear instead of a 2 MOA aiming point.
+  float dot0 = 1.7 * exp( -d * d * 26.0 ) + exp( -d * d * 4.6 ) + 0.16 * exp( -d * d * 1.15 );
   float a = dot0;
   if ( uRing > 0.0 ) {
     float rd = abs( d - uRing );
-    float ring = exp( -rd * rd * 26.0 );
+    float ring = exp( -rd * rd * 34.0 );
     // horseshoe: fade the top of the ring out
     ring *= smoothstep( 0.55, -0.1, normalize( p + vec2( 1e-6 ) ).y );
     a = max( a, ring * 0.85 );
@@ -1513,8 +1582,11 @@ class Sink {
       const m = new THREE.Mesh(g, mats[key] || mats.anodised);
       m.name = `${name}:${key}`;
       m.frustumCulled = false;
-      m.castShadow = false;
-      m.receiveShadow = false;
+      // The viewmodel gets one shadow-casting key of its own (see
+      // WeaponSystem.setupLights): the hands need to land on the receiver and the
+      // optic needs to land on the rail, or nothing on the gun looks attached to it.
+      m.castShadow = true;
+      m.receiveShadow = true;
       out.push(m);
     }
     this.bins.clear();
@@ -1682,8 +1754,15 @@ function buildUpper(sink, b) {
   const cut = upperSection(b, true);
 
   sink.pair(extrudeG(full, { axis: 'z', from: R.z0, to: P.z0 }), 'anodised', 'anodisedEdge');
-  sink.pair(extrudeG(cut, { axis: 'z', from: P.z0, to: P.z1 }), 'anodised', 'anodisedEdge');
+  // The ejection port surround is scrubbed bright by sixty rounds a minute of hot
+  // brass; on a used weapon it is the most obviously worn edge on the upper.
+  sink.pair(extrudeG(cut, { axis: 'z', from: P.z0, to: P.z1 }), 'anodised', 'wearBright');
   sink.pair(extrudeG(full, { axis: 'z', from: P.z1, to: R.z1 }), 'anodised', 'anodisedEdge');
+  // Fore and aft walls of the port, so the cutout reads as a box and not a stripe.
+  for (const [zw, sgn] of [[P.z0, 1], [P.z1, -1]]) {
+    const wall = plainBoxG(P.depth, P.y1 - P.y0, 0.0016, { [sgn > 0 ? '-z' : '+z']: true });
+    sink.pair(wall, 'bore', 'bore', mTrans(R.halfW - P.depth * 0.5, (P.y0 + P.y1) * 0.5, zw + sgn * 0.0008));
+  }
 
   // Top rail runs the length of the flat-top upper.
   const rail = railG(Math.abs(b.rail.z1 - b.receiver.z0) + 0.001, b.rail.halfW, b.rail.y, { pitch: 0.0101 });
@@ -1692,10 +1771,16 @@ function buildUpper(sink, b) {
   for (const s of rail.slots) sink.pair(s, 'steelDark', 'steelDark', railM.clone());
 
   // Brass deflector behind the port, and the port's rear wall.
-  const defl = boxG(0.011, 0.017, 0.02, 0.0035, 2);
-  sink.pair(defl, 'anodised', 'anodisedEdge', mCompose(
-    [R.halfW + 0.0032, P.y1 - 0.004, P.z1 + 0.011],
-    new THREE.Euler(0, 0.34, 0.12)
+  const defl = boxG(0.0155, 0.0225, 0.026, 0.0042, 2);
+  sink.pair(defl, 'anodised', 'wearBright', mCompose(
+    [R.halfW + 0.0052, P.y1 - 0.0045, P.z1 + 0.0135],
+    new THREE.Euler(0, 0.38, 0.14)
+  ));
+  // Its leading face takes every case: a bright polished scar.
+  const scar = plainBoxG(0.0016, 0.0135, 0.0165);
+  sink.pair(scar, 'wearBright', 'wearBright', mCompose(
+    [R.halfW + 0.0125, P.y1 - 0.005, P.z1 + 0.012],
+    new THREE.Euler(0, 0.38, 0.14)
   ));
 
   // Forward assist.
@@ -1746,6 +1831,45 @@ function buildUpper(sink, b) {
   // Port interior: a dark recess wall so the cutout reads as an actual hole.
   const inner = boxG(0.0018, P.y1 - P.y0 - 0.001, P.z1 - P.z0 - 0.001, 0.0004, 1);
   sink.pair(inner, 'bore', 'bore', mTrans(R.halfW - P.depth - 0.0009, (P.y0 + P.y1) * 0.5, (P.z0 + P.z1) * 0.5));
+
+  /* Machining. A billet upper is not a smooth extrusion: it carries lightening
+   * pockets, a shell-deflector fence, roll pins and a hard panel line where the two
+   * halves meet. Each of these is a couple of hundred triangles and each one is worth
+   * more to the read than another thousand on a smooth surface. */
+  // Lightening pockets on the left flank (the right is taken by the port).
+  for (let i = 0; i < 2; i++) {
+    const pz = R.z0 + 0.03 + i * 0.036;
+    if (pz > P.z0 - 0.014) break;
+    const pocket = plainBoxG(0.005, 0.011, 0.026, { '-x': true });
+    sink.pair(pocket, 'bore', 'bore', mTrans(-(R.halfW - 0.0022), (R.yTop + R.yBot) * 0.5 + 0.002, pz));
+    const lipT = boxG(0.0026, 0.0016, 0.027, 0.0006, 1);
+    sink.pair(lipT, 'anodisedEdge', 'anodisedEdge', mTrans(-(R.halfW - 0.0008), (R.yTop + R.yBot) * 0.5 + 0.0075, pz));
+    const lipB = boxG(0.0026, 0.0016, 0.027, 0.0006, 1);
+    sink.pair(lipB, 'anodisedEdge', 'anodisedEdge', mTrans(-(R.halfW - 0.0008), (R.yTop + R.yBot) * 0.5 - 0.0035, pz));
+  }
+  // Panel line along the upper/lower split, both sides.
+  for (const s of [1, -1]) {
+    const line = plainBoxG(0.0016, 0.0013, R.z1 - R.z0 - 0.004);
+    sink.pair(line, 'bore', 'bore', mTrans(s * (R.halfW - 0.0006), R.yBot + 0.0004, (R.z0 + R.z1) * 0.5));
+  }
+  // Roll pins through the receiver walls.
+  for (const z of [P.z1 + 0.03, R.z0 + 0.052]) {
+    for (const s of [1, -1]) {
+      const pin = latheG(
+        [
+          [0.0021, -0.0006, 'hard'],
+          [0.0021, 0.0008],
+          [0.0016, 0.0013, 'hard edge'],
+        ],
+        8,
+        { capEnd: true }
+      );
+      sink.pair(pin, 'steelDark', 'wearBright', mCompose(
+        [s * (R.halfW - 0.0004), R.yTop - 0.009, z],
+        new THREE.Euler(0, s * Math.PI * 0.5, 0)
+      ));
+    }
+  }
 }
 
 /* --------------------------------- barrel --------------------------------- */
@@ -1936,21 +2060,39 @@ function buildHandguard(sink, b) {
         const pitch = (len - 0.02) / n;
         for (let i = 0; i < n; i++) {
           const c = z0 + 0.01 + pitch * (i + 0.5);
-          // Window straight through the panel: dark walls, then the inner shroud
-          // showing through, which is exactly what an M-LOK slot looks like.
-          const win = plainBoxG(0.0072, thick * 2.4, slotL, { '-y': true });
-          sink.pair(win, 'bore', 'bore', mCompose(
-            [Math.cos(ang) * (H.r - thick * 0.5), Math.sin(ang) * (H.r - thick * 0.5), c],
-            rot
-          ));
-          // Chamfered lip around the window so it catches a highlight.
-          for (const sx of [-1, 1]) {
-            const lipG = plainBoxG(0.0012, thick * 0.9, slotL);
-            sink.pair(lipG, 'anodisedEdge', 'anodisedEdge', mCompose(
+          /* Window straight through the panel: dark walls, then the inner shroud
+           * showing through, which is exactly what an M-LOK slot looks like.
+           *
+           * The panel section spans facet-local y ∈ [−thick, 0] about the placement
+           * radius, so the window has to be sunk to match. It used to be centred on
+           * the radius at 2.6× the panel thickness, which put its outer face 6 mm
+           * *proud* of the handguard: a raised dark patch, not a slot. */
+          const rP = H.r - thick * 0.5; // facet placement radius
+          const winH = thick + 0.0022; // through the panel and a little past it
+          const winY = -0.0004 - winH * 0.5; // outer face just below the surface
+          const put = (dy, dx, geom, key) =>
+            sink.pair(geom, key, key, mCompose(
               [
-                Math.cos(ang) * (H.r - thick * 0.5) - Math.sin(ang) * sx * 0.0042,
-                Math.sin(ang) * (H.r - thick * 0.5) + Math.cos(ang) * sx * 0.0042,
+                Math.cos(ang) * (rP + dy) - Math.sin(ang) * dx,
+                Math.sin(ang) * (rP + dy) + Math.cos(ang) * dx,
                 c,
+              ],
+              rot
+            ));
+          put(winY, 0, plainBoxG(0.0088, winH, slotL, { '-y': true }), 'bore');
+          // Chamfered lip along each long side of the window, flush with the panel, so
+          // the opening catches a highlight instead of being a flat dark rectangle.
+          for (const sx of [-1, 1]) {
+            put(-thick * 0.24, sx * 0.0052, plainBoxG(0.0018, thick * 0.5, slotL), 'anodisedEdge');
+          }
+          // End caps: an M-LOK slot is a rounded-ended slot, not an open trench.
+          for (const sz of [-1, 1]) {
+            const cap = plainBoxG(0.0092, thick * 0.5, 0.0018);
+            sink.pair(cap, 'anodisedEdge', 'anodisedEdge', mCompose(
+              [
+                Math.cos(ang) * (rP - thick * 0.24),
+                Math.sin(ang) * (rP - thick * 0.24),
+                c + sz * slotL * 0.5,
               ],
               rot
             ));
@@ -2049,12 +2191,14 @@ function buildLower(sink, b) {
   ).pts;
   const lip = extrudeG(
     { pts: lipOuter, cham: null },
-    { axis: 'y', from: M.yBot - 0.008, to: M.yBot, holes: [inner] }
+    { axis: 'y', from: M.yBot - 0.009, to: M.yBot, holes: [inner] }
   );
-  sink.pair(lip, 'anodised', 'anodisedEdge', wellM);
+  // Every magazine change drags across this flare; it is always the brightest edge on
+  // the lower receiver.
+  sink.pair(lip, 'anodised', 'wearBright', wellM);
 
   // Trigger guard: swept loop.
-  const tgSec = rectSection(0.0092, 0.0062, 0.0018, 2);
+  const tgSec = rectSection(0.0104, 0.0078, 0.002, 2);
   const zA = b.grip.z + 0.006;
   const zB = M.z1 - 0.004;
   const yTop = L.yBot - 0.0005;
@@ -2094,10 +2238,41 @@ function buildLower(sink, b) {
     12,
     { capEnd: true }
   );
-  sink.pair(relBtn, 'phosphate', 'phosphateEdge', mCompose(
+  sink.pair(relBtn, 'phosphate', 'wearBright', mCompose(
     [L.halfW + 0.0012, L.yTop - 0.0085, M.z0 - 0.008],
     new THREE.Euler(0, Math.PI * 0.5, 0)
   ));
+  // Checkering on the mag catch face, rubbed bright by a thumb.
+  for (let i = 0; i < 3; i++) {
+    for (let k = 0; k < 3; k++) {
+      const pip = plainBoxG(0.0009, 0.0011, 0.0011);
+      sink.pair(pip, 'wearBright', 'wearBright', mTrans(
+        L.halfW + 0.0044,
+        L.yTop - 0.0085 + (i - 1) * 0.0019,
+        M.z0 - 0.008 + (k - 1) * 0.0019
+      ));
+    }
+  }
+
+  // Magwell flute: the long oval scallop pressed into both sides of a magwell. It is
+  // the one piece of shaping that stops the lower reading as a folded box.
+  for (const s of [1, -1]) {
+    const flute = plainBoxG(0.0044, halfD * 1.15, Math.abs(M.yTop - M.yBot) * 0.72, {
+      [s > 0 ? '+x' : '-x']: true,
+    });
+    sink.pair(flute, 'bore', 'bore', mCompose(
+      [s * (M.halfW - 0.0012), (M.yTop + M.yBot) * 0.5, (M.z0 + M.z1) * 0.5],
+      new THREE.Euler(Math.PI * 0.5, 0, 0)
+    ));
+    for (const dy of [-1, 1]) {
+      const lip = boxG(0.0022, 0.0016, halfD * 1.2, 0.0006, 1);
+      sink.pair(lip, 'anodisedEdge', 'anodisedEdge', mTrans(
+        s * (M.halfW - 0.0004),
+        (M.yTop + M.yBot) * 0.5 + dy * Math.abs(M.yTop - M.yBot) * 0.36,
+        (M.z0 + M.z1) * 0.5
+      ));
+    }
+  }
 
   // Rear sling loop, swept as an actual closed ring around the receiver extension.
   const loopPath = [];
@@ -2137,9 +2312,10 @@ function buildGrip(sink, b) {
   );
   sink.pair(sweepG(sec, path, { up: [0, 0, 1] }), 'polymer', 'polymerEdge');
 
-  // Texture panels on both flats plus the front strap.
+  // Texture panels on both flats plus the front strap. Moulded grip stippling is
+  // coarse and deep — it has to survive being seen through a gloved hand at 720p.
   for (const s of [1, -1]) {
-    const st = stippleG(g.len * 0.62, g.d * 0.7, 5, 11, 0.0046, 0.001);
+    const st = stippleG(g.len * 0.66, g.d * 0.74, 5, 12, 0.0052, 0.0016);
     const mid = 0.52;
     const pos = [
       s * (g.w * 0.5 - 0.0004),
@@ -2148,13 +2324,14 @@ function buildGrip(sink, b) {
     ];
     sink.add('polymerEdge', st, mCompose(pos, new THREE.Euler(g.angle, s * Math.PI * 0.5, Math.PI * 0.5)));
   }
-  // Finger grooves on the front strap.
+  // Finger grooves on the front strap — the ridges *between* the fingers, which is
+  // what makes a hand look like it has landed somewhere rather than nearby.
   for (let i = 0; i < 3; i++) {
     const t = 0.24 + i * 0.22;
     const groove = latheG(
       [
-        [0.0032, -g.w * 0.42, 'hard'],
-        [0.0032, g.w * 0.42, 'hard'],
+        [0.0042, -g.w * 0.44, 'hard'],
+        [0.0042, g.w * 0.44, 'hard'],
       ],
       8
     );
@@ -2192,12 +2369,18 @@ function buildStock(sink, b) {
     [S.tubeR * 1.04, z1 - 0.004],
     [S.tubeR * 0.86, z1, 'hard edge'],
   ];
-  sink.pair(latheG(prof, 20, { capEnd: true }), 'anodised', 'anodisedEdge');
+  // Phosphate, not anodised: it is a different part from the shell around it, and the
+  // value break is what makes the skeletonising cut read as a hole with something
+  // behind it rather than as a painted-on shadow.
+  sink.pair(latheG(prof, 20, { capEnd: true }), 'phosphate', 'phosphateEdge');
+  // Length-of-pull detent ladder along the underside of the tube.
   for (let i = 0; i < 6; i++) {
     const z = z0 + 0.045 + i * 0.026;
     if (z > z1 - 0.03) break;
-    const notch = plainBoxG(0.0085, 0.004, 0.0075);
-    sink.pair(notch, 'steelDark', 'steelDark', mTrans(0, -S.tubeR * 0.92, z));
+    const notch = plainBoxG(0.009, 0.0045, 0.008);
+    sink.pair(notch, 'bore', 'bore', mTrans(0, -S.tubeR * 0.9, z));
+    const lip = boxG(0.0092, 0.0014, 0.0018, 0.0004, 1);
+    sink.pair(lip, 'phosphateEdge', 'phosphateEdge', mTrans(0, -S.tubeR * 0.99, z + 0.0045));
   }
 
   if (S.style === 'folding') {
@@ -2225,82 +2408,149 @@ function buildStock(sink, b) {
     );
     sink.pair(hinge, 'phosphate', 'phosphateEdge', mCompose([0.021, -0.004, z0 + 0.012], new THREE.Euler(0, Math.PI * 0.5, 0)));
   } else {
-    // Side profile, extruded across — the only way to get a stock silhouette that
-    // reads as a stock: rising comb, dropped toe, sloped butt.
+    /* A collapsible carbine stock is a thin polymer shell clamped around the buffer
+     * tube, not a shoebox. It used to be as tall as the receiver plus handguard and
+     * carried no information at all; this version is 25 % shorter in section, is cut
+     * through on both flanks so the tube shows inside it, and splits into parts that
+     * are visibly different substances: shell, comb, latch, rubber pad, steel cup. */
     const precision = S.style === 'precision';
-    const bodyW = precision ? 0.046 : 0.041;
-    const zA = z0 + S.len * 0.2;
-    const zR = z1 - 0.014;
-    const combY = precision ? 0.036 : 0.029;
-    // Section for an 'x' extrusion is (y, z).
+    const bodyW = precision ? 0.044 : 0.039;
+    const zA = z0 + S.len * 0.16;
+    const zR = z1 - 0.012;
+    const combY = precision ? 0.028 : 0.0215;
+    const toeY = precision ? -0.036 : -0.0315;
+    // Section for an 'x' extrusion is (y, z). Rising comb, swept-back heel, dropped
+    // toe kicked forward — the classic carbine silhouette.
     const prof = chamferPoly(
       [
-        [0.006, zA],
-        [0.02, zA + 0.038],
-        [combY, zR - 0.055],
-        [combY * 0.94, zR],
-        [-0.037, zR],
-        [-0.043, zR - 0.058],
-        [-0.03, zA + 0.05],
-        [-0.02, zA],
+        [0.004, zA],
+        [0.0155, zA + 0.03],
+        [combY, zR - 0.05],
+        [combY * 0.9, zR],
+        [toeY * 0.86, zR],
+        [toeY, zR - 0.036],
+        [toeY * 0.72, zA + 0.052],
+        [-0.017, zA],
       ],
-      0.006,
+      0.0055,
       2
     );
     sink.pair(extrudeG(prof, { axis: 'x', from: -bodyW * 0.5, to: bodyW * 0.5 }), 'polymer', 'polymerEdge');
 
-    // Lightening cut on both flanks — a recess, not a hole, like a real polymer stock.
-    for (const s of [1, -1]) {
-      const cut = boxG(0.006, 0.03, S.len * 0.34, 0.005, 2);
-      sink.pair(cut, 'polymer', 'polymerEdge', mCompose(
-        [s * (bodyW * 0.5 - 0.0018), -0.008, zR - S.len * 0.28],
-        new THREE.Euler(0.06, 0, 0)
-      ));
+    // Skeletonising cut *through* both flanks: the buffer tube shows inside it, which
+    // is the whole reason a collapsible stock has a silhouette at all.
+    {
+      // A tunnel straight through the shell — both end faces omitted — so the buffer
+      // tube is visible inside it. A blind pocket just reads as a painted rectangle.
+      const cutY = toeY * 0.42;
+      const cutL = S.len * 0.3;
+      const cut = plainBoxG(bodyW * 1.02, 0.0185, cutL, { '+x': true, '-x': true });
+      sink.pair(cut, 'bore', 'bore', mCompose([0, cutY, zR - cutL], new THREE.Euler(0.05, 0, 0)));
+      // Chamfered lip around the opening on both flanks so it catches a highlight.
+      for (const sx of [1, -1]) {
+        for (const dz of [-1, 1]) {
+          const lip = boxG(0.0026, 0.0195, 0.003, 0.0009, 1);
+          sink.pair(lip, 'polymerEdge', 'polymerEdge', mTrans(
+            sx * (bodyW * 0.5 - 0.0011),
+            cutY,
+            zR - cutL + dz * cutL * 0.5
+          ));
+        }
+        for (const dy of [-1, 1]) {
+          const lip = boxG(0.0026, 0.003, cutL, 0.0009, 1);
+          sink.pair(lip, 'polymerEdge', 'polymerEdge', mTrans(
+            sx * (bodyW * 0.5 - 0.0011),
+            cutY + dy * 0.0092,
+            zR - cutL
+          ));
+        }
+      }
     }
-    // Sling slot through the toe.
-    const slot = plainBoxG(bodyW * 1.1, 0.009, 0.024);
-    sink.pair(slot, 'bore', 'bore', mTrans(0, -0.031, zR - 0.03));
+    // Sling slot through the toe, and a moulded QD socket boss.
+    const slot = plainBoxG(bodyW * 1.1, 0.0075, 0.021);
+    sink.pair(slot, 'bore', 'bore', mTrans(0, toeY + 0.0055, zR - 0.026));
 
-    // Buttplate + rubber recoil pad.
-    const plate = boxG(bodyW * 1.02, 0.07, 0.013, 0.005, 2);
-    sink.pair(plate, 'polymer', 'polymerEdge', mCompose([0, -0.006, zR + 0.004], new THREE.Euler(-0.1, 0, 0)));
-    const pad = boxG(bodyW * 0.98, 0.068, 0.01, 0.004, 2);
-    sink.pair(pad, 'rubber', 'rubber', mCompose([0, -0.006, zR + 0.014], new THREE.Euler(-0.1, 0, 0)));
+    /* Butt: a hard polymer plate with a soft rubber pad on it. The pad gets a proper
+     * toe/heel taper and its own, much coarser ribbing — four parts wearing the same
+     * detail frequency is what made the old stock read as corduroy. */
+    const plate = boxG(bodyW * 1.0, 0.056, 0.011, 0.0045, 2);
+    sink.pair(plate, 'polymer', 'polymerEdge', mCompose([0, -0.0055, zR + 0.0035], new THREE.Euler(-0.11, 0, 0)));
+    const padProf = chamferPoly(
+      [
+        [0.026, 0.0],
+        [0.03, 0.006],
+        [0.0245, 0.0125],
+        [-0.028, 0.0135],
+        [-0.0315, 0.006],
+        [-0.027, 0.0],
+      ],
+      0.0035,
+      2
+    );
+    sink.pair(
+      extrudeG(padProf, { axis: 'x', from: -bodyW * 0.48, to: bodyW * 0.48 }),
+      'rubber',
+      'rubber',
+      mCompose([0, -0.0055, zR + 0.0085], new THREE.Euler(-0.11, 0, 0))
+    );
     for (let i = 0; i < 4; i++) {
-      const groove = plainBoxG(bodyW * 1.0, 0.0022, 0.0026);
-      sink.pair(groove, 'rubber', 'rubber', mTrans(0, 0.018 - i * 0.014, zR + 0.0172));
+      const groove = plainBoxG(bodyW * 0.96, 0.0018, 0.0018);
+      sink.pair(groove, 'bore', 'bore', mCompose(
+        [0, 0.016 - i * 0.0115, zR + 0.0205],
+        new THREE.Euler(-0.11, 0, 0)
+      ));
     }
 
     if (S.cheek) {
-      // Adjustable riser sitting *on* the comb, with its posts showing.
-      const riserZ = zR - S.len * 0.28;
-      const cheek = boxG(bodyW * 0.84, 0.017, S.len * 0.42, 0.006, 2);
+      // Adjustable riser sitting *on* the comb, with its posts and detent ladder.
+      const riserZ = zR - S.len * 0.3;
+      const riserL = S.len * 0.42;
+      // Down on its lowest setting: a riser standing proud of the comb puts back all
+      // the section height the stock was just trimmed of, and reads as a bread loaf.
+      const cheek = boxG(bodyW * 0.86, 0.0092, riserL, 0.0042, 2);
       sink.pair(cheek, 'polymer', 'polymerEdge', mCompose(
-        [0, combY + 0.0072, riserZ],
+        [0, combY + 0.0036, riserZ],
         new THREE.Euler(precision ? -0.05 : -0.03, 0, 0)
       ));
-      const grip2 = boxG(bodyW * 0.7, 0.004, S.len * 0.3, 0.0015, 1);
-      sink.pair(grip2, 'rubber', 'rubber', mCompose(
-        [0, combY + 0.0158, riserZ],
-        new THREE.Euler(precision ? -0.05 : -0.03, 0, 0)
+      // Moulded cheek texture: shallow and fine, not waffle.
+      const combTex = stippleG(bodyW * 0.58, riserL * 0.74, 3, 8, 0.0058, 0.00055);
+      sink.add('polymerEdge', combTex, mCompose(
+        [0, combY + 0.0081, riserZ],
+        new THREE.Euler(-Math.PI * 0.5 + (precision ? -0.05 : -0.03), 0, 0)
       ));
       for (const s of [1, -1]) {
         const post = latheG(
           [
-            [0.0034, 0.0, 'hard'],
-            [0.0034, 0.014],
+            [0.0032, 0.0, 'hard'],
+            [0.0032, 0.0085],
           ],
           10
         );
         sink.pair(post, 'steelBright', 'steelBright', mCompose(
-          [s * bodyW * 0.28, combY - 0.004, riserZ + 0.03],
+          [s * bodyW * 0.26, combY - 0.0015, riserZ + riserL * 0.34],
           new THREE.Euler(Math.PI * 0.5, 0, 0)
         ));
       }
     }
-    // Length-of-pull lever under the tube.
-    const lever = boxG(0.011, 0.026, 0.03, 0.003, 2);
-    sink.pair(lever, 'polymer', 'polymerEdge', mCompose([0, -0.036, zA + 0.03], new THREE.Euler(0.25, 0, 0)));
+    // Length-of-pull latch: a lever on a pivot, under the tube, where a hand grabs it.
+    const lever = boxG(0.0105, 0.021, 0.026, 0.0028, 2);
+    sink.pair(lever, 'polymer', 'polymerEdge', mCompose([0, toeY * 0.86, zA + 0.026], new THREE.Euler(0.28, 0, 0)));
+    for (let i = 0; i < 3; i++) {
+      const rib = plainBoxG(0.0105, 0.0018, 0.0022);
+      sink.pair(rib, 'bore', 'bore', mTrans(0, toeY * 0.86 - 0.008 + i * 0.006, zA + 0.0385));
+    }
+    const pivot = latheG(
+      [
+        [0.0026, -0.0062, 'hard'],
+        [0.0026, 0.0062, 'hard'],
+      ],
+      10,
+      { capStart: true, capEnd: true }
+    );
+    sink.pair(pivot, 'wearBright', 'wearBright', mCompose(
+      [0, toeY * 0.72, zA + 0.014],
+      new THREE.Euler(0, Math.PI * 0.5, 0)
+    ));
     // QD sling cup on the left flank.
     const cup = latheG(
       [
@@ -2311,8 +2561,8 @@ function buildStock(sink, b) {
       12,
       { capEnd: true }
     );
-    sink.pair(cup, 'phosphate', 'phosphateEdge', mCompose(
-      [-bodyW * 0.5, -0.012, zA + 0.026],
+    sink.pair(cup, 'steelDark', 'wearBright', mCompose(
+      [-bodyW * 0.5, -0.01, zA + 0.024],
       new THREE.Euler(0, -Math.PI * 0.5, 0)
     ));
   }
@@ -2361,11 +2611,15 @@ function buildChargingHandle(sink, b) {
   const wing = boxG(0.02, 0.0125, 0.0085, 0.0018, 2);
   sink.pair(wing, 'anodised', 'anodisedEdge', mCompose([-0.0205, R.yTop - 0.0075, z + 0.002], new THREE.Euler(0, 0, 0.08)));
   const bar = boxG(0.05, 0.0092, 0.0085, 0.0016, 2);
-  sink.pair(bar, 'anodised', 'anodisedEdge', mTrans(0, R.yTop - 0.0075, z + 0.002));
+  // Handling wear: a charging handle latch is grabbed every single time the weapon is
+  // loaded, so the anodising is long gone and bare aluminium shows through.
+  sink.pair(bar, 'anodised', 'wearBright', mTrans(0, R.yTop - 0.0075, z + 0.002));
   // Serrations on the latch.
-  for (let i = 0; i < 5; i++) {
-    const s = plainBoxG(0.0014, 0.0092, 0.0016);
-    sink.pair(s, 'anodisedEdge', 'anodisedEdge', mTrans(-0.0135 - i * 0.0032, R.yTop - 0.0075, z + 0.0055));
+  for (let i = 0; i < 6; i++) {
+    const s = plainBoxG(0.0016, 0.0094, 0.0019);
+    sink.pair(s, 'wearBright', 'wearBright', mTrans(-0.0128 - i * 0.0034, R.yTop - 0.0075, z + 0.0056));
+    const s2 = plainBoxG(0.0016, 0.0094, 0.0019);
+    sink.pair(s2, 'wearBright', 'wearBright', mTrans(0.0128 + i * 0.0034, R.yTop - 0.0075, z + 0.0056));
   }
 }
 
@@ -2384,25 +2638,32 @@ function buildDustCover(sink, b) {
     8
   );
   sink.pair(hinge, 'steelBright', 'steelBright', mTrans(0.0012, 0, 0));
-  const rib = boxG(0.0012, 0.0018, l * 0.86, 0.0004, 1);
-  sink.pair(rib, 'anodisedEdge', 'anodisedEdge', mTrans(0.0026, h * 0.55, 0));
+  const rib = boxG(0.0014, 0.0022, l * 0.86, 0.0005, 1);
+  sink.pair(rib, 'wearBright', 'wearBright', mTrans(0.0028, h * 0.55, 0));
+  // Parting line where the cover meets the receiver: a genuine dark gap, so the cover
+  // reads as a separate part rather than as paint on the side of the upper.
+  const gap = plainBoxG(0.0026, 0.0011, l);
+  sink.pair(gap, 'bore', 'bore', mTrans(0.0013, h - 0.0004, 0));
+  const gap2 = plainBoxG(0.0026, 0.0011, l);
+  sink.pair(gap2, 'bore', 'bore', mTrans(0.0013, 0.0004, 0));
 }
 
 function buildTrigger(sink, b) {
   const g = b.grip;
   const z = g.z + 0.0165;
   const y = b.lower.yTop - 0.0125;
-  const sec = rectSection(0.0058, 0.0034, 0.0012, 2);
+  // Thick enough to survive 720p: a 2 px dark line is not a trigger.
+  const sec = rectSection(0.0072, 0.0042, 0.0014, 2);
   const path = [];
-  for (let i = 0; i <= 6; i++) {
-    const t = i / 6;
-    path.push([0, y - 0.019 * t, z + 0.0052 * Math.sin(t * 2.2) - 0.0015 * t]);
+  for (let i = 0; i <= 7; i++) {
+    const t = i / 7;
+    path.push([0, y - 0.0205 * t, z + 0.0062 * Math.sin(t * 2.2) - 0.0015 * t]);
   }
-  sink.pair(sweepG(sec, path, { up: [1, 0, 0] }), 'steelDark', 'steelBright');
-  // Trigger shoe serrations.
-  for (let i = 0; i < 4; i++) {
-    const s = plainBoxG(0.0056, 0.0009, 0.0011);
-    sink.pair(s, 'steelBright', 'steelBright', mTrans(0, y - 0.0075 - i * 0.0034, z + 0.0048));
+  sink.pair(sweepG(sec, path, { up: [1, 0, 0] }), 'steelDark', 'wearBright');
+  // Trigger shoe serrations — polished by a finger.
+  for (let i = 0; i < 5; i++) {
+    const s = plainBoxG(0.0068, 0.0011, 0.0013);
+    sink.pair(s, 'wearBright', 'wearBright', mTrans(0, y - 0.0068 - i * 0.0034, z + 0.0056));
   }
 }
 
@@ -2421,24 +2682,31 @@ function buildSelector(sink, b) {
       { capEnd: true }
     );
     sink.pair(boss, 'anodised', 'anodisedEdge', mCompose([s * (L.halfW - 0.0006), y, z], new THREE.Euler(0, s * Math.PI * 0.5, 0)));
-    const lever = boxG(0.0055, 0.0225, 0.0072, 0.0014, 1);
-    sink.pair(lever, 'phosphate', 'phosphateEdge', mCompose(
-      [s * (L.halfW + 0.0035), y - 0.008, z],
+    // A thumb rides this every time the weapon comes up: worn bright on the edges.
+    const lever = boxG(0.0058, 0.0235, 0.0078, 0.0016, 2);
+    sink.pair(lever, 'phosphate', 'wearBright', mCompose(
+      [s * (L.halfW + 0.0037), y - 0.0085, z],
       new THREE.Euler(0, 0, 0)
     ));
+    const detent = plainBoxG(0.0062, 0.0022, 0.0026);
+    sink.pair(detent, 'wearBright', 'wearBright', mTrans(s * (L.halfW + 0.0055), y - 0.016, z));
   }
 }
 
 function buildBoltCatch(sink, b) {
   const L = b.lower;
   const z = b.magwell.z1 + 0.012;
-  const paddle = boxG(0.005, 0.011, 0.026, 0.0014, 1);
-  sink.pair(paddle, 'phosphate', 'phosphateEdge', mCompose(
-    [-(L.halfW + 0.0018), L.yTop - 0.0065, z],
+  const paddle = boxG(0.0055, 0.0118, 0.027, 0.0016, 2);
+  sink.pair(paddle, 'phosphate', 'wearBright', mCompose(
+    [-(L.halfW + 0.002), L.yTop - 0.0065, z],
     new THREE.Euler(0, 0, 0.1)
   ));
-  const upper = boxG(0.005, 0.0085, 0.009, 0.0012, 1);
-  sink.pair(upper, 'phosphate', 'phosphateEdge', mTrans(-(L.halfW + 0.0018), L.yTop - 0.0025, z + 0.019));
+  for (let i = 0; i < 4; i++) {
+    const rib = plainBoxG(0.0058, 0.0016, 0.0018);
+    sink.pair(rib, 'wearBright', 'wearBright', mTrans(-(L.halfW + 0.0046), L.yTop - 0.0065, z - 0.008 + i * 0.0053));
+  }
+  const upper = boxG(0.0055, 0.009, 0.0095, 0.0014, 2);
+  sink.pair(upper, 'phosphate', 'wearBright', mTrans(-(L.halfW + 0.002), L.yTop - 0.0025, z + 0.019));
 }
 
 /* -------------------------------- magazine -------------------------------- */
@@ -2472,53 +2740,73 @@ function buildMagazine(group, followerNode, b, mats) {
   for (let i = 0; i <= n; i++) scales.push(1 - 0.02 * (i / n));
   sink.pair(sweepG(sec, path, { up: [0, 0, 1], scales }), 'polymer', 'polymerEdge');
 
-  // Feed lips.
-  const lips = boxG(M.w * 1.02, 0.009, M.d * 1.04, 0.0018, 2);
-  sink.pair(lips, 'anodised', 'anodisedEdge', mTrans(0, M.yTop + 0.0035, M.z));
-  // Baseplate.
-  const last = path[path.length - 1];
-  const bp = boxG(M.w * 1.14, 0.0105, M.d * 1.18, 0.0026, 2);
-  sink.pair(bp, 'polymer', 'polymerEdge', mCompose([0, last[1] - 0.003, last[2]], new THREE.Euler(M.len / R, 0, 0)));
-  const bpGrip = boxG(M.w * 1.02, 0.005, M.d * 0.5, 0.0015, 1);
-  sink.pair(bpGrip, 'rubber', 'rubber', mCompose([0, last[1] - 0.01, last[2]], new THREE.Euler(M.len / R, 0, 0)));
+  // Feed lips: steel, and proud of the body, because that is the part the magwell
+  // actually indexes on.
+  const lips = boxG(M.w * 1.03, 0.0105, M.d * 1.05, 0.002, 2);
+  sink.pair(lips, 'steelDark', 'wearBright', mTrans(0, M.yTop + 0.004, M.z));
 
-  // Witness holes: a recessed dark port with a bright rim, one per round count.
-  for (let i = 0; i < (M.witness || 4); i++) {
-    const t = 0.24 + (i / Math.max(1, M.witness - 1)) * 0.56;
+  /* Floorplate: a separate part with a real parting line and a finger ledge, not a
+   * slab merged into the body. The parting line is what sells it as removable. */
+  const last = path[path.length - 1];
+  const tilt = new THREE.Euler(M.len / R, 0, 0);
+  const parting = plainBoxG(M.w * 1.16, 0.0016, M.d * 1.2);
+  sink.pair(parting, 'bore', 'bore', mCompose([0, last[1] + 0.0035, last[2]], tilt));
+  const bp = boxG(M.w * 1.18, 0.0115, M.d * 1.2, 0.0028, 2);
+  sink.pair(bp, 'polymer', 'polymerEdge', mCompose([0, last[1] - 0.0035, last[2]], tilt));
+  // Front lip you hook a finger under to strip the plate off.
+  const ledge = boxG(M.w * 1.2, 0.006, 0.008, 0.002, 2);
+  sink.pair(ledge, 'polymerEdge', 'polymerEdge', mCompose(
+    [0, last[1] - 0.0075, last[2] - M.d * 0.56],
+    tilt
+  ));
+  const bpGrip = boxG(M.w * 1.04, 0.0045, M.d * 0.56, 0.0014, 1);
+  sink.pair(bpGrip, 'rubber', 'rubber', mCompose([0, last[1] - 0.0105, last[2]], tilt));
+
+  /* Witness holes: real rectangular windows with a raised, chamfered surround. Round
+   * 2.8 mm pinpricks vanish at 720p; the surround is what makes them read. */
+  const wCount = M.witness || 4;
+  for (let i = 0; i < wCount; i++) {
+    const t = 0.22 + (i / Math.max(1, wCount - 1)) * 0.58;
     const idx = Math.min(n, Math.round(t * n));
     const p = path[idx];
     for (const s of [1, -1]) {
-      const hole = latheG(
-        [
-          [0.0028, 0, 'hard'],
-          [0.0028, 0.0016],
-        ],
-        10,
-        { capEnd: true }
-      );
-      sink.pair(hole, 'bore', 'bore', mCompose(
-        [s * (M.w * 0.5 - 0.0012), p[1], p[2]],
-        new THREE.Euler(0, s * Math.PI * 0.5, 0)
+      // Raised boss around the window.
+      const boss = boxG(0.0125, 0.0088, 0.0022, 0.0009, 1);
+      sink.pair(boss, 'polymerEdge', 'polymerEdge', mCompose(
+        [s * (M.w * 0.5 + 0.0004), p[1], p[2]],
+        new THREE.Euler(0, 0, 0)
       ));
-      const rim = latheG(
-        [
-          [0.0034, -0.0004, 'hard'],
-          [0.0038, 0.0002, 'hard edge'],
-        ],
-        10
-      );
-      sink.pair(rim, 'polymerEdge', 'polymerEdge', mCompose(
-        [s * (M.w * 0.5 - 0.0004), p[1], p[2]],
-        new THREE.Euler(0, s * Math.PI * 0.5, 0)
-      ));
+      // The window itself: mouth proud of the boss face, outer face omitted, so the
+      // camera looks straight into a dark interior instead of at the front of a bump.
+      const win = plainBoxG(0.0042, 0.0056, 0.0096, { [s > 0 ? '+x' : '-x']: true });
+      sink.pair(win, 'bore', 'bore', mTrans(s * (M.w * 0.5 + 0.0009), p[1], p[2]));
     }
   }
-  // Longitudinal reinforcing ribs.
+  // Longitudinal reinforcing ribs down both flanks, plus a spine on the front.
   for (const s of [1, -1]) {
-    const rib = sweepG(rectSection(0.0022, 0.0016, 0.0005, 1), path.map((p) => [s * (M.w * 0.5 - 0.0006), p[1], p[2]]), {
+    const rib = sweepG(rectSection(0.0032, 0.0024, 0.0007, 1), path.map((p) => [s * (M.w * 0.5 - 0.0004), p[1], p[2]]), {
       up: [0, 0, 1],
     });
     sink.pair(rib, 'polymerEdge', 'polymerEdge');
+  }
+  {
+    const spine = sweepG(
+      rectSection(0.0026, 0.0022, 0.0006, 1),
+      path.map((p) => [0, p[1], p[2] - M.d * 0.5]),
+      { up: [1, 0, 0] }
+    );
+    sink.pair(spine, 'polymerEdge', 'polymerEdge');
+  }
+  // Grip texture panels on the flanks, so the magazine is visibly a different
+  // substance from the aluminium above it.
+  for (const s of [1, -1]) {
+    const idx = Math.round(n * 0.62);
+    const p = path[idx];
+    const st = stippleG(M.len * 0.3, M.d * 0.62, 4, 10, 0.0042, 0.0009);
+    sink.add('polymerEdge', st, mCompose(
+      [s * (M.w * 0.5 - 0.0002), p[1], p[2]],
+      new THREE.Euler(M.len / R * 0.6, s * Math.PI * 0.5, Math.PI * 0.5)
+    ));
   }
 
   for (const m of sink.meshes(mats, 'mag')) group.add(m);
@@ -2676,22 +2964,32 @@ export function buildRedDot(ctx, mats, o = {}) {
   sink.pair(cap, 'anodised', 'anodisedEdge', mCompose([-tubeR * 0.93, axisY, -0.004], new THREE.Euler(0, -Math.PI * 0.5, 0)));
 
   for (const m of sink.meshes(mats, 'reddot')) group.add(m);
+  bakeTree(group, { cell: 0.0022, maxDist: 0.018 });
 
-  /* glass */
+  /* glass — optically FLAT.
+   * A reflex sight is a window, not a lens: the sight picture is 1:1 with the world,
+   * dead sharp, with the AR coating showing only as a blue-purple bloom at the rim. A
+   * bulged, double-sided element displaces and doubles the background through the tube
+   * and instantly reads as a glass marble instead of a coated window. */
   const gmat = mats._optics.glass.clone();
   gmat.uniforms = THREE.UniformsUtils.clone(mats._optics.glass.uniforms);
   gmat.uniforms.uRadius.value = glassR;
-  gmat.uniforms.uTint.value.setRGB(0.1, 0.34, 0.3);
-  const front = new THREE.Mesh(lensG(glassR, 0.0016, -1, 4, 26), gmat);
-  front.position.set(0, axisY, zF + 0.005);
+  gmat.uniforms.uTint.value.setRGB(0.07, 0.26, 0.44);
+  gmat.uniforms.uBase.value = 0.018;
+  gmat.uniforms.uFresnel.value = 0.72;
+  gmat.side = THREE.FrontSide;
+  const front = new THREE.Mesh(discG(glassR, 0, 1, 30), gmat);
+  front.position.set(0, axisY, zF + 0.0052);
   front.renderOrder = 10; // far -> near: front element, reticle, ocular element
   front.frustumCulled = false;
   group.add(front);
   const rearMat = gmat.clone();
   rearMat.uniforms = THREE.UniformsUtils.clone(gmat.uniforms);
-  rearMat.uniforms.uBase.value = 0.028;
-  rearMat.uniforms.uFresnel.value = 0.5;
-  const rear = new THREE.Mesh(lensG(glassR, 0.0008, 1, 3, 26), rearMat);
+  rearMat.uniforms.uBase.value = 0.011;
+  rearMat.uniforms.uFresnel.value = 0.42;
+  rearMat.uniforms.uTint.value.setRGB(0.16, 0.1, 0.3);
+  rearMat.side = THREE.FrontSide;
+  const rear = new THREE.Mesh(discG(glassR, 0, 1, 30), rearMat);
   rear.position.set(0, axisY, zB - 0.005);
   rear.renderOrder = 12;
   rear.frustumCulled = false;
@@ -2700,9 +2998,11 @@ export function buildRedDot(ctx, mats, o = {}) {
   /* reticle */
   const rmat = mats._optics.reticle.clone();
   rmat.uniforms = THREE.UniformsUtils.clone(mats._optics.reticle.uniforms);
-  rmat.uniforms.uSize.value = o.dotMoa ? o.dotMoa * 0.0016 : 0.0028;
-  rmat.uniforms.uRing.value = o.ring ? 3.6 : 0;
-  rmat.uniforms.uColor.value.setRGB(1.0, 0.09, 0.03);
+  // A 2 MOA dot is a hard, tiny, blown-out core with a tight bloom — not a soft smear.
+  rmat.uniforms.uSize.value = (o.dotMoa ?? 2) * 0.00092;
+  rmat.uniforms.uRing.value = o.ring ? 5.4 : 0;
+  rmat.uniforms.uIntensity.value = 9.0;
+  rmat.uniforms.uColor.value.setRGB(1.0, 0.055, 0.015);
   const quad = new THREE.PlaneGeometry(glassR * 1.9, glassR * 1.9);
   const reticle = new THREE.Mesh(quad, rmat);
   reticle.frustumCulled = false;
@@ -2723,9 +3023,11 @@ export function buildRedDot(ctx, mats, o = {}) {
     axisY,
     glassR,
     planeZ: zF + 0.012,
-    // Apparent angular size of the dot core. A true 2 MOA dot is sub-pixel at any
-    // sane render resolution; this is the size a real one *reads* as, glow included.
-    dotRad: o.dotRad ?? (o.ring ? 0.0058 : 0.0042),
+    // Apparent angular size of the dot core. A true 2 MOA dot is 0.6 mrad — sub-pixel
+    // at any sane render resolution — but a camera blooms it, so this is the size a
+    // real one *reads* as. It was nearly twice this, which put a 14 px pink smear over
+    // the target instead of an aiming point.
+    dotRad: o.dotRad ?? (o.ring ? 0.0038 : 0.0026),
     zoom: 1.0,
     height: axisY,
   };
@@ -2864,6 +3166,7 @@ export function buildScope(ctx, mats, o = {}) {
   );
 
   for (const m of sink.meshes(mats, 'scope')) group.add(m);
+  bakeTree(group, { cell: 0.0024, maxDist: 0.02 });
 
   const imgMat = mats._optics.scope.clone();
   imgMat.uniforms = THREE.UniformsUtils.clone(mats._optics.scope.uniforms);
@@ -2949,6 +3252,7 @@ export function buildIrons(ctx, mats, o = {}) {
   const post = boxG(0.0022, h * 0.82, 0.0026, 0.0005, 1);
   sink.pair(post, 'steelBright', 'steelBright', mTrans(0, h * 0.44, -0.145));
   for (const m of sink.meshes(mats, 'irons')) group.add(m);
+  bakeTree(group, { cell: 0.0018, maxDist: 0.014 });
   const sight = new THREE.Object3D();
   sight.position.set(0, h - 0.006, 0.028);
   group.add(sight);
@@ -3083,6 +3387,7 @@ export function buildMuzzleDevice(ctx, mats, spec = {}) {
     }
   }
   for (const m of sink.meshes(mats, 'muzzle')) group.add(m);
+  bakeTree(group, { cell: 0.0018, maxDist: 0.014 });
   const tip = new THREE.Object3D();
   tip.position.set(0, 0, -(style === 'suppressor' ? spec.len ?? 0.16 : len) - 0.004);
   group.add(tip);
@@ -3140,6 +3445,7 @@ export function buildForegrip(ctx, mats, spec = {}) {
     sink.pair(clampBlk, 'polymer', 'polymerEdge', mTrans(0, 0.0032, 0));
   }
   for (const m of sink.meshes(mats, 'foregrip')) group.add(m);
+  bakeTree(group, { cell: 0.0022, maxDist: 0.018 });
   return { group };
 }
 
@@ -3182,7 +3488,9 @@ function buildHand(mats, side, o = {}) {
   const knuckleM = worldRelativeTo(knuckleNode, root);
   const dist = boxG(palmW * 0.97, distL, palmT * 0.9, 0.01, 2);
   sink.pair(dist, 'glove', 'glove', new THREE.Matrix4().multiplyMatrices(knuckleM, mTrans(0, distL * 0.5, 0)));
-  // Knuckle pad on the back of the hand.
+  // Knuckle pad on the back of the hand, and the four knuckles under it. Without the
+  // bumps the back of a closed hand is one smooth slab, which is most of why it reads
+  // as a mitten rather than a fist.
   const backPad = boxG(palmW * 0.86, distL * 0.92, 0.006, 0.0035, 2);
   sink.pair(
     backPad,
@@ -3190,14 +3498,44 @@ function buildHand(mats, side, o = {}) {
     'glovePad',
     new THREE.Matrix4().multiplyMatrices(knuckleM, mTrans(0, distL * 0.52, palmT * 0.45))
   );
+  for (let k = 0; k < 4; k++) {
+    const kx = (-0.0295 + k * 0.0196) * s;
+    const kr = 0.0092 - Math.abs(k - 1.4) * 0.0009;
+    const knob = latheG(
+      [
+        [kr * 0.55, -0.004, 'hard'],
+        [kr * 0.92, -0.001],
+        [kr, 0.003],
+        [kr * 0.86, 0.006],
+        [kr * 0.5, 0.0082, 'hard'],
+      ],
+      10,
+      { capEnd: true }
+    );
+    sink.pair(
+      knob,
+      'glove',
+      'glove',
+      new THREE.Matrix4().multiplyMatrices(
+        knuckleM,
+        mCompose([kx, distL * 0.86, palmT * 0.34], new THREE.Euler(-0.4, 0, 0))
+      )
+    );
+  }
   // Cuff.
+  // Cuff. It has to taper *into* the forearm: at 33 mm radius against a 26 mm sleeve
+  // it read as a wheel bolted to the wrist.
   const cuff = latheG(
     [
-      [0.031, -0.004, 'hard'],
-      [0.0335, -0.016, 'hard edge'],
-      [0.0322, -0.03],
+      [0.0262, -0.002, 'hard'],
+      [0.0288, -0.012, 'hard edge'],
+      [0.0284, -0.024],
+      [0.0266, -0.03, 'hard edge'],
     ],
-    16
+    16,
+    // Capped: the forearm is aimed independently (the wrist bends), so an open cuff
+    // tube let the camera see straight through the hand.
+    { capEnd: true }
   );
   sink.pair(cuff, 'glovePad', 'glovePad', mCompose([0, 0, 0], new THREE.Euler(-Math.PI * 0.5, 0, 0), [1, 0.78, 1]));
 
@@ -3250,22 +3588,30 @@ function buildHand(mats, side, o = {}) {
     return joints;
   };
 
-  const curl = o.curl ?? [1.05, 1.15, 0.75];
-  const idxCurl = o.indexCurl ?? curl;
+  /* Curls. When a wrap target is given every finger is solved from *its own*
+   * phalanx lengths — the middle finger is 5 mm longer than the index, so reusing one
+   * curl triple over-closes it and drives the tip straight through whatever is being
+   * held. A small per-finger stagger keeps the row from closing in lockstep, which is
+   * most of what stops a closed hand looking like a moulded mitten. */
+  const wrap = o.wrap || null;
+  const curlFor = (f, i) =>
+    wrap
+      ? wrapCurls(wrap.R, f.len, (wrap.tighten ?? 1) * (1 - 0.02 * i), wrap.bend ?? 0)
+      : [
+          (o.curl ?? [1.05, 1.15, 0.75])[0] * (1 + 0.03 * i),
+          (o.curl ?? [1.05, 1.15, 0.75])[1] * (1 + 0.02 * i),
+          (o.curl ?? [1.05, 1.15, 0.75])[2],
+        ];
   const holder = knuckleNode;
 
-  const indexJoints = makeFinger(FINGERS[0], idxCurl, holder, true);
-  for (let i = 1; i < 4; i++) {
-    // Fingers do not close in lockstep; the far ones lead by a few degrees, which is
-    // most of what stops a closed hand looking like a moulded mitten.
-    const c = [curl[0] * (1 + 0.045 * i), curl[1] * (1 + 0.03 * i), curl[2] * (1 + 0.02 * i)];
-    makeFinger(FINGERS[i], c, holder, false);
-  }
+  const indexJoints = makeFinger(FINGERS[0], o.indexCurl ?? curlFor(FINGERS[0], 0), holder, true);
+  for (let i = 1; i < 4; i++) makeFinger(FINGERS[i], curlFor(FINGERS[i], i), holder, false);
 
   // Thumb: two phalanges, rotated out of the palm plane.
   {
     const tn = new THREE.Group();
-    tn.position.set(-s * 0.036, 0.033, 0.006);
+    const tb = o.thumbBase ?? [0.036, 0.033, 0.006];
+    tn.position.set(-s * tb[0], tb[1], tb[2]);
     tn.rotation.set(-(o.thumb?.[0] ?? 0.35), s * (o.thumbYaw ?? 0.55), s * (o.thumbRoll ?? -0.55));
     root.add(tn);
     let cur = tn;
@@ -3318,11 +3664,11 @@ function buildForearm(mats, side) {
   sink.pair(
     latheG(
       [
-        [0.0235, 0.002, 'hard'],
-        [0.0272, -0.024],
-        [0.0355, -0.072],
-        [0.0412, -0.14],
-        [0.0402, -0.18, 'hard'],
+        [0.0262, 0.002, 'hard'],
+        [0.0288, -0.024],
+        [0.0352, -0.072],
+        [0.0404, -0.14],
+        [0.0396, -0.18, 'hard'],
       ],
       16,
       { capEnd: true }
@@ -3335,10 +3681,10 @@ function buildForearm(mats, side) {
   sink.pair(
     latheG(
       [
-        [0.0255, 0.004, 'hard'],
-        [0.0296, -0.008, 'hard edge'],
-        [0.0302, -0.03],
-        [0.0282, -0.04, 'hard edge'],
+          [0.0272, 0.004, 'hard'],
+        [0.0298, -0.008, 'hard edge'],
+        [0.0304, -0.03],
+        [0.0288, -0.04, 'hard edge'],
       ],
       16
     ),
@@ -3367,10 +3713,67 @@ function buildForearm(mats, side) {
   return g;
 }
 
+/** Radius of a finger's proximal phalanx — the offset a wrap rides at. */
+const FINGER_R = 0.0098;
+
 /**
- * Both arms, already oriented onto the weapon: the firing hand wraps the pistol
- * grip with the trigger finger indexed along the receiver, the support hand takes
- * the handguard from underneath with the thumb over the top.
+ * Close a finger chain around a cylinder so the phalanges become *chords of the contact
+ * circle*.
+ *
+ * Each joint turns by half the arc of the segment before it plus half the arc of the
+ * one after, which is the only way the chain tracks the surface instead of spiralling
+ * into it. A single hand-tuned curl triple cannot do this — it has to be re-solved for
+ * every diameter, which is why one authored pose looked plausible on the pistol grip
+ * and passed straight through the handguard.
+ *
+ * @param {number} R radius of the circle the finger *centrelines* follow
+ */
+function wrapCurls(R, lens, tighten = 1.0, bend = 0) {
+  const d = 2 * Math.max(0.012, R);
+  return [
+    // The metacarpal arch (`palmBend`) has already turned the knuckle block, so it
+    // pays for part of the first chord. Charging the full half-arc again on top of it
+    // is what drove the fingertips straight through the middle of the handguard.
+    clamp((lens[0] / d) * tighten - bend, 0.05, 1.45),
+    clamp(((lens[0] + lens[1]) / d) * tighten, 0.12, 1.55),
+    clamp(((lens[1] + lens[2]) / d) * tighten, 0.1, 1.4),
+  ];
+}
+
+/**
+ * Seat a hand on a cylinder.
+ *
+ * `axis` is a point on the held cylinder's centre line, `u` the radial direction the
+ * hand presses from, `t` the tangential direction the fingers travel as they close.
+ * The knuckle row lands exactly one finger-radius off the surface, which is where the
+ * wrap solved by `wrapCurls` has to begin. The old code offset the wrist by a fixed
+ * 46.5 mm whatever it was holding, which guaranteed a gap between fingertips and gun.
+ *
+ * The centre of the palm still floats about a centimetre clear, and that is correct:
+ * on a 48 mm tube only the finger pads and the thenar pad touch, and the thenar block
+ * is modelled proud enough to reach.
+ */
+function seatHand(node, hand, axis, u, t, seatR, slide = 0) {
+  const U = new THREE.Vector3().fromArray(u).normalize();
+  const T = new THREE.Vector3().fromArray(t).normalize();
+  T.sub(U.clone().multiplyScalar(T.dot(U))).normalize();
+  const X = new THREE.Vector3().crossVectors(T, U);
+  node.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(X, T, U));
+  const [kY, kZ] = hand.knuckle;
+  // knuckle = origin + T*kY + U*kZ, and it must land at axis + U*seatR.
+  node.position.set(
+    axis[0] + U.x * (seatR - kZ) - T.x * kY + X.x * slide,
+    axis[1] + U.y * (seatR - kZ) - T.y * kY + X.y * slide,
+    axis[2] + U.z * (seatR - kZ) - T.z * kY + X.z * slide
+  );
+  return node;
+}
+
+/**
+ * Both arms, seated on the weapon by an analytic contact solve: the firing hand wraps
+ * the pistol grip with the trigger finger indexed along the receiver, the support hand
+ * takes the handguard from the lower left with the fingers closing under it and up the
+ * far side and the thumb riding forward along the top.
  */
 export function buildArms(ctx, mats, def) {
   const b = def.build;
@@ -3378,45 +3781,53 @@ export function buildArms(ctx, mats, def) {
   const out = {};
 
   /* --- right (firing) hand -------------------------------------------------
-   * The web of the hand sits on the backstrap and the knuckles come round to the
-   * front strap, so wrist -> knuckles runs forward and a little up, and the back of
-   * the hand faces out to the right. The index finger and thumb are on the −X side
-   * of the hand's own frame, which lands them on top — where they belong.
+   * The grip is treated as a cylinder about its own axis. The web of the hand sits on
+   * the backstrap, the palm takes the right flank, and the fingers close forward
+   * around the front strap.
    */
+  // The grip section is a rounded rectangle, so the flank the palm sits on and the
+  // effective radius the fingers travel round are two different numbers.
+  const gripSideR = g.w * 0.5;
+  const gripWrapR = (g.w * 0.5 + g.d * 0.5) * 0.5;
+  // Perpendicular to the grip axis, pointing up and rearward: the backstrap normal.
+  const gripRear = new THREE.Vector3(0, Math.sin(g.angle), Math.cos(g.angle));
   const rRig = new THREE.Group();
   rRig.name = 'rig:right';
+  const rBend = 0.62;
   const right = buildHand(mats, 'right', {
-    curl: [1.3, 1.46, 0.8],
+    wrap: { R: gripWrapR + FINGER_R, tighten: 1.06, bend: rBend },
     indexCurl: [0.12, 0.06, 0.04],
-    thumb: [0.46, 0.66, 0.5],
-    thumbYaw: 0.58,
-    thumbRoll: -0.46,
+    thumb: [0.5, 0.72, 0.46],
+    thumbYaw: 0.5,
+    thumbRoll: -0.5,
+    squash: 0.2,
+    palmBend: rBend,
   });
   const rHand = new THREE.Group();
   rHand.add(right.root);
-  // wrist -> knuckles runs forward and down along the grip; the back of the hand
-  // faces out to the right, which puts the index and thumb on top.
-  const rFinger = [-0.15, -0.45, -0.88];
-  orientTo(rHand, [0.9, 0.3, -0.3], rFinger);
-  // Palm on the rear-right of the grip, a third of the way down.
-  const gt = 0.3;
-  const palmR = [
-    g.w * 0.5 + 0.011,
-    g.y - Math.cos(g.angle) * g.len * gt + Math.sin(g.angle) * (g.d * 0.45),
-    g.z + Math.sin(g.angle) * g.len * gt + Math.cos(g.angle) * (g.d * 0.45),
+  const gt = 0.34;
+  const gripPt = [
+    0,
+    g.y - Math.cos(g.angle) * g.len * gt,
+    g.z + Math.sin(g.angle) * g.len * gt,
   ];
-  rHand.position.set(
-    palmR[0] - 0.0465 * rFinger[0],
-    palmR[1] - 0.0465 * rFinger[1],
-    palmR[2] - 0.0465 * rFinger[2]
+  seatHand(
+    rHand,
+    right,
+    gripPt,
+    [1, 0, 0], // palm presses in from the right flank
+    [-gripRear.x, -gripRear.y, -gripRear.z], // fingers close toward the front strap
+    gripSideR + FINGER_R,
+    0.004
   );
   rRig.add(rHand);
   const rArm = buildForearm(mats, 'right');
-  const rDir = [0.34, -0.68, 0.65];
+  const rDir = [0.26, -0.76, 0.6];
+  // Start it inside the cuff so wrist and sleeve are one continuous limb.
   rArm.position.set(
-    rHand.position.x + rDir[0] * 0.024,
-    rHand.position.y + rDir[1] * 0.024,
-    rHand.position.z + rDir[2] * 0.024
+    rHand.position.x + rDir[0] * 0.012 + 0.012,
+    rHand.position.y + rDir[1] * 0.012 - 0.008,
+    rHand.position.z + rDir[2] * 0.012
   );
   aimNode(rArm, rDir);
   rRig.add(rArm);
@@ -3424,45 +3835,59 @@ export function buildArms(ctx, mats, def) {
   out.rightRig = rRig;
 
   /* --- left (support) hand -------------------------------------------------
-   * C-clamp from underneath: the palm takes the lower-left of the handguard, the
-   * fingers wrap over the bottom and up the right side, the thumb rides forward
-   * along the top.
+   * The handguard is a genuine cylinder of known radius, so the wrap is solved rather
+   * than guessed: palm on the lower left at 215°, fingers travelling anticlockwise
+   * under the tube and up the far side.
    */
+  const hgR = b.handguard.r;
+  /* Clock angle of the palm on the handguard. The wrist ends up one palm-length back
+   * along the finger-travel direction, so this single number decides where the whole
+   * forearm comes from: at 215° the wrist landed 47 mm *above* the bore and the cuff
+   * sat on top of the handguard like a drum. Underneath and just left of bottom puts
+   * the wrist below and to the left, where a support arm actually is, and sends the
+   * fingers up the near side where they can be seen making contact. */
+  const phi = 268 * (Math.PI / 180);
+  const uL = [Math.cos(phi), Math.sin(phi), 0];
+  const tL = [-Math.sin(phi), Math.cos(phi), 0];
   const lRig = new THREE.Group();
   lRig.name = 'rig:left';
+  const lBend = 0.5;
   const left = buildHand(mats, 'left', {
-    curl: [1.14, 1.34, 0.86],
-    indexCurl: [1.06, 1.3, 0.82],
-    thumb: [0.34, 0.42, 0.26],
-    thumbYaw: 0.78,
-    thumbRoll: -0.24,
+    // Under 1.0 on purpose: the middle and ring fingers are the longest, so at a full
+    // wrap they carry 165° of arc and their tips come over the top of the handguard
+    // into the sight picture. This stops the row on the far flank.
+    wrap: { R: hgR + FINGER_R, tighten: 0.84, bend: lBend },
+    // Thumb forward: rolled 90° out of the finger plane so it runs down the side of
+    // the handguard toward the muzzle instead of curling into it. That is the shape a
+    // thumb-forward support grip actually makes, and it reads at a glance.
+    thumb: [0.14, 0.18, 0.1],
+    thumbYaw: 0.1,
+    thumbRoll: 1.5,
+    // Forward along the tube and tucked *up* against it. Sitting it out on the far
+    // side of the wrist left it hanging in mid-air beside the handguard.
+    thumbBase: [0.03, 0.02, -0.011],
+    squash: 0.24,
+    palmBend: lBend,
   });
   const lHand = new THREE.Group();
   lHand.add(left.root);
-  // Palm on the lower-left of the handguard, fingers running down and across so the
-  // curl carries them under the tube and up the far side; index and thumb forward.
-  const lFinger = [0.58, -0.77, -0.3];
-  orientTo(lHand, [-0.8, -0.6, 0.0], lFinger);
-  const hz = b.handguard.z0 * 0.55 + b.handguard.z1 * 0.45;
-  const rad = b.handguard.r + 0.016;
-  const palmC = [-0.8 * rad, -0.6 * rad, hz];
-  lHand.position.set(
-    palmC[0] - 0.0465 * lFinger[0],
-    palmC[1] - 0.0465 * lFinger[1],
-    palmC[2] - 0.0465 * lFinger[2]
-  );
+  const hz = b.handguard.z0 * 0.5 + b.handguard.z1 * 0.5;
+  seatHand(lHand, left, [0, 0, hz], uL, tL, hgR + FINGER_R, 0.006);
   lRig.add(lHand);
   const lArm = buildForearm(mats, 'left');
-  const lDir = [-0.46, -0.83, 0.32];
+  const lDir = [-0.34, -0.9, 0.27];
   lArm.position.set(
-    lHand.position.x + lDir[0] * 0.024,
-    lHand.position.y + lDir[1] * 0.024,
-    lHand.position.z + lDir[2] * 0.024
+    lHand.position.x + lDir[0] * 0.012 - 0.006,
+    lHand.position.y + lDir[1] * 0.012 - 0.004,
+    lHand.position.z + lDir[2] * 0.012
   );
   aimNode(lArm, lDir);
   lRig.add(lArm);
   out.left = left;
   out.leftRig = lRig;
+
+  bakeTree(rRig, { cell: 0.0035, maxDist: 0.03, amount: 1 });
+  bakeTree(lRig, { cell: 0.0035, maxDist: 0.03, amount: 1 });
 
   return out;
 }
@@ -3471,20 +3896,6 @@ export function buildArms(ctx, mats, def) {
 function aimNode(node, dir) {
   const d = new THREE.Vector3().fromArray(dir).normalize();
   node.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), d);
-  return node;
-}
-
-/**
- * Orient a hand: local +Z becomes `back` (the back of the hand) and local +Y becomes
- * `finger` (wrist -> knuckles), orthogonalised against it.
- */
-function orientTo(node, back, finger) {
-  const z = new THREE.Vector3().fromArray(back).normalize();
-  const y = new THREE.Vector3().fromArray(finger);
-  y.sub(z.clone().multiplyScalar(y.dot(z))).normalize();
-  const x = new THREE.Vector3().crossVectors(y, z).normalize();
-  const m = new THREE.Matrix4().makeBasis(x, y, z);
-  node.quaternion.setFromRotationMatrix(m);
   return node;
 }
 
@@ -3510,6 +3921,9 @@ export function makeBrassPool(ctx, mats, n = 10, calibre = 0.0057) {
       { capStart: true, capEnd: true }
     ).main,
   ]);
+  if (g && !g.attributes.color) {
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 3), 3));
+  }
   const cases = [];
   for (let i = 0; i < n; i++) {
     const m = new THREE.Mesh(g, mats.brass);
@@ -3570,5 +3984,5 @@ export function makeMuzzleFlash(ctx, mats) {
   return { group, mat, jetMat, light, quads, jet };
 }
 
-export { G };
+export { G, bakeTree as bakeViewmodel };
 export default buildWeapon;

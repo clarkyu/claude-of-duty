@@ -34,6 +34,9 @@ export const CATALOG = {
   ac_unit_roof: { gen: (a, r, o) => street.acUnit(a, r, { ...o, wall: false }), kind: 'static' },
   bin: { gen: street.rubbishBin, kind: 'dynamic', mass: 24 },
   downpipe: { gen: street.downpipe, kind: 'attach' },
+  wall_conduit: { gen: street.wallConduit, kind: 'attach', lod: false },
+  wall_vent: { gen: street.wallVent, kind: 'attach', lod: false },
+  meter_box: { gen: street.meterBox, kind: 'attach', lod: false },
 
   /* ── conflict dressing ───────────────────────────────────────────────── */
   sandbag_wall: { gen: military.sandbagWall, kind: 'static' },

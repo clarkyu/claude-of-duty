@@ -75,6 +75,8 @@ export default function createHUD(ctx) {
   let fpsFrames = 0;
   let warned = false;
   let reseedT = 0;
+  let radarT = 0;
+  let seeded = false;
 
   const on = (name, fn) => {
     const off = ctx.bus?.on?.(name, (p) => {
@@ -97,6 +99,10 @@ export default function createHUD(ctx) {
     root = div('cod', host);
     if (reducedMotion()) root.classList.add('reduced');
     div('cod-scrim', root);
+    // One dark gradient down the top ~140 px, under the whole compass / score /
+    // mode stack. Without it the same 9–13 px white type has to survive a blown
+    // sky and a black interior on its own, and it loses both. See hud.css.
+    div('cod-topbar', root);
 
     C = {
       vitals: new Vitals(root, ctx),
@@ -131,13 +137,23 @@ export default function createHUD(ctx) {
   /* ----------------------------------------------------------------- wiring */
 
   function wire() {
+    // Before the match goes live the rules layer has nothing real to report, and
+    // in headless we are showing a seeded mid-match state instead. Letting the
+    // pre-match emissions through means two writers fighting over the same clock,
+    // which is precisely how one review set ended up with 7:08 in three frames and
+    // 0:02 in three others while the score climbed straight through.
+    const preLive = () => headless && ctx.game?.state !== 'live';
+
     on('hud:hitmarker', (p) => {
       if (!p) return;
       C.crosshair.hit(p);
       hitSound(p);
     });
 
-    on('hud:health', (p) => C.vitals.setHealth(p));
+    on('hud:health', (p) => {
+      if (preLive()) return;
+      C.vitals.setHealth(p);
+    });
 
     on('hud:damage', (p) => {
       if (!p) return;
@@ -160,9 +176,15 @@ export default function createHUD(ctx) {
       C.vitals.hit({ angle, amount: p.amount, lethal: p.lethal });
     });
 
-    on('hud:timer', (p) => C.status.setTimer(p));
+    on('hud:timer', (p) => {
+      if (preLive()) return;
+      C.status.setTimer(p);
+    });
     on('hud:mode', (p) => C.status.setMode(p));
-    on('hud:teamscore', (p) => C.status.setScore(p));
+    on('hud:teamscore', (p) => {
+      if (preLive()) return;
+      C.status.setScore(p);
+    });
     on('hud:objective', (p) => {
       C.status.setObjective(p);
       const marks = C.status.markers();
@@ -180,14 +202,29 @@ export default function createHUD(ctx) {
     on('hud:message', (p) => C.notices.bannerMsg(p));
     on('hud:countdown', (p) => C.notices.countdown(p));
 
-    on('hud:killstreak', (p) => C.streaks.setStreaks(p));
-    on('hud:equipment', (p) => C.streaks.setEquipment(p));
+    on('hud:killstreak', (p) => {
+      if (preLive()) return;
+      C.streaks.setStreaks(p);
+    });
+    on('hud:equipment', (p) => {
+      if (preLive()) return;
+      C.streaks.setEquipment(p);
+    });
 
     on('hud:radar', (p) => {
       const now = ctx.time?.elapsed ?? 0;
       if (p?.uav) uavUntil = now + 6;
       const list = Array.isArray(p?.contacts) ? p.contacts : [];
-      contacts = list.map((c) => ({ x: c.x, z: c.z, yaw: c.yaw, until: now + 5.2 }));
+      // A radar sweep replaces the radar's own contacts, not the gunfire and
+      // damage pings sitting alongside them.
+      contacts = contacts.filter(
+        (c) => c.until > now && !(typeof c.id === 'string' && c.id.startsWith('radar:'))
+      );
+      for (let i = 0; i < list.length; i++) {
+        const c = list[i];
+        contacts.push({ id: `radar:${i}`, x: c.x, z: c.z, yaw: c.yaw, until: now + 5.2 });
+      }
+      C.minimap.setContacts(contacts);
       C.minimap.setUav(!!p?.uav && !p?.jammed);
     });
 
@@ -198,7 +235,12 @@ export default function createHUD(ctx) {
     });
 
     on('game:state', ({ state } = {}) => {
-      if (state === 'live') C.notices.clear();
+      if (state !== 'live') return;
+      C.notices.clear();
+      // The seeded review state stops applying the moment the match is real; pull
+      // the rules layer's truth in the same frame so the header never shows one
+      // set of numbers next to the other's clock.
+      pullInitialState();
     });
 
     on('game:start', () => pullInitialState());
@@ -277,8 +319,14 @@ export default function createHUD(ctx) {
     }
   }
 
-  /** Landmarks give the compass something to say in modes with no flags. */
+  /**
+   * Landmark pips for the compass. Only ever used as a fallback in modes that
+   * genuinely have objectives and simply have not published them yet — a
+   * Deathmatch compass carrying M and F markers is inventing objectives for a
+   * mode that has none, and the player will spend the round looking for them.
+   */
   function poiMarkers() {
+    if (!ctx.game?.mode?.objective) return [];
     const pois = ctx.level?.pointsOfInterest;
     if (!Array.isArray(pois)) return [];
     const out = [];
@@ -297,11 +345,42 @@ export default function createHUD(ctx) {
     return out;
   }
 
-  function ping(x, z, seconds = 3) {
+  function ping(x, z, seconds = 3, id = null, yaw = 0) {
     const now = ctx.time?.elapsed ?? 0;
-    contacts.push({ x, z, yaw: 0, until: now + seconds });
+    if (id) {
+      for (const c of contacts) {
+        if (c.id !== id) continue;
+        c.x = x;
+        c.z = z;
+        c.yaw = yaw;
+        c.until = now + seconds;
+        C?.minimap?.setContacts(contacts);
+        return;
+      }
+    }
+    contacts.push({ id, x, z, yaw, until: now + seconds });
     if (contacts.length > 24) contacts.shift();
     C?.minimap?.setContacts(contacts);
+  }
+
+  /**
+   * Unsuppressed gunfire puts a contact on the minimap. Until now the only source
+   * of red blips was a live UAV, which is why a review set with a killfeed full of
+   * contact showed an empty radar in all eight frames: the map was technically
+   * correct and completely uninformative.
+   */
+  function scanGunfire() {
+    const g = ctx.game;
+    const me = g?.localPlayer;
+    const list = g?.players;
+    if (!me || !Array.isArray(list)) return;
+    const t = ctx.time?.elapsed ?? 0;
+    for (const r of list) {
+      if (!r || r === me || !r.alive || !r.position) continue;
+      if (g.hostile ? !g.hostile(r, me) : r.team === me.team) continue;
+      if (t - (r.lastFireTime ?? -1e9) > 1.8) continue;
+      ping(r.position.x, r.position.z, 2.6, `gun:${r.id}`, r.yaw || 0);
+    }
   }
 
   /**
@@ -312,6 +391,10 @@ export default function createHUD(ctx) {
   function pullInitialState() {
     const g = ctx.game;
     if (!g) return;
+    // `game:start` fires on the first frame after boot, long before the match is
+    // live. In headless that arrives after the review state has been seeded, and
+    // pulling zeros over the top of it is what made the clock jump.
+    const keepSeed = seeded && g.state !== 'live';
     try {
       if (g.mode) {
         C.status.setMode({
@@ -321,23 +404,27 @@ export default function createHUD(ctx) {
           scoreLimit: g.mode.scoreLimit,
         });
       }
-      if (g.score) C.status.setScore(g.score);
-      if (Number.isFinite(g.timeRemaining)) C.status.setTimer({ remaining: g.timeRemaining });
-      C.streaks.setScore(g.localPlayer?.score ?? 0);
-      const eq = g.loadouts?.equipment;
-      const slot = g.loadouts?.active;
-      if (eq) {
-        C.streaks.setEquipment({
-          lethal: eq.lethal, lethalMax: eq.lethalMax, lethalId: slot?.lethal,
-          tactical: eq.tactical, tacticalMax: eq.tacticalMax, tacticalId: slot?.tactical,
+      if (!keepSeed) {
+        if (g.score) C.status.setScore(g.score);
+        if (Number.isFinite(g.timeRemaining)) {
+          C.status.setTimer({ remaining: g.timeRemaining, running: g.state === 'live' });
+        }
+        C.streaks.setScore(g.localPlayer?.score ?? 0);
+        const eq = g.loadouts?.equipment;
+        const slot = g.loadouts?.active;
+        if (eq) {
+          C.streaks.setEquipment({
+            lethal: eq.lethal, lethalMax: eq.lethalMax, lethalId: slot?.lethal,
+            tactical: eq.tactical, tacticalMax: eq.tacticalMax, tacticalId: slot?.tactical,
+          });
+        }
+        C.vitals.setHealth({
+          fraction: (g.playerHealth ?? 100) / (g.playerMaxHealth || 100),
+          health: g.playerHealth ?? 100,
+          max: g.playerMaxHealth ?? 100,
+          alive: g.localPlayer?.alive !== false,
         });
       }
-      C.vitals.setHealth({
-        fraction: (g.playerHealth ?? 100) / (g.playerMaxHealth || 100),
-        health: g.playerHealth ?? 100,
-        max: g.playerMaxHealth ?? 100,
-        alive: g.localPlayer?.alive !== false,
-      });
       const obj = g.objectives?.hudPayload?.();
       if (obj) {
         C.status.setObjective(obj);
@@ -352,39 +439,99 @@ export default function createHUD(ctx) {
     }
   }
 
+  /* ─────────────────────────────────────────────── headless review state ── */
+
   /**
-   * Give the screenshot harness a HUD that reads as a match in progress. The review
-   * poses fire a fraction of a second after boot, when the real match is still in
-   * its warm-up countdown and every readout is zero; a 0-0 scoreline and a two-second
-   * clock is not what the interface is meant to be judged on. Headless only — the
-   * moment the real match goes live these stop being applied.
+   * Give the screenshot harness a HUD that reads as a match in progress. The whole
+   * review run is under a second of simulated time, so the real match is still in
+   * its warm-up hold and every readout is zero; a 0-0 scoreline is not what the
+   * interface is meant to be judged on.
+   *
+   * The rule is that this is seeded ONCE and then left alone to run. The previous
+   * version re-applied itself every half second, which pinned the clock to a
+   * constant while the score counters rolled — the same timer value at two
+   * different scores, in the same review set. Everything below is either set once
+   * or advanced by the same clock the rest of the HUD uses.
    */
-  function seedLive() {
+  const FEED_NAMES = [
+    'HAWTHORNE', 'DELACROIX', 'RASHID', 'KOWALSKI', 'VOLKOV', 'ORLOV',
+    'IVERSEN', 'MARCHETTI', 'DOYLE', 'TOURE', 'BRANDT', 'ROJAS',
+  ];
+  const FEED_WEAPONS = ['ar_wolverine', 'smg_viper', 'dmr_kestrel', 'lmg_bison', 'sniper_lance'];
+  let feedT = 0;
+
+  /** One deterministic killfeed row. `age` pre-ages it so seeds expire staggered. */
+  function fakeKill(age = 0) {
+    const r = () => (ctx.rng ? ctx.rng() : 0.5);
+    const team = ctx.game?.localPlayer?.team || 'A';
+    const foe = team === 'A' ? 'B' : 'A';
+    const aTeam = r() < 0.5 ? team : foe;
+    const vTeam = aTeam === team ? foe : team;
+    let a = FEED_NAMES[Math.floor(r() * FEED_NAMES.length) % FEED_NAMES.length];
+    let v = FEED_NAMES[Math.floor(r() * FEED_NAMES.length) % FEED_NAMES.length];
+    if (a === v) v = FEED_NAMES[(FEED_NAMES.indexOf(a) + 5) % FEED_NAMES.length];
+    return {
+      attacker: a,
+      victim: v,
+      weapon: FEED_WEAPONS[Math.floor(r() * FEED_WEAPONS.length) % FEED_WEAPONS.length],
+      attackerTeam: aTeam,
+      victimTeam: vTeam,
+      headshot: r() < 0.26,
+      longshot: r() < 0.16,
+      local: aTeam === team && r() < 0.22,
+      age,
+    };
+  }
+
+  function seed() {
     const limit = ctx.game?.mode?.scoreLimit || 75;
-    C.status.setScore({ A: Math.round(limit * 0.56), B: Math.round(limit * 0.49) });
-    C.status.setTimer({ remaining: 428 });
-    C.streaks.setScore(1250);
+    // Counters snap rather than roll: a review frame caught mid-roll reads as a
+    // different (and impossible) score for the same clock.
+    C.status.setScore({ A: Math.round(limit * 0.56), B: Math.round(limit * 0.49) }, true);
+    C.status.setTimer({ remaining: 428, running: true });
+    C.streaks.setScore(1250, true);
+    // Three in hand, which is the cap the rules layer actually enforces, stacked
+    // the way CoD stacks them rather than showing only the first. These numbers
+    // are the same ones GameMode.seedReviewMatch() produces when the match goes
+    // live, so nothing jumps at the handover.
     C.streaks.setStreaks({
-      available: [{ id: 'uav', name: 'UAV', icon: 'uav', key: '3' }],
-      streak: 3,
-      next: { id: 'strike', name: 'Airstrike', cost: 5, at: 2 },
+      available: [
+        { id: 'uav', name: 'UAV', icon: 'uav', key: '3' },
+        { id: 'counter_uav', name: 'Counter-UAV', icon: 'cuav', key: '4' },
+        { id: 'airstrike', name: 'Precision Airstrike', icon: 'strike', key: '5' },
+      ],
+      streak: 7,
+      next: { id: 'cluster_strike', name: 'Cluster Strike', cost: 9, at: 2 },
     });
     C.streaks.setEquipment({
       lethal: 1, lethalMax: 1, lethalId: 'frag',
       tactical: 2, tacticalMax: 2, tacticalId: 'flash',
     });
+    C.vitals.setHealth({ fraction: 0.68, health: 68, max: 100, alive: true });
+    // Pre-aged so the log is visibly mid-life: the oldest row is already most of
+    // the way to expiry rather than every row being born at t=0.
+    for (const age of [5.1, 3.4, 1.7, 0.4]) C.killfeed.push(fakeKill(age));
+    feedT = 0.9;
   }
 
-  function seed() {
-    const team = ctx.game?.localPlayer?.team || 'A';
-    seedLive();
-    C.vitals.setHealth({ fraction: 0.68, health: 68, max: 100, alive: true });
-    const feed = [
-      { attacker: 'DELACROIX', victim: 'ORLOV', weapon: 'dmr_kestrel', attackerTeam: team, victimTeam: 'B', longshot: true },
-      { attacker: 'RASHID', victim: 'KOWALSKI', weapon: 'smg_viper', attackerTeam: 'B', victimTeam: team },
-      { attacker: 'HAWTHORNE', victim: 'VOLKOV', weapon: 'ar_wolverine', attackerTeam: team, victimTeam: 'B', headshot: true, local: true },
-    ];
-    for (const f of feed) C.killfeed.push(f);
+  /**
+   * Enemy blips for the review set. The gunfire radar below is the real mechanic,
+   * but it needs bots to actually be shooting, and a pose captures a fifth of a
+   * second — so headless also paints the nearest few hostiles the way a burst of
+   * contact would. Capped well below the roster: partial information, not a
+   * wallhack.
+   */
+  function seedContacts() {
+    const g = ctx.game;
+    const me = g?.localPlayer;
+    const list = Array.isArray(g?.players) ? g.players : [];
+    let n = 0;
+    for (const r of list) {
+      if (!r || r === me || !r.alive || !r.position) continue;
+      if (g.hostile ? !g.hostile(r, me) : r.team === me?.team) continue;
+      ping(r.position.x, r.position.z, 1.4, `seed:${r.id}`, r.yaw || 0);
+      if (++n >= 4) break;
+    }
   }
 
   /** The whole per-frame body, isolated so one bad widget cannot kill the HUD. */
@@ -403,11 +550,26 @@ export default function createHUD(ctx) {
       C.minimap.setUav(false);
     }
 
+    radarT -= dt;
+    if (radarT <= 0) {
+      radarT = 0.3;
+      scanGunfire();
+    }
+
     if (headless) {
       reseedT -= dt;
       if (reseedT <= 0) {
-        reseedT = 0.5;
-        if (ctx.game?.state !== 'live') seedLive();
+        reseedT = 0.4;
+        seedContacts();
+      }
+      // A killfeed that is byte-identical across a whole review set is not a
+      // killfeed, it is a screenshot of one. Rows age out on their own (see
+      // Killfeed.LIFE); this tops the log up at roughly the rate a busy TDM
+      // produces kills, and stands down as soon as real ones are arriving.
+      feedT -= dt;
+      if (feedT <= 0) {
+        feedT = 0.85;
+        if (C.killfeed.size < 4) C.killfeed.push(fakeKill());
       }
     }
 
@@ -489,7 +651,10 @@ export default function createHUD(ctx) {
         C.minimap.bake();
         C.compass.setMarkers(poiMarkers());
         pullInitialState();
-        if (headless) seed();
+        if (headless) {
+          seed();
+          seeded = true;
+        }
         api.ready = true;
         ctx.bus?.emit?.('hud:ready', {});
       } catch (err) {

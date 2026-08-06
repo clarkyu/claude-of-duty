@@ -34,6 +34,9 @@ const CORE = { x0: -56, z0: -52, x1: 52, z1: 58 };
 const CELL = 1;
 const APRON = { x0: -132, z0: -132, x1: 132, z1: 132 };
 const APRON_CELL = 6;
+/** Coarse outer ring that carries the ground out to meet the far terrain ridge. */
+const OUTER = { x0: -240, z0: -240, x1: 240, z1: 240 };
+const OUTER_CELL = 24;
 
 export class Terrain {
   /**
@@ -282,6 +285,21 @@ export class Terrain {
         if (x + ac > CORE.x0 && x < CORE.x1 && z + ac > CORE.z0 && z < CORE.z1) continue;
         const q = (px, pz) => [px, this.baseHeight(px, pz) - 0.02, pz];
         amb.quad(q(x, z), q(x + ac, z), q(x + ac, z + ac), q(x, z + ac), [0, 1, 0]);
+      }
+    }
+    /**
+     * A second, very coarse ring out to +/-240 m. Two reasons it has to exist: the
+     * apron used to stop at 132 m and the ground simply ended there, and Level.js now
+     * lays a terrain ridge starting at 235 m — without this the two would not meet and
+     * you would see straight through the join at the horizon. 24 m cells, so the whole
+     * ring is under 300 quads.
+     */
+    const oc = OUTER_CELL;
+    for (let z = OUTER.z0; z < OUTER.z1; z += oc) {
+      for (let x = OUTER.x0; x < OUTER.x1; x += oc) {
+        if (x + oc > APRON.x0 && x < APRON.x1 && z + oc > APRON.z0 && z < APRON.z1) continue;
+        const q = (px, pz) => [px, this.baseHeight(px, pz) - 0.06, pz];
+        amb.quad(q(x, z), q(x + oc, z), q(x + oc, z + oc), q(x, z + oc), [0, 1, 0]);
       }
     }
 

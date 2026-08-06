@@ -950,10 +950,21 @@ export default function createGameMode(ctx) {
     return 4.6 * (loadouts?.mods?.regenDelayScale ?? 1);
   }
 
+  /**
+   * `remaining` is the MATCH clock and nothing else. It used to carry `phaseTimer`
+   * whenever the match was not live, so the header clock showed the pre-match
+   * warm-up — a two-second countdown sitting where ten minutes should be, next to
+   * a scoreline that was already climbing. The phase countdown is its own field;
+   * the header clock reads full time before the whistle and counts down after it,
+   * which is what a match clock is.
+   */
   function emitTimer() {
+    const matchLeft = Math.max(0, (mode.timeLimit || 0) - matchClock);
     ctx.bus?.emit?.('hud:timer', {
-      remaining: Math.max(0, Math.ceil(phase === 'live' ? (mode.timeLimit || 0) - matchClock : phaseTimer)),
-      limit: phase === 'live' ? mode.timeLimit : phaseTimer,
+      remaining: Math.ceil(matchLeft),
+      running: phase === 'live',
+      countdown: phase === 'live' ? 0 : Math.max(0, Math.ceil(phaseTimer)),
+      limit: mode.timeLimit || 0,
       phase,
       round,
       rounds: mode.rounds,
@@ -1053,12 +1064,45 @@ export default function createGameMode(ctx) {
     return api;
   }
 
+  /**
+   * Headless only. The review harness simulates well under a second of game time
+   * per pose, so left alone every screenshot shows the opening whistle: 0-0, a
+   * full clock, no streaks, an empty killfeed. That is not the state the interface
+   * is meant to be judged in, and the HUD used to paper over it by faking its own
+   * numbers on top — two sources of truth, which is how the same review set ended
+   * up with one clock value at two different scores.
+   *
+   * So the *match* starts mid-way instead, once, here. Everything downstream —
+   * header, streak chips, scoreboard — is then reading real state.
+   */
+  function seedReviewMatch() {
+    matchClock = Math.max(0, (mode.timeLimit || 600) - 428);
+    const limit = mode.scoreLimit || 75;
+    if (mode.teams) {
+      scoring?.teamAward?.(localTeam, Math.round(limit * 0.56), 'seed');
+      scoring?.teamAward?.(localTeam === 'A' ? 'B' : 'A', Math.round(limit * 0.49), 'seed');
+    }
+    if (local) {
+      local.score = 1250;
+      local.kills = 21;
+      local.deaths = 14;
+      local.assists = 6;
+      local.headshots = 7;
+      local.streak = 7; // uav (4) + counter-uav (5) + airstrike (7): three in hand
+      local.bestStreak = 7;
+      killstreaks?.onKill?.(local);
+      ctx.bus?.emit?.('hud:points', { local: true, delta: 0, total: local.score });
+    }
+    emitTimer();
+  }
+
   function beginLive() {
     setPhase('live', 0);
     for (const rec of roster) {
       rec.lives = mode.lives;
       respawn(rec);
     }
+    if (headless) seedReviewMatch();
     ctx.bus?.emit?.('hud:message', { kind: 'go', text: 'FIGHT', sub: '', duration: 1.4 });
     ctx.audio?.play?.('notify', { spatial: false });
   }

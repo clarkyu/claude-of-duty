@@ -226,6 +226,13 @@ export const BUILDINGS = [
     units: 3,
     unitWalls: ['wall.blue', 'wall.ochre', 'wall.white'],
     wall: 'wall.blue',
+    /* The `weapon` review camera stands inside this ground floor. Without an inner
+       leaf the room is lined with three *different* exterior paints meeting at hard
+       vertical seams with no pilaster — which reads as a material assignment error,
+       not as a room. One plaster leaf inside fixes that and gives the interior its
+       own surface tag. */
+    inner: 'int.plaster',
+    interior: 'shop',
     plinth: { h: 0.82, mat: 'struct.concrete', out: 0.05 },
     cornice: { h: 0.26, out: 0.13 },
     roof: { kind: 'flat', parapet: 0.85, deck: 'struct.concrete', clutter: 3 },
@@ -236,6 +243,10 @@ export const BUILDINGS = [
       { side: 1, u: 9.5, w: 1.15, h: 2.25, type: 'door' },
       { side: 1, u: 15, w: 1.15, h: 2.25, type: 'door' },
       { side: 0, u: 9, w: 1.2, h: 2.25, type: 'door' },
+      /* Back door on the north wall — the wall the `weapon` camera looks straight at.
+         A room whose far wall is three windows and nothing else has no way out and
+         reads as a box; a doorway gives it a reveal, a threshold and a light shaft. */
+      { side: 2, u: 4.6, w: 1.15, h: 2.3, type: 'door' },
     ],
     awnings: [
       { side: 1, u: 6, width: 3.4 },
@@ -419,20 +430,121 @@ export const FUEL = {
   ],
 };
 
-/** Distant silhouette blocks, LOD-2 only, outside the play space. */
+/**
+ * Distant silhouette blocks, LOD-2 only, outside the play space.
+ *
+ * Heights vary by roughly ±45 % about the mean rather than the ±10 % they used to,
+ * because the thing that made the old vista frame read as scenery was that every block
+ * topped out within two metres of its neighbour: a row of near-identical flat-topped
+ * rectangles is the one skyline shape nobody has ever seen in a real city. Some of
+ * these are 8 m sheds and some are 30 m slabs, and `buildBackdrop` puts a setback
+ * tower on most of them on top of that.
+ */
 export const BACKDROP = [
-  { rect: [-96, -86, -66, -60], h: 11, wall: 'wall.sand' },
-  { rect: [-60, -92, -34, -62], h: 16, wall: 'wall.bone' },
-  { rect: [-28, -88, -4, -60], h: 13, wall: 'wall.terracotta' },
-  { rect: [2, -96, 30, -62], h: 19, wall: 'wall.sand' },
-  { rect: [36, -84, 66, -60], h: 10, wall: 'wall.ochre' },
-  { rect: [70, -70, 100, -30], h: 15, wall: 'wall.bone' },
-  { rect: [72, -12, 98, 30], h: 12, wall: 'wall.sand' },
-  { rect: [68, 40, 96, 76], h: 17, wall: 'wall.terracotta' },
-  { rect: [10, 62, 48, 92], h: 14, wall: 'wall.bone' },
-  { rect: [-40, 60, -2, 88], h: 12, wall: 'wall.ochre' },
-  { rect: [-92, 46, -56, 82], h: 16, wall: 'wall.sand' },
-  { rect: [-100, -18, -70, 30], h: 13, wall: 'wall.bone' },
+  { rect: [-96, -86, -66, -60], h: 8, wall: 'wall.sand' },
+  { rect: [-60, -92, -34, -62], h: 24, wall: 'wall.bone' },
+  { rect: [-28, -88, -4, -60], h: 12, wall: 'wall.terracotta' },
+  { rect: [2, -96, 30, -62], h: 31, wall: 'wall.sand' },
+  { rect: [36, -84, 66, -60], h: 9, wall: 'wall.ochre' },
+  { rect: [70, -70, 100, -30], h: 21, wall: 'wall.bone' },
+  { rect: [72, -12, 98, 30], h: 11, wall: 'wall.sand' },
+  { rect: [68, 40, 96, 76], h: 27, wall: 'wall.terracotta' },
+  { rect: [10, 62, 48, 92], h: 13, wall: 'wall.bone' },
+  { rect: [-40, 60, -2, 88], h: 19, wall: 'wall.ochre' },
+  { rect: [-92, 46, -56, 82], h: 10, wall: 'wall.sand' },
+  { rect: [-100, -18, -70, 30], h: 26, wall: 'wall.bone' },
+
+  /* Second rank at 110-190 m: the depth cue that turns one row of boxes into a town.
+     These are half as tall on average and much more varied, so the near rank always
+     has something reading against it. */
+  { rect: [-150, -160, -104, -122], h: 17, wall: 'wall.bone' },
+  { rect: [-92, -168, -46, -128], h: 29, wall: 'wall.sand' },
+  { rect: [-30, -172, 18, -132], h: 12, wall: 'wall.ochre' },
+  { rect: [30, -166, 88, -124], h: 34, wall: 'wall.bone' },
+  { rect: [104, -140, 158, -96], h: 20, wall: 'wall.terracotta' },
+  { rect: [126, -60, 176, 6], h: 15, wall: 'wall.sand' },
+  { rect: [132, 28, 184, 92], h: 28, wall: 'wall.bone' },
+  { rect: [58, 106, 116, 156], h: 18, wall: 'wall.ochre' },
+  { rect: [-34, 116, 30, 168], h: 24, wall: 'wall.sand' },
+  { rect: [-124, 98, -60, 150], h: 13, wall: 'wall.bone' },
+  { rect: [-168, 4, -116, 66], h: 22, wall: 'wall.terracotta' },
+  { rect: [-176, -74, -122, -18], h: 16, wall: 'wall.sand' },
+];
+
+/**
+ * Tall non-playable silhouette elements at 150-400 m. A skyline is silhouette: without
+ * these the horizon is a row of flat tops and a razor-straight ground line.
+ * kind: 'minaret' | 'tower' | 'crane' | 'stack' | 'mast' | 'dome'
+ */
+export const SKYLINE = [
+  { kind: 'minaret', x: -118, z: -150, base: 0, h: 46, r: 3.4 },
+  { kind: 'minaret', x: 96, z: 168, base: 0, h: 38, r: 3.0 },
+  { kind: 'dome', x: -104, z: -132, base: 0, h: 22, r: 11 },
+  { kind: 'tower', x: 172, z: -104, base: 0, h: 52, r: 7.5 }, // water tower
+  { kind: 'tower', x: -196, z: 52, base: 0, h: 41, r: 6.4 },
+  { kind: 'stack', x: 58, z: -212, base: 0, h: 64, r: 3.6 }, // smokestack
+  { kind: 'stack', x: 74, z: -222, base: 0, h: 47, r: 2.9 },
+  { kind: 'crane', x: -46, z: -196, base: 0, h: 44, jib: 34, yaw: 0.6 },
+  { kind: 'crane', x: 128, z: 118, base: 0, h: 38, jib: 29, yaw: -2.1 },
+  { kind: 'mast', x: -224, z: -30, base: 0, h: 58 },
+  { kind: 'mast', x: 214, z: 92, base: 0, h: 49 },
+  { kind: 'crane', x: 168, z: -158, base: 0, h: 50, jib: 36, yaw: 2.6 },
+];
+
+/**
+ * The far terrain band. A dead-straight horizon is the single loudest tell that the
+ * world stops at the fence: this puts a rolling ridge and a broken foothill line
+ * between the backdrop blocks and the sky.
+ */
+export const HORIZON = {
+  /* `inner` sits just inside the coarse terrain apron (+/-240 m in Terrain.js), so
+     the ridge starts under ground the player can already see and the join is never
+     visible; `outer` carries the ridgeline itself. */
+  inner: 235,
+  outer: 620,
+  segments: 64,
+  /** ridge height as [amplitude, frequency] pairs, summed */
+  base: 34,
+  /* integer frequencies so the ring closes without a seam at theta = 0 */
+  bands: [
+    [22, 1],
+    [13, 3],
+    [6, 7],
+    [3, 13],
+  ],
+  mat: 'ground.dirt',
+  /** a second, higher and further ridge behind the first */
+  far: { inner: 540, outer: 1080, base: 96, amp: 44, mat: 'wall.bone' },
+};
+
+/**
+ * Overhead cable runs. Every real street in this part of the world is netted with
+ * them, and a catenary crossing the frame at 6-9 m is the cheapest foreground occluder
+ * there is — which is what all eight review frames were missing.
+ * [x0, z0, y0, x1, z1, y1, sag]
+ */
+export const CABLES = [
+  /* Souk Street, crossing the hero and ads sightlines */
+  [-1.4, 20.2, 6.4, 12.4, 19.4, 6.9, 0.85],
+  [-1.4, 12.0, 6.6, 12.4, 12.6, 6.2, 0.9],
+  [-1.4, 3.0, 6.2, 12.4, 3.6, 6.8, 0.95],
+  [-1.4, -6.0, 6.8, 12.4, -5.2, 6.4, 0.9],
+  [-1.4, -15.0, 6.5, 12.4, -15.6, 7.0, 0.95],
+  [-1.4, -24.0, 6.9, 12.4, -23.4, 6.3, 0.9],
+  [-1.4, -33.0, 6.4, 12.4, -33.6, 6.8, 0.85],
+  /* Hotel Front, crossing the vista sightline low in frame */
+  [-2.4, 27.6, 7.2, 16.4, 27.0, 7.6, 1.0],
+  [-2.4, 29.4, 8.4, 16.4, 29.0, 8.1, 0.8],
+  /* Mid Cross */
+  [-21.4, 0.4, 6.6, -2.4, 0.8, 6.9, 1.1],
+  [14.4, 1.2, 7.0, 29.4, 0.6, 6.5, 0.95],
+  /* Back Alley and West Alley */
+  [-25.4, -6.0, 6.2, -20.6, -6.4, 6.6, 0.4],
+  [-25.4, 12.0, 6.4, -20.6, 11.6, 6.1, 0.4],
+  [-43.4, -12.0, 6.0, -41.4, -12.4, 6.4, 0.25],
+  /* Canal Road */
+  [29.4, -18.0, 6.6, 46.4, -18.6, 7.0, 1.2],
+  [29.4, 14.0, 7.0, 46.4, 13.4, 6.5, 1.2],
 ];
 
 /* ══════════════════════════════════════════════════════════════════ spawns ══ */
@@ -678,7 +790,7 @@ export const LINKS = [
   { from: 'grid', to: 'channel_floor', kind: 'ladder', pos: [34.55, 0, 10] },
   { from: 'grid', to: 'channel_floor', kind: 'ladder', pos: [40.45, 0, -18] },
   /* shophouses: the scaffold in Souk Street climbs all the way to the parapet */
-  { from: 'grid', to: 'roof_shophouses', kind: 'scaffold', pos: [-1.2, 0, 16.5] },
+  { from: 'grid', to: 'roof_shophouses', kind: 'scaffold', pos: [-1.2, 0, 18.0] },
   { from: 'grid', to: 'roof_kiosks', kind: 'ladder', pos: [-29.4, 0, 36.0] },
 ];
 
@@ -692,6 +804,9 @@ export default {
   MINARET,
   FUEL,
   BACKDROP,
+  SKYLINE,
+  HORIZON,
+  CABLES,
   SPAWNS,
   POIS,
   PROBES,

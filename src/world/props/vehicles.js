@@ -256,9 +256,24 @@ function shards(a, r, o) {
 function wheel(a, r, o = {}) {
   const R = o.radius ?? 0.32;
   const width = o.width ?? 0.2;
-  const flat = o.flat ?? 0;
+  /**
+   * Every tyre carries a small contact patch even fully inflated. A perfect circle
+   * tangent to the road is the thing that makes a parked car look like it is hovering
+   * a millimetre above it, so the default is a slight squash rather than none.
+   */
+  const flat = o.flat ?? 0.14;
   const rimR = R * 0.62;
-  const M = xf(o.x, o.y, o.z, 0, 0, Math.PI / 2);
+  /**
+   * **The axle runs across the car, not along it.** `revolveXY` lathes about local +Z,
+   * so the wheel disc is authored in the local XY plane — and the transform here used
+   * to be a rotation about Z, which leaves the axle pointing down the car's length.
+   * Every wheel was therefore turned 90 degrees: from the side you saw the tread band
+   * edge-on as a plain cylinder with the rim showing as a bright ring, and none of them
+   * lined up with their own arch lips (which are correctly authored about X). A yaw of
+   * +/-90 degrees maps local +Z to +/-X, which also puts the hub cap outboard on both
+   * sides instead of both hubs facing the same way.
+   */
+  const M = xf(o.x, o.y, o.z, 0, (o.x < 0 ? -1 : 1) * (Math.PI / 2), 0);
   a.push(M);
   if (!o.burnt) {
     /* tyre: a torus with a bulged sidewall profile and a squared tread band */
@@ -274,17 +289,19 @@ function wheel(a, r, o = {}) {
       prof.push([cR + Math.cos(ang) * tr * bulge, (Math.sin(ang) * width) / 2]);
     }
     const tyreGeo = revolveXY(prof, 14);
-    /* squash the contact patch if it is flat */
+    /**
+     * Contact patch. The squash has to act on the vertical (local Y, which the yaw
+     * above leaves as world up), not on the axial coordinate: the old test was against
+     * local Z, whose whole range is +/- half the tyre *width*, so it could never fire
+     * and every tyre met the road at a single tangent point.
+     */
     if (flat > 0) {
       for (let k = 0; k < tyreGeo.p.length; k += 3) {
-        const px = tyreGeo.p[k];
-        const pz = tyreGeo.p[k + 2];
-        const rr = Math.hypot(px, pz);
-        if (pz < -R * 0.5) {
-          const f = 1 - flat * clamp01((-pz - R * 0.5) / (R * 0.5));
-          tyreGeo.p[k + 2] = pz * f;
+        const py = tyreGeo.p[k + 1];
+        if (py < -R * 0.5) {
+          const f = 1 - flat * clamp01((-py - R * 0.5) / (R * 0.5));
+          tyreGeo.p[k + 1] = py * f;
         }
-        void rr;
       }
     }
     a.add('tyre', tyreGeo, null, { grime: 1.35, uvOff: [r.range(0, 2), r.range(0, 2)] });

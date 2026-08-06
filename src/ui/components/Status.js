@@ -41,7 +41,8 @@ export class Status {
 
     this.cap = div('cod-capbar', root);
     this.capLbl = div('lbl', this.cap, 'CAPTURING');
-    this.capFill = div('', div('track', this.cap));
+    // `.cod-capbar .track i` — see the note in Ammo.js; a <div> here is invisible.
+    this.capFill = el('i', '', div('track', this.cap));
 
     this.cA = new Counter(this.scoreA, { rate: 8 });
     this.cB = new Counter(this.scoreB, { rate: 8 });
@@ -51,6 +52,7 @@ export class Status {
     this._capOn = false;
     this._lastCap = -1;
     this.remaining = 0;
+    this.running = true;
     this.visible = false;
   }
 
@@ -66,15 +68,22 @@ export class Status {
     setClass(this.bar, 'ffa', !this._teams);
   }
 
-  setScore(p) {
+  setScore(p, instant) {
     if (!p) return;
-    this.cA.set(p.A ?? 0);
-    this.cB.set(p.B ?? 0);
+    this.cA.set(p.A ?? 0, instant);
+    this.cB.set(p.B ?? 0, instant);
   }
 
+  /**
+   * @param {{remaining:number, running?:boolean}} p
+   * The clock free-runs between updates so it never stutters at the emit rate,
+   * but only while the match is actually running — during a pre-match hold or a
+   * round break the number must sit still rather than quietly bleeding down.
+   */
   setTimer(p) {
     if (!p) return;
-    this.remaining = p.remaining ?? 0;
+    this.remaining = Math.max(0, p.remaining ?? 0);
+    if (p.running !== undefined) this.running = !!p.running;
   }
 
   /** @param {object} p the hud:objective payload */
@@ -196,7 +205,7 @@ export class Status {
   update(dt) {
     this.cA.update(dt);
     this.cB.update(dt);
-    if (this.remaining > 0) this.remaining = Math.max(0, this.remaining - dt);
+    if (this.running && this.remaining > 0) this.remaining = Math.max(0, this.remaining - dt);
     const s = Math.ceil(this.remaining);
     if (s !== this._time) {
       this._time = s;

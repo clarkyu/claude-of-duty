@@ -85,11 +85,15 @@ const SPECIES = [
   {
     id: 'grass',
     kind: 'ground',
-    variants: 2,
-    build: (rng, lod, v) => buildGrassTuft(rng, { lod, height: v === 0 ? 0.44 : 0.3, blades: v === 0 ? 8 : 6 }),
+    /* Three cards, not two. One card repeated at one scale in one orientation is the
+       single most obvious "scattered decal" tell in a frame, and the fix is cheap:
+       each variant is an independently seeded build, so three of them cost three
+       geometries and nothing per instance. */
+    variants: 3,
+    build: (rng, lod, v) => buildGrassTuft(rng, { lod, height: [0.5, 0.38, 0.28][v] ?? 0.42, blades: [9, 7, 5][v] ?? 7, spread: [0.18, 0.15, 0.11][v] ?? 0.15 }),
     wind: [0.10, 0.055, 0.028, 1.45],
     lod: [13, 33],
-    scale: [0.62, 1.5],
+    scale: [0.5, 1.72],
     height: 0.45,
     tint: [1.02, 0.94, 0.66],
     jitter: 0.26,
@@ -99,11 +103,11 @@ const SPECIES = [
   {
     id: 'weed',
     kind: 'ground',
-    variants: 1,
-    build: (rng, lod) => buildWeed(rng, { lod, height: 0.74 }),
+    variants: 3,
+    build: (rng, lod, v) => buildWeed(rng, { lod, height: [0.95, 0.72, 0.52][v] ?? 0.74 }),
     wind: [0.18, 0.10, 0.038, 1.15],
     lod: [17, 40],
-    scale: [0.6, 1.35],
+    scale: [0.48, 1.62],
     height: 0.78,
     tint: [1.05, 0.92, 0.58],
     jitter: 0.24,
@@ -113,11 +117,11 @@ const SPECIES = [
   {
     id: 'crackweed',
     kind: 'ground',
-    variants: 1,
-    build: (rng, lod) => buildCrackWeed(rng, { lod, height: 0.17 }),
+    variants: 3,
+    build: (rng, lod, v) => buildCrackWeed(rng, { lod, height: [0.24, 0.17, 0.11][v] ?? 0.17 }),
     wind: [0.05, 0.032, 0.018, 1.7],
     lod: [9, 21],
-    scale: [0.6, 1.4],
+    scale: [0.5, 1.68],
     height: 0.18,
     tint: [0.86, 0.98, 0.6],
     jitter: 0.22,
@@ -127,11 +131,11 @@ const SPECIES = [
   {
     id: 'scrub',
     kind: 'ground',
-    variants: 2,
-    build: (rng, lod, v) => buildBush(rng, { lod, radius: v === 0 ? 0.58 : 0.42, height: v === 0 ? 0.78 : 0.55 }),
+    variants: 3,
+    build: (rng, lod, v) => buildBush(rng, { lod, radius: [0.66, 0.5, 0.38][v] ?? 0.5, height: [0.86, 0.66, 0.48][v] ?? 0.66 }),
     wind: [0.10, 0.085, 0.032, 1.0],
     lod: [22, 54],
-    scale: [0.7, 1.45],
+    scale: [0.62, 1.6],
     height: 0.8,
     tint: [0.82, 0.95, 0.62],
     jitter: 0.22,
@@ -805,14 +809,47 @@ export default function createFoliage(ctx) {
     return [base[0] * val * (1 + dry * 0.8), base[1] * val * (1 - dry * 0.15), base[2] * val * (1 - dry * 0.55)];
   }
 
+  /**
+   * A plant growing straight out of unbroken paving with no soil, no crack and no dirt
+   * around it is the thing that makes weeds read as stickers. On a hard surface the
+   * placement is only allowed if we can co-spawn a crack or a dirt patch under it —
+   * something for the plant to have come *through*. If the decal system will not take
+   * it, the plant does not go in.
+   */
+  const HARD_SURFACES = new Set(['concrete', 'ceramic', 'metal']);
+  let hardDecals = 0;
+  const HARD_DECAL_CAP = 260;
+  function groundBreak(c, r) {
+    const d = ctx.decals;
+    if (!d?.placeStatic) return false;
+    if (hardDecals >= HARD_DECAL_CAP) return false;
+    try {
+      const id = d.placeStatic({
+        position: { x: c.x, y: c.y, z: c.z },
+        normal: { x: c.nx, y: Math.max(0.3, c.ny), z: c.nz },
+        size: 0.55 + r * 0.85,
+        rotation: r * Math.PI * 2,
+        type: r > 0.55 ? 'crack' : 'grime',
+        surface: c.surface || 'concrete',
+      });
+      if (!id) return false;
+    } catch {
+      return false;
+    }
+    hardDecals++;
+    return true;
+  }
+
   function fillInstances(placed) {
     let total = 0;
+    hardDecals = 0;
     for (const def of SPECIES) {
       const list = bySpecies.get(def.id);
       if (!list || !list.length) continue;
       const cands = placed.get(def.id) || [];
       for (let i = 0; i < cands.length; i++) {
         const c = cands[i];
+        if (def.kind === 'ground' && HARD_SURFACES.has(c.surface) && !groundBreak(c, c.r[2])) continue;
         const v = list.length > 1 ? Math.min(list.length - 1, Math.floor(c.r[0] * list.length)) : 0;
         const variant = list[v];
         const scale = def.scale[0] + (def.scale[1] - def.scale[0]) * (0.35 * c.r[1] + 0.65 * c.r[2]);

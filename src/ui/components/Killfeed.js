@@ -11,7 +11,7 @@
 import { div, el } from './dom.js';
 import { icon, weaponIcon } from './icons.js';
 
-const LIFE = 7.0;
+const LIFE = 6.0;
 const MAX = 5;
 
 export class Killfeed {
@@ -33,7 +33,12 @@ export class Killfeed {
     return r;
   }
 
-  /** @param {object} e killfeed entry from Scoring.js */
+  /**
+   * @param {object} e killfeed entry from Scoring.js
+   * `e.age` pre-ages the row (seconds already elapsed). Used when seeding a feed
+   * that is supposed to look like it has been running for a while, so the rows
+   * expire on a stagger instead of all at once.
+   */
   push(e) {
     if (!e) return;
     const r = this._row();
@@ -82,7 +87,7 @@ export class Killfeed {
     void r.offsetWidth;
     r.classList.add('enter');
 
-    this.rows.push({ node: r, t: 0 });
+    this.rows.push({ node: r, t: Math.max(0, Math.min(LIFE - 0.2, e.age || 0)) });
     while (this.rows.length > MAX) this._retire(this.rows.shift());
   }
 
@@ -109,6 +114,13 @@ export class Killfeed {
         }
       }
     }
+  }
+
+  /** Live (not yet fading) row count. */
+  get size() {
+    let n = 0;
+    for (const it of this.rows) if (!it.dying) n++;
+    return n;
   }
 
   clear() {

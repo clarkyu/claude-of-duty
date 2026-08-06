@@ -366,24 +366,43 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
   });
   bat.upTo(opts.canvas || 'fabric.awning2', 0, (mb) => {
     const n = 6;
-    // Explicit up-normal: the canopy is the one surface here that sees nothing but
-    // sky, and an auto-computed normal from this winding points at the ground.
-    const sl = Math.hypot(d, 0.18) || 1;
-    const up = [0, d / sl, 0.18 / sl];
+    // Real sheet thickness. A canopy that terminates in a one-pixel edge reads as
+    // paper from any angle that catches the rim, which on a stall is most of them.
+    const th = 0.026;
     for (let i = 0; i < n; i++) {
       const u0 = lerp(-w * 0.5, w * 0.5, i / n);
       const u1 = lerp(-w * 0.5, w * 0.5, (i + 1) / n);
       const s0 = Math.sin((i / n) * Math.PI) * 0.09;
       const s1 = Math.sin(((i + 1) / n) * Math.PI) * 0.09;
-      mb.quad([u0, h + 0.18 - s0, -d * 0.5], [u1, h + 0.18 - s1, -d * 0.5], [u1, h - s1, d * 0.5], [u0, h - s0, d * 0.5], up);
+      mb.prism(
+        [
+          [u0, h + 0.18 - s0 - th, -d * 0.5],
+          [u1, h + 0.18 - s1 - th, -d * 0.5],
+          [u1, h - s1 - th, d * 0.5],
+          [u0, h - s0 - th, d * 0.5],
+        ],
+        [
+          [u0, h + 0.18 - s0, -d * 0.5],
+          [u1, h + 0.18 - s1, -d * 0.5],
+          [u1, h - s1, d * 0.5],
+          [u0, h - s0, d * 0.5],
+        ]
+      );
     }
-    // Front valance.
-    mb.quad(
-      [-w * 0.5, h, d * 0.5],
-      [w * 0.5, h, d * 0.5],
-      [w * 0.5, h - 0.3, d * 0.52],
-      [-w * 0.5, h - 0.32, d * 0.52],
-      [0, 0.06, 0.998]
+    // Front valance, as a solid so the hem catches light.
+    mb.prism(
+      [
+        [-w * 0.5, h - 0.32, d * 0.52 - th],
+        [w * 0.5, h - 0.3, d * 0.52 - th],
+        [w * 0.5, h, d * 0.5 - th],
+        [-w * 0.5, h, d * 0.5 - th],
+      ],
+      [
+        [-w * 0.5, h - 0.32, d * 0.52],
+        [w * 0.5, h - 0.3, d * 0.52],
+        [w * 0.5, h, d * 0.5],
+        [-w * 0.5, h, d * 0.5],
+      ]
     );
   });
   bat.upTo('wood.weathered', 0, (mb) => {
@@ -420,7 +439,30 @@ export function lampGeometry(h = 4.6) {
       px = nx2;
       py = ny2;
     }
-    mb.box([px + 0.16, py - 0.05, 0], [0.24, 0.055, 0.13], { chamfer: 0.02 });
+    // Luminaire: a real head, not a terminating stub. Housing, cowl, a glazed
+    // underside and the hinge lug — a lamp column that ends in a small white box is
+    // the fastest way to make a street read as untextured blockout.
+    const lx = px + 0.3;
+    const ly = py - 0.03;
+    mb.box([lx, ly, 0], [0.34, 0.075, 0.16], { chamfer: 0.025 }); // housing
+    mb.box([lx, ly + 0.085, 0], [0.38, 0.035, 0.19], { chamfer: 0.02 }); // cowl
+    mb.box([lx, ly - 0.09, 0], [0.27, 0.04, 0.125], { chamfer: 0.018 }); // bowl rim
+    mb.box([lx - 0.32, ly - 0.03, 0], [0.05, 0.05, 0.07], { chamfer: 0.012 }); // gear tray
+    for (const s of [-1, 1]) mb.box([lx + s * 0.3, ly - 0.05, s * 0.11], [0.026, 0.035, 0.04], { chamfer: 0.008 });
+  });
+}
+
+/** The glazed underside of the luminaire, instanced separately so it can be emissive. */
+export function lampBowlGeometry(h = 4.6) {
+  return localGeometry((mb) => {
+    let px = 0;
+    let py = h;
+    for (let i = 1; i <= 5; i++) {
+      const t = i / 5;
+      px = t * 0.95;
+      py = h + Math.sin(t * 1.35) * 0.28;
+    }
+    mb.box([px + 0.3, py - 0.135, 0], [0.23, 0.022, 0.1], { chamfer: 0.012 });
   });
 }
 
@@ -535,6 +577,7 @@ export default {
   pipeRun,
   bollardGeometry,
   lampGeometry,
+  lampBowlGeometry,
   lampLensGeometry,
   acUnitGeometry,
   grateGeometry,

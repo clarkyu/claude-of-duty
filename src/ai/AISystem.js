@@ -149,9 +149,14 @@ export default function createAISystem(ctx) {
     const rng = ctx.rng || Math.random;
     let character = null;
     try {
+      // Height is quantised: the builder caches a whole assembled model (geometry,
+      // skin weights and the baked occlusion) per (variant, height, quality), so a
+      // continuous height means a cache miss for every single soldier and six full
+      // rebuilds at spawn. Three buckets still reads as a squad of different men.
+      const h = opts.height ?? [1.755, 1.80, 1.845][Math.floor(rng() * 3) % 3];
       character = builder?.build({
         variant: opts.variant ?? Math.floor(rng() * 3),
-        height: opts.height ?? (1.76 + rng() * 0.09),
+        height: h,
         quality,
       });
     } catch (err) {
@@ -313,10 +318,41 @@ export default function createAISystem(ctx) {
     return !hit;
   }
 
+  const _aimPt = new THREE.Vector3();
+
+  /**
+   * Lanes: [metres down the view axis, metres lateral, aim bearing offset].
+   *
+   * The first entry is the frame's subject and it is deliberately close — 7 m puts a
+   * soldier at ~130 px of a 720p frame, which is the size at which kit is legible.
+   * The previous set started at 8.5 m and scattered outwards, so the capture was six
+   * distant figures and no subject.
+   *
+   * The third number is where that soldier is *shooting*, expressed as metres to the
+   * side of the camera. It matters more than it looks: six men all aiming at the
+   * lens are six men seen dead-on, and a rifle pointed at the camera is one pixel
+   * wide. Turning half the fireteam onto a flanking bearing is what puts a weapon
+   * side-on in the frame — and it is also what a real firefight looks like, because
+   * not everybody in it is shooting at you.
+   */
+  const LANES = [
+    [7.0, -3.0, 0],
+    [10.5, 3.4, 6.5],
+    [13.5, -5.2, 0],
+    [16.5, 2.2, -8.0],
+    [9.5, 6.0, 0],
+    [20.0, -2.0, 7.0],
+    [12.0, -0.8, -6.0],
+    [18.0, 6.2, 0],
+    [8.0, 2.2, 5.0],
+    [23.0, 4.2, 0],
+  ];
+
   /**
    * Place the opposition in front of the camera for the `firefight` pose: spread
    * along the view axis, on the navmesh, with a clear line to the lens, already
-   * shooting back. Without this the combat frame is a picture of an empty street.
+   * shooting — some of them at the lens, some past it. Without this the combat frame
+   * is a picture of an empty street.
    */
   function poseEngaged(count) {
     const rng = ctx.rng || Math.random;
@@ -330,22 +366,17 @@ export default function createAISystem(ctx) {
     const wanted = Math.min(count, bots.length);
     const placed = [];
     const placedBots = new Set();
-    // [metres down the view axis, metres lateral]. Close enough that a soldier is a
-    // readable subject in the frame, spread so they do not stack into one silhouette.
-    const lanes = [
-      [8.5, -3.6], [12.5, 3.0], [16.0, -5.2], [19.5, 1.6], [11.0, 5.6], [22.0, -1.6],
-      [14.5, -1.0], [18.0, 5.4], [10.0, 1.8], [24.0, 4.0],
-    ];
     let li = 0;
     for (let i = 0; i < wanted; i++) {
       const bot = bots[i];
       if (!bot) break;
       let best = null;
-      for (let attempt = 0; attempt < lanes.length && !best; attempt++) {
-        const lane = lanes[(li + attempt) % lanes.length];
+      let lane = LANES[0];
+      for (let attempt = 0; attempt < LANES.length && !best; attempt++) {
+        const cand = LANES[(li + attempt) % LANES.length];
         for (let jitter = 0; jitter < 4 && !best; jitter++) {
-          const fwd = lane[0] + (jitter - 1.5) * 1.4;
-          const lat = lane[1] + (rng() * 2 - 1) * 1.2;
+          const fwd = cand[0] + (jitter - 1.5) * 1.1;
+          const lat = cand[1] + (rng() * 2 - 1) * 0.9;
           _cand.copy(_camPos).addScaledVector(_camDir, fwd).addScaledVector(_side, lat);
           if (nav?.ready) {
             const k = nav.nearestWalkable(_cand.x, _cand.z, 4);
@@ -365,14 +396,23 @@ export default function createAISystem(ctx) {
           if (clash) continue;
           if (!visibleFromCamera(_cand)) continue;
           best = _cand.clone();
+          lane = cand;
         }
-        if (best) li = (li + attempt + 1) % lanes.length;
+        if (best) li = (li + attempt + 1) % LANES.length;
       }
       if (!best) continue;
       placed.push(best);
       placedBots.add(bot);
 
-      const yaw = Math.atan2(_camPos.x - best.x, _camPos.z - best.z);
+      // What this soldier is shooting at: the lens, or a bearing past it.
+      // Two different points, because they are consumed differently — a contact that
+      // names an *entity* is resolved by solveAimPoint(), which adds the chest offset
+      // itself and therefore wants the player's feet; a bare override point is the
+      // aim point as-authored and wants to be at chest height already.
+      const bearing = lane[2];
+      _chest.set(_camPos.x, _camPos.y - 1.6, _camPos.z);
+      _aimPt.set(_camPos.x, _camPos.y - 0.16, _camPos.z).addScaledVector(_side, bearing);
+      const yaw = Math.atan2(_aimPt.x - best.x, _aimPt.z - best.z);
       bot.spawn(best, yaw);
       // Some of them are pinned down: `suppression` is what the engage behaviour
       // actually reads, so setting it gets a genuine crouch rather than a posed one.
@@ -380,26 +420,31 @@ export default function createAISystem(ctx) {
       bot.stance = i % 3 === 1 ? 'crouch' : 'stand';
       bot.setState('engage');
 
-      // Pin a live contact on the camera so the aim solution, the muzzle flash and
-      // the animation are all doing the real thing rather than miming it — and so a
-      // single blocked LOS ray cannot drop a soldier back to patrol mid-capture.
-      _chest.set(_camPos.x, _camPos.y - 1.6, _camPos.z);
-      bot.forceCombat(_chest, 45);
+      // Pin a live contact so the aim solution, the muzzle flash and the animation
+      // are all doing the real thing rather than miming it — and so a single blocked
+      // LOS ray cannot drop a soldier back to patrol mid-capture.
       const target = ctx.player || null;
-      if (target && bot.sensor) {
-        perception?.registerTarget?.(target);
-        const t = bot.sensor.tracks.get(target);
-        if (t) {
-          t.awareness = 1.8;
-          t.visible = true;
-          t.losOk = true;
-          t.exposure = 1;
-          t.confidence = 1;
-          t.trackTime = 2.5;
-          t.lastSeen = ctx.time?.elapsed ?? 0;
-          t.lastKnownPos.copy(_chest);
-          bot.sensor.best = t;
-          bot.sensor.alerted = true;
+      if (bearing !== 0) {
+        // Off-bearing: an override contact on the bare point, so the aim converges
+        // there instead of snapping back onto the player over the warm frames.
+        bot.forceCombat(_aimPt, 45, { entity: null, override: true });
+      } else {
+        bot.forceCombat(_chest, 45);
+        if (target && bot.sensor) {
+          perception?.registerTarget?.(target);
+          const t = bot.sensor.tracks.get(target);
+          if (t) {
+            t.awareness = 1.8;
+            t.visible = true;
+            t.losOk = true;
+            t.exposure = 1;
+            t.confidence = 1;
+            t.trackTime = 2.5;
+            t.lastSeen = ctx.time?.elapsed ?? 0;
+            t.lastKnownPos.copy(_chest);
+            bot.sensor.best = t;
+            bot.sensor.alerted = true;
+          }
         }
       }
       const inr = bot._internals;
@@ -419,15 +464,18 @@ export default function createAISystem(ctx) {
         inr.bb.peekOut = true;
         inr.bb.peekTimer = 2.5;
       }
-      // Point straight at the lens on frame zero so nothing is caught mid-turn.
+      // Point at the aim bearing on frame zero so nothing is caught mid-turn.
       bot.yaw = yaw;
-      bot.pitch = Math.atan2(_camPos.y - (best.y + 1.5), Math.hypot(_camPos.x - best.x, _camPos.z - best.z));
+      bot.pitch = Math.atan2(_aimPt.y - (best.y + 1.5), Math.hypot(_aimPt.x - best.x, _aimPt.z - best.z));
       bot.aimDir.set(
         Math.sin(bot.yaw) * Math.cos(bot.pitch),
         Math.sin(bot.pitch),
         Math.cos(bot.yaw) * Math.cos(bot.pitch)
       );
       bot.lookDir.set(Math.sin(bot.yaw), 0, Math.cos(bot.yaw));
+      // Warm frames are too few for the animation damps to converge, so snap the
+      // stance, the crouch and the shouldered weapon onto their targets now.
+      bot.settlePose?.();
     }
     // Anyone who could not be placed goes behind the camera, out of frame.
     for (let i = 0; i < bots.length; i++) {
