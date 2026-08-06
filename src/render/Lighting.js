@@ -604,7 +604,7 @@ class LightManager {
    *          intensity?:number, radius?:number, angle?:number, penumbra?:number,
    *          castShadow?:boolean, profile?:string, priority?:number,
    *          flicker?:{amount?:number, speed?:number}, pulse?:{amount?:number, speed?:number, phase?:number},
-   *          enabled?:boolean}} def
+   *          enabled?:boolean, daylight?:boolean}} def
    * @returns {object} handle — mutate `handle.position` / `handle.intensity` freely
    */
   addLight(def = {}) {
@@ -626,6 +626,9 @@ class LightManager {
       flicker: def.flicker || null,
       pulse: def.pulse || null,
       enabled: def.enabled !== false,
+      /** `true` opts out of the daylight dimmer — for lights that are meant to read
+          in full sun (vehicle strobes, muzzle flashes, scripted beauty lights). */
+      daylight: def.daylight === true,
       seed,
       _slot: null,
       _mod: 1,
@@ -672,14 +675,38 @@ class LightManager {
     this.requests.length = 0;
   }
 
+  /**
+   * Is this light under a roof? A lamp that can see the sky is a *street* lamp and
+   * has no business burning at 7 in the morning; one that cannot is an interior
+   * practical and stays on all day. Resolved once per light against the collision
+   * world — 16 raycasts for the whole level, and the alternative is either leaving
+   * ten sodium lamps blazing through every daylight capture (they were scoring high
+   * enough on proximity to take both shadow slots in the hero frame, and a 42 W lamp
+   * 4.6 m up puts ~2.0 irradiance on the pavement, which at golden hour is the same
+   * order as the sun itself) or making Level.js tag them, which is not my file.
+   */
+  _skyLit(r) {
+    if (r._skyLit !== undefined) return r._skyLit;
+    const phys = this.ctx.physics;
+    if (!phys?.raycast) return false; // unknown: assume indoors, i.e. leave it alone
+    try {
+      _v3.set(0, 1, 0);
+      r._skyLit = !phys.raycast(r.position, _v3, 60, 1 | 8);
+    } catch {
+      r._skyLit = false;
+    }
+    return r._skyLit;
+  }
+
   /** @param {number} dt @param {THREE.Vector3} viewer @param {number} exposure */
   update(dt, viewer, exposure) {
     const t = this.ctx.time?.elapsed ?? 0;
+    const day = clamp01(this.lighting?.daylight ?? 0);
 
     // Flicker / pulse first: it feeds the importance score, so a light that has just
     // guttered out does not hold on to a shadow slot.
     for (const r of this.requests) {
-      let mod = 1;
+      let mod = r.daylight === true ? 1 : 1 - day * (this._skyLit(r) ? 0.95 : 0.2);
       if (r.pulse) {
         const sp = r.pulse.speed ?? 1;
         const am = r.pulse.amount ?? 0.25;
@@ -841,6 +868,10 @@ class Lighting {
     this.sunDirection = new THREE.Vector3(0.35, 0.72, 0.6).normalize();
     this.sunColor = new THREE.Color(1, 0.94, 0.86);
     this.sunIntensity = 8;
+    /** Art-direction override for the key. See setSunStaging(). */
+    this.sunStaging = { azimuth: null, altitude: null, kelvin: null };
+    /** 0 at night, 1 in full sun — gates practicals. */
+    this.daylight = 1;
 
     this.sh = new THREE.SphericalHarmonics3();
     this.envTexture = null;
@@ -954,10 +985,41 @@ class Lighting {
         this._warn('setting', 'setting change failed', err);
       }
     });
-    on('debug:pose', () => {
+    on('debug:pose', (state) => {
       // A pose jump invalidates the contact buffer and every probe capture assumption.
       this.contact.valid = false;
       this._scanFrame = -999;
+      // Per-pose key staging. `applyPose` sets the camera and the hour *before* it
+      // emits this, so `sunAzimuthOffset` resolves against the final camera.
+      try {
+        const s = state || {};
+        const has = (k) => Object.prototype.hasOwnProperty.call(s, k);
+        if (has('sunAzimuth') || has('sunAltitude') || has('sunKelvin') || has('sunAzimuthOffset')) {
+          this.setSunStaging({
+            ...(has('sunAzimuth') ? { azimuth: s.sunAzimuth } : {}),
+            ...(has('sunAzimuthOffset') ? { azimuthOffset: s.sunAzimuthOffset } : {}),
+            ...(has('sunAltitude') ? { altitude: s.sunAltitude } : {}),
+            ...(has('sunKelvin') ? { kelvin: s.sunKelvin } : {}),
+          });
+        } else if (
+          this.sunStaging.azimuth !== null ||
+          this.sunStaging.altitude !== null ||
+          this.sunStaging.kelvin !== null
+        ) {
+          // A pose that says nothing about the key gets the almanac back, so one
+          // staged pose can never leak its lighting into the next capture.
+          this.setSunStaging(null);
+        }
+      } catch (err) {
+        this._warn('staging', 'pose key staging failed', err);
+      }
+    });
+    on('lighting:stageSun', (o) => {
+      try {
+        this.setSunStaging(o);
+      } catch (err) {
+        this._warn('staging', 'stageSun event failed', err);
+      }
     });
     const rescan = () => {
       this._scanFrame = -999;
@@ -1113,6 +1175,83 @@ class Lighting {
     });
   }
 
+  /* ────────────────────────────────────────────────────────────── key staging */
+
+  /**
+   * **Stage the key light.** Time of day picks an hour; this picks a *shot*.
+   *
+   *   ctx.lighting.setSunStaging({ azimuth, altitude, kelvin })
+   *   ctx.lighting.setSunStaging({ azimuthOffset: -55 })   // relative to the camera
+   *   ctx.lighting.setSunStaging(null)                     // release everything
+   *
+   * or, per review pose, as fields on the pose's `state` object — `sunAzimuth`,
+   * `sunAltitude`, `sunAzimuthOffset`, `sunKelvin` — which arrive on `debug:pose`.
+   *
+   *   azimuth         degrees clockwise from -Z. 0 north, 90 = +X, 180 south.
+   *   azimuthOffset   degrees from the camera's own view bearing, + = to the right.
+   *                   Resolved once, at the moment it is set, against the live camera:
+   *                   -70..-40 or +40..+70 puts the key three-quarters front and drops
+   *                   the shadows back toward the lens where they can be seen.
+   *   altitude        degrees above the horizon.
+   *   kelvin          key colour temperature. Colour only — the disc, the sky and the
+   *                   intensity stay physical. This is the cheap half of the golden
+   *                   hour lie and the only part of the model that is allowed to be a
+   *                   lie, because a warm key over a geometrically honest sun reads
+   *                   correct while the reverse does not.
+   *
+   * Geometry is forwarded to `ctx.sky` so the dome, the disc, the clouds and the
+   * aerial perspective re-aim with it; it is also re-applied locally every frame so
+   * the rig still works against a sky stub that ignores the call.
+   */
+  setSunStaging(opts) {
+    const s = this.sunStaging;
+    if (!opts) {
+      s.azimuth = null;
+      s.altitude = null;
+      s.kelvin = null;
+    } else {
+      const num = (v) => (Number.isFinite(v) ? v : null);
+      if ('azimuth' in opts) s.azimuth = num(opts.azimuth);
+      if ('azimuthOffset' in opts && Number.isFinite(opts.azimuthOffset)) {
+        s.azimuth = this._cameraAzimuth() + opts.azimuthOffset;
+      }
+      if ('altitude' in opts) s.altitude = num(opts.altitude);
+      if ('kelvin' in opts) s.kelvin = num(opts.kelvin);
+    }
+    if (s.azimuth !== null) s.azimuth = ((s.azimuth % 360) + 360) % 360;
+
+    try {
+      this.ctx.sky?.setSunStaging?.({ azimuth: s.azimuth, altitude: s.altitude });
+    } catch (err) {
+      this._warn('staging', 'sky.setSunStaging failed', err);
+    }
+    this._syncFromSky(true);
+    this._rebuildIBL(true);
+    this.contact.valid = false;
+    this.probes.refresh();
+    return { ...s };
+  }
+
+  /** Camera view bearing in degrees, same convention as `azimuth`. */
+  _cameraAzimuth() {
+    const cam = this.ctx.camera;
+    if (!cam) return 0;
+    _v3.set(0, 0, -1).applyQuaternion(cam.quaternion);
+    return (Math.atan2(_v3.x, -_v3.z) * 180) / Math.PI;
+  }
+
+  /** Re-aim `this.sunDirection` onto the staged bearing. Absolute, so idempotent. */
+  _applyStaging() {
+    const s = this.sunStaging;
+    if (s.azimuth === null && s.altitude === null) return;
+    const d = this.sunDirection;
+    const alt =
+      s.altitude === null ? Math.asin(clamp(d.y, -1, 1)) : (s.altitude * Math.PI) / 180;
+    const az = s.azimuth === null ? Math.atan2(d.x, -d.z) : (s.azimuth * Math.PI) / 180;
+    const ca = Math.cos(alt);
+    d.set(Math.sin(az) * ca, Math.sin(alt), -Math.cos(az) * ca).normalize();
+  }
+
   /**
    * Pull the key light out of the sky model. The sky already returns a physically
    * scaled intensity (its own exposure adaptation included), so noon and dusk differ
@@ -1148,6 +1287,21 @@ class Lighting {
       kelvinToLinearRGB(4200 + 2000 * clamp01(alt), this.sunColor);
       this.localLightScale = this.exposureCompensation;
     }
+
+    this._applyStaging();
+
+    // Colour-temperature override. `kelvinToLinearRGB` normalises to unit luminance
+    // and the sky normalises to unit peak channel, so re-peak it: the key changes hue
+    // without changing how bright it reads, which is the whole point of authoring
+    // intensity and temperature separately.
+    if (this.sunStaging.kelvin !== null && this.sunIntensity > 1e-4) {
+      kelvinToLinearRGB(this.sunStaging.kelvin, _color);
+      const peak = Math.max(_color.r, _color.g, _color.b, 1e-6);
+      this.sunColor.setRGB(_color.r / peak, _color.g / peak, _color.b / peak);
+    }
+
+    // Full daylight -> practicals off. See LightManager.update().
+    this.daylight = clamp01((this.sunDirection.y - 0.005) / 0.1) * clamp01(this.sunIntensity / 0.6);
 
     this.csm.setKeyLight(this.sunDirection, this.sunColor, this.sunIntensity);
 
@@ -1653,6 +1807,31 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
         );
       }
     }
+    if (useContact) {
+      /**
+       * Occlude the indirect term. This is the half of "grounding" that the pipeline's
+       * post-composite GTAO cannot do: that pass multiplies the *finished* pixel and
+       * has to guess, from luminance, how much of it was direct light so it does not
+       * darken sunlight. Here we are inside the material with the two terms still
+       * separate, so the AO lands on exactly what it physically occludes — the sky and
+       * bounce arriving at this fragment — and never touches the sun.
+       *
+       * `iblIrradiance` is what RE_IndirectSpecular_Physical turns into the cosine-
+       * weighted diffuse, so for a standard/physical material this is the whole IBL
+       * diffuse path. Specular gets a gentler share: a rough surface integrates a wide
+       * lobe and is genuinely occluded, a mirror is not.
+       */
+      mapsChunk += `
+#if defined( COD_CONTACT ) && defined( RE_IndirectDiffuse )
+	float codAo = codContactAO( geometryPosition );
+	iblIrradiance *= codAo;
+	irradiance *= codAo;
+	#if defined( RE_IndirectSpecular )
+		radiance *= mix( 1.0, codAo, 0.55 * material.roughness + 0.15 );
+	#endif
+#endif
+`;
+    }
 
     this._glslCache = {
       pars,
@@ -1792,8 +1971,10 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
     // Contact-shadow strength lives in a uniform so it can drop to zero the instant
     // the buffer stops being trustworthy (teleport, first frame, pipeline missing).
     const cs = this.uniforms.uCodContactParams.value;
-    cs.x = this.contact.enabled && this.contact.valid ? this.contact.strength : 0;
+    const live = this.contact.enabled && this.contact.valid;
+    cs.x = live ? this.contact.strength : 0;
     cs.y = this.contact.normDist;
+    cs.z = live ? this.contact.aoIndirect : 0;
     this.uniforms.uCodContactMap.value = this.contact.texture;
 
     this._scan();
@@ -1934,6 +2115,10 @@ export default function createLighting(ctx) {
     ready: false,
     _impl: lighting,
     setTimeOfDay: (h) => lighting.setTimeOfDay(h),
+    setSunStaging: (o) => lighting.setSunStaging(o),
+    get sunStaging() {
+      return { ...lighting.sunStaging };
+    },
     addLight: (def) => lighting.lights.addLight(def),
     removeLight: (h) => lighting.lights.removeLight(h),
     kelvin: (k, t) => kelvinToLinearRGB(k, t),

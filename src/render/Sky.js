@@ -147,10 +147,22 @@ const SITE_SIN = Math.sin(SITE_AZIMUTH);
  * Altitude alone is not sufficient, though: clearance also depends on the *bearing*
  * the light arrives on, because the near occluders are two long walls, not a ring.
  * That half of the problem is solved by `SITE_AZIMUTH` above; do not tune one without
- * checking the other.
+ * checking the other — and solving it there buys altitude back here, which is why the
+ * morning keys are now lower than the "12.4 deg" floor the paragraph above derives:
+ *
+ *   6.6 -> 7.09 -> 8.6 deg  (shadows 6.6x height)
+ *   7.4 -> 7.42 -> 12.8 deg (shadows 4.4x height)
+ *   8.2 -> 7.86 -> 14.4 deg
+ *
+ * Below ~8 deg on this map even a well-aimed key loses the carriageway again
+ * (measured sunlit ground: 0.44 at 16 deg, 0.26 at 12, 0.09 at 8), so 12.8 is the
+ * floor at which the hero frame still has a lit street to cast shadows across. The
+ * remaining colour-temperature gap to a true 4 deg sun is closed by the `kelvin`
+ * field of `ctx.lighting.setSunStaging()` — a warm key over an honest sun reads
+ * correct, an honest key over an unlit street does not.
  */
 const WARP_X = [0, 5.5, 6.6, 7.4, 8.2, 12, 19.5, 21.5, 24];
-const WARP_Y = [0, 5.94, 7.2, 7.66, 7.97, 12.4, 19.11, 20.45, 24];
+const WARP_Y = [0, 5.94, 7.09, 7.42, 7.86, 12.4, 19.11, 20.45, 24];
 
 /** Monotone cubic (Fritsch-Carlson) — smooth, and never folds the clock backwards. */
 function buildPchip(xs, ys) {
@@ -702,6 +714,9 @@ class Sky {
     this.headless = !!ctx.settings?.get?.('headless');
     this.tier = ctx.settings?.tier || 'high';
 
+    /** Art-directed key bearing, degrees; null = follow the almanac. See _stageSun(). */
+    this._sunStaging = { azimuth: null, altitude: null };
+
     /* ------------------------------------------------------- published state */
     this.sunDirection = new THREE.Vector3(0, 0.2, -1).normalize();
     this.moonDirection = new THREE.Vector3(0, -0.3, 1).normalize();
@@ -1185,6 +1200,7 @@ class Sky {
     const H = (t - SOLAR_NOON) * 15 * DEG;
     horizonDirection(SUN_DEC, H, this.sunDirection);
     horizonDirection(MOON_DEC, H - MOON_ELONGATION, this.moonDirection);
+    this._stageSun();
     this.sunAltitude = Math.asin(THREE.MathUtils.clamp(this.sunDirection.y, -1, 1));
 
     this._recomputeLighting();
@@ -1204,6 +1220,60 @@ class Sky {
       moonDirection: this.moonDirection,
       night: this.nightFactor,
     });
+  }
+
+  /**
+   * **Staging override — the clock no longer owns the light direction.**
+   *
+   * `horizonDirection()` derives azimuth purely from the hour angle, so time of day
+   * and key bearing were welded together: every review pose in the set came out with
+   * the sun between azimuth 87 and 102 deg, which put it behind the camera in six of
+   * the eight and made every shadow fall away from the lens and hide behind its own
+   * caster. Altitude and azimuth are the two things a director stages, and a physical
+   * almanac has no opinion worth defending about which way a fictional street faces.
+   *
+   * So: `setSunStaging({azimuth, altitude})` pins either or both, in degrees, azimuth
+   * measured clockwise from -Z (0 = north, 90 = +X). It rewrites the sun direction
+   * *before* anything else consumes it, so the dome, the disc, the cloud lighting, the
+   * aerial perspective, the CPU sky samples and the CSM key all still agree with each
+   * other — this is a re-aim, not a decoupling, and there is nothing to keep in sync.
+   * The moon rides the same azimuth rotation so the celestial sphere stays coherent.
+   */
+  _stageSun() {
+    const s = this._sunStaging;
+    if (!s || (s.azimuth === null && s.altitude === null)) return;
+    const d = this.sunDirection;
+    const alt0 = Math.asin(THREE.MathUtils.clamp(d.y, -1, 1));
+    const az0 = Math.atan2(d.x, -d.z);
+    const alt = s.altitude === null ? alt0 : s.altitude * DEG;
+    const az = s.azimuth === null ? az0 : s.azimuth * DEG;
+    const ca = Math.cos(alt);
+    d.set(Math.sin(az) * ca, Math.sin(alt), -Math.cos(az) * ca).normalize();
+
+    const dAz = az - az0;
+    if (Math.abs(dAz) > 1e-9) {
+      const c = Math.cos(dAz);
+      const sn = Math.sin(dAz);
+      const m = this.moonDirection;
+      m.set(m.x * c - m.z * sn, m.y, m.z * c + m.x * sn).normalize();
+    }
+  }
+
+  /**
+   * @param {{azimuth?:number|null, altitude?:number|null}|null} opts degrees; `null`
+   *        for a field (or for the whole object) releases it back to the almanac.
+   */
+  setSunStaging(opts) {
+    const s = this._sunStaging;
+    if (!opts) {
+      s.azimuth = null;
+      s.altitude = null;
+    } else {
+      if ('azimuth' in opts) s.azimuth = Number.isFinite(opts.azimuth) ? opts.azimuth : null;
+      if ('altitude' in opts) s.altitude = Number.isFinite(opts.altitude) ? opts.altitude : null;
+    }
+    this.setTimeOfDay(this.hours, true);
+    return { azimuth: s.azimuth, altitude: s.altitude };
   }
 
   /** Everything CPU-side that depends on the sun position. */
@@ -1848,6 +1918,10 @@ export default function createSky(ctx) {
     ready: false,
     _impl: sky,
     setTimeOfDay: (h) => sky.setTimeOfDay(h),
+    setSunStaging: (o) => sky.setSunStaging(o),
+    get sunStaging() {
+      return { ...sky._sunStaging };
+    },
     sampleSky: (d, t) => sky.sampleSky(d, t),
     applyAerialPerspective: (m) => sky.applyAerialPerspective(m),
     installSceneFog: (v) => sky.installSceneFog(v),

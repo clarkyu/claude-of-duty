@@ -242,12 +242,23 @@ export class CascadedShadowMaps {
   setQuality(tier, headless) {
     const before = `${this.pcss}|${this.pcfTaps}|${this.blockerTaps}`;
     if (headless) {
-      // The software rasteriser cannot afford a blocker search, but 6 taps on a
-      // one-texel disc is a visibly dithered edge; 8 plus the temporal rotation
-      // resolves cleanly for a few percent more cost.
-      this.pcss = false;
-      this.pcfTaps = 8;
-      this.blockerTaps = 4;
+      /**
+       * **PCSS stays on here.** This branch and the medium tier are the two configs
+       * the review captures actually run in, and turning the blocker search off in
+       * exactly those two meant every shadow anyone ever looked at was a fixed-radius
+       * blur: identical density and identical edge softness at the contact point and
+       * two metres out, which is the single tell that separates a shadow from a decal.
+       * It also silently discarded the horizon-widened source angle Lighting.js goes
+       * to the trouble of computing (`setSoftness`, 0.0047 -> 0.02 rad at a low sun).
+       *
+       * A 6-tap PCF fed by a real 6-tap blocker search costs 12 texture reads against
+       * the old 8 and buys contact hardening — the shadow is razor sharp where the
+       * caster touches the ground and opens up along its length, which is exactly the
+       * cue "is this object standing on the floor" is read from.
+       */
+      this.pcss = true;
+      this.pcfTaps = 6;
+      this.blockerTaps = 6;
       this.stagger = 1;
     } else {
       this.stagger = 0;
@@ -258,8 +269,8 @@ export class CascadedShadowMaps {
           this.blockerTaps = 4;
           break;
         case 'medium':
-          this.pcss = false;
-          this.pcfTaps = 10;
+          this.pcss = true;
+          this.pcfTaps = 8;
           this.blockerTaps = 6;
           break;
         case 'ultra':
@@ -423,11 +434,19 @@ export class CascadedShadowMaps {
        * the scene looks like nothing casts at all. Keep all three terms small and
        * absolutely capped, and let the far cascades acne very slightly rather than
        * lose their shadows: at 0.3 m texels nobody can see the acne anyway.
+       *
+       * The three terms are not independent, which is how peter-panning survives a
+       * per-term audit: the constant, the slope term *and* three's world-space normal
+       * offset all push the same comparison the same way, and at a 13 deg sun their
+       * sum divides by sin(13 deg) = 0.22 — a 4.5x lever on the gap between an object
+       * and where its shadow starts. Detaching the normal offset from the full texel
+       * (1.0 -> 0.6) and trimming the constant's texel share is worth a little acne on
+       * the far cascades, and PCSS then hardens the near contact back to a sharp line.
        */
-      const constWorld = 0.008 + texelWorld * 0.35;
-      const slopeWorld = texelWorld * 0.6;
+      const constWorld = 0.006 + texelWorld * 0.25;
+      const slopeWorld = texelWorld * 0.5;
       light.shadow.bias = -constWorld / depthRange;
-      light.shadow.normalBias = Math.min(texelWorld * 1.0, 0.2);
+      light.shadow.normalBias = Math.min(texelWorld * 0.6, 0.14);
 
       const blendStart = f - (f - n) * this.blendFraction;
       const s = this.uniforms.uCsmSplits.value[i];
