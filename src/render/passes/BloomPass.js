@@ -152,11 +152,17 @@ void main() {
     result += sampleChroma( guv, dir, uChroma * ( float( i ) + 1.0 ) ) * w;
   }
 
-  // Halo: a soft ring at a fixed radius.
+  // Halo: a soft ring at a fixed radius. Must reject off-screen the same way the
+  // ghost loop above does — fract() here wrapped the ring around the frame edge,
+  // so a blown highlight at centre painted its dispersed halo into the opposite
+  // corners as large red arcs.
   vec2 haloVec = dir * uHaloWidth;
-  float haloW = length( vec2( 0.5 ) - fract( uv + haloVec ) ) / length( vec2( 0.5 ) );
-  haloW = pow( 1.0 - clamp( haloW, 0.0, 1.0 ), 8.0 );
-  result += sampleChroma( uv + haloVec, dir, uChroma * 2.0 ) * haloW * 0.7;
+  vec2 haloUv = uv + haloVec;
+  if ( haloUv.x >= 0.0 && haloUv.x <= 1.0 && haloUv.y >= 0.0 && haloUv.y <= 1.0 ) {
+    float haloW = length( vec2( 0.5 ) - haloUv ) / length( vec2( 0.5 ) );
+    haloW = pow( 1.0 - clamp( haloW, 0.0, 1.0 ), 8.0 );
+    result += sampleChroma( haloUv, dir, uChroma * 2.0 ) * haloW * 0.7;
+  }
 
   // Anamorphic streak: a wide, low-amplitude horizontal smear.
   vec3 streak = vec3( 0.0 );

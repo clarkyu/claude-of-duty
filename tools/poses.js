@@ -11,7 +11,7 @@ export const POSES = {
     fov: 78,
     time: 7.4,
     warm: 48,
-    state: { weapon: 'ar_wolverine', ads: false, sprint: false },
+    state: { sunAzimuth: 24, sunAltitude: 15.4, sunKelvin: 3300, weapon: 'ar_wolverine', ads: false, sprint: false },
   },
   ads: {
     desc: 'Aiming down sight through the optic, target downrange',
@@ -20,7 +20,7 @@ export const POSES = {
     fov: 56,
     time: 7.4,
     warm: 48,
-    state: { weapon: 'ar_wolverine', ads: true },
+    state: { sunAzimuth: 24, sunAltitude: 15.4, sunKelvin: 3300, weapon: 'ar_wolverine', ads: true },
   },
   interior: {
     desc: 'Indoor lighting: window shafts, bounce, contact shadows, dust motes',
@@ -29,7 +29,7 @@ export const POSES = {
     fov: 82,
     time: 8.2,
     warm: 64,
-    state: { weapon: 'smg_viper', ads: false },
+    state: { sunAzimuth: 52, sunAltitude: 19.0, sunKelvin: 3800, weapon: 'smg_viper', ads: false },
   },
   firefight: {
     desc: 'Combat frame: muzzle flash, tracers, impact sparks, smoke, enemies in cover',
@@ -38,7 +38,7 @@ export const POSES = {
     fov: 80,
     time: 7.4,
     warm: 30,
-    state: { weapon: 'ar_wolverine', firing: true, bots: 'engaged' },
+    state: { sunAzimuth: 38, sunAltitude: 16.5, sunKelvin: 3400, weapon: 'ar_wolverine', firing: true, bots: 'engaged' },
   },
   materials: {
     desc: 'Close-up material study: concrete, rusted metal, painted wood, glass, decals',
@@ -47,7 +47,7 @@ export const POSES = {
     fov: 46,
     time: 9.0,
     warm: 40,
-    state: { weapon: 'none' },
+    state: { sunAzimuth: 46, sunAltitude: 24.0, sunKelvin: 4200, weapon: 'none' },
   },
   vista: {
     desc: 'Long-range vista: sky, clouds, aerial perspective, distant LODs, volumetrics',
@@ -56,7 +56,7 @@ export const POSES = {
     fov: 70,
     time: 6.6,
     warm: 48,
-    state: { weapon: 'none' },
+    state: { sunAzimuth: 20, sunAltitude: 12.0, sunKelvin: 3050, weapon: 'none' },
   },
   weapon: {
     desc: 'Viewmodel inspect: weapon geometry, machining, wear, optic glass, hands',
@@ -65,7 +65,7 @@ export const POSES = {
     fov: 74,
     time: 8.0,
     warm: 40,
-    state: { weapon: 'ar_wolverine', inspect: true },
+    state: { sunAzimuth: 60, sunAltitude: 18.0, sunKelvin: 3700, weapon: 'ar_wolverine', inspect: true },
   },
   night: {
     desc: 'Night lighting: practicals, emissives, bloom discipline, shadowed streets',

@@ -21,18 +21,43 @@
 import * as THREE from 'three';
 import { Pass, GLSL_LIB, postMaterial, blit } from './Pass.js';
 
+/**
+ * Metering weight. A flat full-frame log-average lets the viewmodel drive the
+ * exposure: when the player aims, a blown optic and a big slab of gun fill a
+ * narrowed FOV, drag the average up, and the whole world stops down with them —
+ * measured as the sky falling from (105,118,131) to (12,15,19) between the hero
+ * and ads poses at the same hour. Real cameras centre-weight, and the viewmodel
+ * is not part of the scene the exposure is metering.
+ *
+ * Radial falloff about the centre, with the bottom of the frame suppressed
+ * hardest because that is where the weapon lives.
+ */
+const METER_WEIGHT = /* glsl */ `
+float meterWeight( vec2 uv ) {
+  vec2 d = uv - vec2( 0.5 );
+  d.y *= 0.82;                                  // slightly wider than tall
+  float radial = 1.0 - smoothstep( 0.16, 0.62, length( d ) );
+  float lower = 1.0 - 0.88 * smoothstep( 0.52, 0.98, uv.y );  // uv.y 1.0 = bottom
+  return max( 0.02, radial * lower );
+}
+`;
+
 const LOGLUM_FRAG = /* glsl */ `
 uniform sampler2D tSrc;
 uniform vec2 uTexel;
 varying vec2 vUv;
 ${GLSL_LIB}
+${METER_WEIGHT}
 void main() {
   vec3 a = texture2D( tSrc, vUv + vec2( -1.0, -1.0 ) * uTexel ).rgb;
   vec3 b = texture2D( tSrc, vUv + vec2(  1.0, -1.0 ) * uTexel ).rgb;
   vec3 c = texture2D( tSrc, vUv + vec2( -1.0,  1.0 ) * uTexel ).rgb;
   vec3 d = texture2D( tSrc, vUv + vec2(  1.0,  1.0 ) * uTexel ).rgb;
   float l = 0.25 * ( luma( a ) + luma( b ) + luma( c ) + luma( d ) );
-  gl_FragColor = vec4( log2( max( l, 0.0005 ) ), 0.0, 0.0, 1.0 );
+  // Carry the weight alongside the sample so the reduction can form a true
+  // weighted average rather than a plain mean.
+  float w = meterWeight( vUv );
+  gl_FragColor = vec4( log2( max( l, 0.0005 ) ) * w, w, 0.0, 1.0 );
 }
 `;
 
@@ -41,11 +66,11 @@ uniform sampler2D tSrc;
 uniform vec2 uTexel;
 varying vec2 vUv;
 void main() {
-  float a = texture2D( tSrc, vUv + vec2( -0.5, -0.5 ) * uTexel ).r;
-  float b = texture2D( tSrc, vUv + vec2(  0.5, -0.5 ) * uTexel ).r;
-  float c = texture2D( tSrc, vUv + vec2( -0.5,  0.5 ) * uTexel ).r;
-  float d = texture2D( tSrc, vUv + vec2(  0.5,  0.5 ) * uTexel ).r;
-  gl_FragColor = vec4( 0.25 * ( a + b + c + d ), 0.0, 0.0, 1.0 );
+  vec2 a = texture2D( tSrc, vUv + vec2( -0.5, -0.5 ) * uTexel ).rg;
+  vec2 b = texture2D( tSrc, vUv + vec2(  0.5, -0.5 ) * uTexel ).rg;
+  vec2 c = texture2D( tSrc, vUv + vec2( -0.5,  0.5 ) * uTexel ).rg;
+  vec2 d = texture2D( tSrc, vUv + vec2(  0.5,  0.5 ) * uTexel ).rg;
+  gl_FragColor = vec4( 0.25 * ( a + b + c + d ), 0.0, 1.0 );
 }
 `;
 
@@ -66,7 +91,9 @@ uniform float uReset;
 varying vec2 vUv;
 
 void main() {
-  float logLum = clamp( texture2D( tAverage, vec2( 0.5 ) ).r, uMinLogLum, uMaxLogLum );
+  // R holds sum(logLum * w), G holds sum(w); divide to recover the weighted mean.
+  vec2 acc = texture2D( tAverage, vec2( 0.5 ) ).rg;
+  float logLum = clamp( acc.r / max( acc.g, 1e-4 ), uMinLogLum, uMaxLogLum );
   float target = exp2( logLum );
 
   float prev = texture2D( tPrevious, vec2( 0.5 ) ).g;
