@@ -38,7 +38,7 @@
 import * as THREE from 'three';
 
 /** Bump when the GLSL changes so cached programs are not reused across a hot reload. */
-export const EXT_VERSION = 5;
+export const EXT_VERSION = 6;
 
 /* ========================================================================== */
 /*                             global uniform bag                             */
@@ -95,6 +95,15 @@ mat3 codTangentFrame( vec3 p, vec3 n, vec2 uv ) {
 }
 
 vec2 codRot( vec2 v, float c, float s ) { return vec2( c * v.x - s * v.y, s * v.x + c * v.y ); }
+
+// Three decorrelated randoms from one integer cell coordinate (Dave Hoskins' hash33,
+// trimmed). Used to give every brick / flag / plank its own identity — the ONLY thing
+// that stops a masonry wall reading as one photograph stamped in a grid.
+vec3 codHash3( vec2 p ) {
+	vec3 q = fract( p.xyx * vec3( 0.1031, 0.1030, 0.0973 ) );
+	q += dot( q, q.yxz + 33.33 );
+	return fract( ( q.xx + q.yz ).xyy * q.zyx );
+}
 `;
 
 /* --------------------------------------------------------------- vertex --- */
@@ -206,10 +215,17 @@ uniform sampler2D uCodHeightMap;
 	uniform vec4 uCodDetail; // tiling, normalStrength, albedoStrength, fadeEnd(m)
 #endif
 #ifdef COD_TILEBREAK
-	uniform vec4 uCodBreak;  // maskScale, strength, fadeStart(m), fadeEnd(m)
+	uniform vec4 uCodBreak;  // maskScale, strength, nearFraction, farStart(m)
+#endif
+#ifdef COD_CELLVAR
+	uniform vec4 uCodCell;   // countsX, countsY, rowOffset, amount
+	uniform vec4 uCodCell2;  // jointX, jointY, hueAmount, roughAmount
 #endif
 #ifdef COD_MACRO
 	uniform vec4 uCodMacro;  // macroStrength, edgeWear, edgeMetal, streak
+	uniform vec4 uCodMacro2; // localBandFreq(1/m), valueAmount, tintAmount, roughAmount
+	uniform vec3 uCodMacroTint;
+	uniform vec4 uCodWear;   // albedoDelta(signed), roughDelta(signed), _, _
 #endif
 #ifdef COD_LAYER
 	uniform sampler2D uCodLayerMap;
@@ -404,7 +420,13 @@ vec3 codNw;
 /* ---- tiling break-up: second rotated sample, low-frequency mask ---- */
 #ifdef COD_TILEBREAK
 {
-	float amt = uCodBreak.y * smoothstep( uCodBreak.z, uCodBreak.w, codDist );
+	// The fade used to be smoothstep(2.5, 14, dist): zero break-up under 2.5 m, full
+	// only past 14 m. That is backwards. The grid is *most* countable where the camera
+	// dwells — the paving under your feet, the wall you are stood against — and the
+	// distance term was guaranteeing it was untouched exactly there. Break-up is now on
+	// everywhere, tapering only slightly in the very near field where the surface's own
+	// detail carries the frame and a rotated second sample would just soften it.
+	float amt = uCodBreak.y * mix( uCodBreak.z, 1.0, smoothstep( 0.8, uCodBreak.w, codDist ) );
 	if ( amt > 0.01 ) {
 		vec2 muv = vCodUv * uCodBreak.x;
 		vec4 mk = texture2D( uCodGrunge, muv );
@@ -430,24 +452,66 @@ vec3 codNw;
 // is already sampled at the parallax-corrected, break-up-blended UV.
 codHeight = codAlb.a;
 
+/* ---- per-cell identity: every brick, flag, tile and plank is its own object ---- */
+#ifdef COD_CELLVAR
+{
+	// Rotating a second copy of the whole map under a blotch mask (COD_TILEBREAK) is
+	// stochastic tiling — the right tool for asphalt and dirt, the wrong one for
+	// masonry: it shears the courses and muddies the bond without ever making two
+	// bricks different from each other. A laid surface needs the opposite treatment,
+	// per *unit*: the lattice is rebuilt here in the same tile space the recipe
+	// authored it in, but vCodUv runs across the whole wall, so floor() gives a
+	// globally unique id and the jitter never repeats with the texture.
+	vec2 C = max( vec2( 1.0 ), floor( uCodCell.xy + 0.5 ) );
+	float crow = floor( vCodUv.y * C.y );
+	vec2 cp = vec2( vCodUv.x * C.x + uCodCell.z * crow, vCodUv.y * C.y );
+	vec2 cid = floor( cp );
+	vec2 cf = cp - cid;
+	// The joint must not take the jitter with it or the mortar stripes course by course.
+	vec2 cd = min( cf, 1.0 - cf );
+	float cface = min( smoothstep( uCodCell2.x * 0.55, uCodCell2.x * 1.8, cd.x ),
+	                   smoothstep( uCodCell2.y * 0.55, uCodCell2.y * 1.8, cd.y ) );
+	vec3 crnd = codHash3( cid + vec2( 0.5, 0.5 ) );
+	float ca = uCodCell.w * cface;
+	// Value, hue and finish move independently: a pallet of flags or a kiln load of
+	// bricks varies in all three and never in lockstep.
+	codAlb.rgb *= 1.0 + ( crnd.x - 0.5 ) * 0.58 * ca;
+	codAlb.rgb *= mix( vec3( 1.0 ),
+	                   vec3( 1.0 + ( crnd.y - 0.5 ) * 0.30,
+	                         1.0 + ( crnd.z - 0.5 ) * 0.09,
+	                         1.0 - ( crnd.y - 0.5 ) * 0.27 ), uCodCell2.z * ca );
+	codOrm.g = codSat( codOrm.g + ( crnd.z - 0.5 ) * uCodCell2.w * ca );
+	// A unit that sits a little proud catches more light on top and more dirt below.
+	codOrm.r = codSat( codOrm.r * ( 1.0 - ( crnd.x - 0.5 ) * 0.14 * ca ) );
+}
+#endif
+
 /* ---- world-space macro variation, staining and convex edge wear ---- */
 #ifdef COD_MACRO
 {
-	// Sampled from WORLD POSITION, never from the tile UV. This block used to live in
-	// the *generation* shader against vUv — 0..1 across one tile — so every copy of the
-	// tile got the same blotch in the same place and it advertised the grid instead of
-	// breaking it. uCodGrunge packs r = fine dirt (1/48 tile), g = large blotches
-	// (1/4 tile), b = cell net, a = downward streaks, so one fetch at 1/80 m gives a
-	// ~20 m band in .g and a ~1.7 m band in .r and neither can line up with a repeat.
+	// Sampled from WORLD POSITION, never from the tile UV, so nothing here can line up
+	// with a texture repeat. uCodGrunge packs r = fine dirt, g = large blotches,
+	// b = cell net, a = downward streaks.
+	//
+	// TWO bands now, and the response belongs to the material. One 80 m fetch driving
+	// a +/-30% albedo multiply on everything made the awning, the render behind it and
+	// the timber all wear the same swirled topographic marble; the fix is not to delete
+	// it (a long wall does drift) but to halve the amplitude, put a metre-scale band
+	// under it, and let each family say what its drift IS — batch mismatch for
+	// concrete, sun bleach for canvas, dulling for metal.
 	vec4 mA = texture2D( uCodGrunge, vCodWPos.xz * 0.0125 + vCodWPos.y * 0.0031 );
-	codMacroN = codSat( mA.g * 0.7 + mA.r * 0.3 );
-	float macro = codMacroN - 0.5;
+	vec4 mB = texture2D( uCodGrunge, ( vCodWPos.xz + vCodWPos.y * 0.41 ) * uCodMacro2.x + 0.37 );
+	codMacroN = codSat( mA.g * 0.62 + mA.r * 0.38 );
+	float broad = codMacroN - 0.5;
+	float local = ( mB.g * 0.45 + mB.r * 0.55 ) - 0.5;
+	float macro = broad * 0.60 + local * 0.40;
 	float amt = uCodMacro.x;
-	codAlb.rgb *= 1.0 + macro * 0.30 * amt;
+	codAlb.rgb *= 1.0 + macro * uCodMacro2.y * amt;
 	// Batch-to-batch colour. Render, concrete and brick arrive in loads that never
 	// quite match, and that mismatch is most of what makes a long wall read as built.
-	codAlb.rgb = mix( codAlb.rgb, codAlb.rgb * vec3( 1.07, 1.0, 0.90 ), codSat( mA.g * 1.7 - 0.45 ) * 0.35 * amt );
-	codOrm.g = codSat( codOrm.g + macro * 0.14 * amt );
+	codAlb.rgb = mix( codAlb.rgb, codAlb.rgb * uCodMacroTint,
+	                  codSat( ( broad * 1.5 + local * 0.8 ) + 0.18 ) * uCodMacro2.z * amt );
+	codOrm.g = codSat( codOrm.g + macro * uCodMacro2.w * amt );
 
 	// Vertical staining, placed in world space. runoff() in the generation pass is in
 	// tile UV, so every 3 m the identical streak restarted from nothing; here the
@@ -455,23 +519,28 @@ codHeight = codAlb.a;
 	// which is at least the right *kind* of wrong until decals place it from geometry.
 	float face = codSat( 1.0 - abs( codWN.y ) * 1.8 );
 	if ( uCodMacro.w > 0.01 && face > 0.02 ) {
-		vec4 mB = texture2D( uCodGrunge, vec2( ( vCodWPos.x * 0.86 + vCodWPos.z * 0.51 ) * 0.055, vCodWPos.y * 0.011 ) );
-		codStreak = codSat( mB.a * 1.4 + mB.r * 0.3 - 0.44 ) * face * uCodMacro.w;
+		vec4 mS = texture2D( uCodGrunge, vec2( ( vCodWPos.x * 0.86 + vCodWPos.z * 0.51 ) * 0.055, vCodWPos.y * 0.011 ) );
+		codStreak = codSat( mS.a * 1.4 + mS.r * 0.3 - 0.44 ) * face * uCodMacro.w;
 		codAlb.rgb *= mix( vec3( 1.0 ), vec3( 0.66, 0.645, 0.60 ), codStreak * 0.75 );
 		codOrm.g = codSat( codOrm.g + codStreak * 0.16 );
 	}
 
-	// Convex edge wear — the inverse of the cavity term that already drives grime.
-	// The proud parts of the height field are the only parts that anything ever
-	// touches, so they lose their grime, lose their roughness and, on metal, lose
-	// their oxide. Without it every arris, nosing and kerb vanishes the moment the two
-	// faces either side of it happen to share a tone.
-	float convex = smoothstep( 0.60, 0.93, codHeight ) * ( 0.30 + 0.85 * codMacroN );
-	float wear = convex * uCodMacro.y * ( 1.0 - codStreak * 0.6 );
-	codAlb.rgb = mix( codAlb.rgb, codAlb.rgb * 1.20 + vec3( 0.035 ), wear );
-	codOrm.g = codSat( codOrm.g - wear * 0.40 );
+	// Convex wear — the inverse of the cavity term that already drives grime. Two
+	// things were wrong with it. It fired on the top third of the height field, which
+	// on a crate is most of the face, and it made every worn texel BOTH brighter AND
+	// smoother, which no real wear mechanism does: handled timber and paint go darker
+	// and polished, abraded masonry goes paler and coarser, rubbed steel goes brighter
+	// and polished. The direction is now a per-recipe signed pair. The trigger is also
+	// tightened to proud AND open texels and cut by a world-space band, so two crates
+	// side by side no longer carry a byte-identical outline.
+	float open = smoothstep( 0.28, 0.78, codOrm.r );
+	float convex = smoothstep( 0.74, 0.98, codHeight ) * open;
+	float band = 0.30 + 1.25 * codSat( texture2D( uCodGrunge, vCodWPos.xy * 0.29 + vCodWPos.zx * 0.17 ).r );
+	float wear = codSat( convex * band ) * uCodMacro.y * ( 1.0 - codStreak * 0.6 );
+	codAlb.rgb *= 1.0 + uCodWear.x * wear;
+	codOrm.g = codSat( codOrm.g + uCodWear.y * wear );
 	codOrm.b = codSat( codOrm.b + wear * uCodMacro.z );
-	codOrm.r = codSat( codOrm.r + wear * 0.12 );
+	codOrm.r = codSat( codOrm.r + wear * 0.10 );
 }
 #endif
 
@@ -486,12 +555,21 @@ codHeight = codAlb.a;
 {
 	// Drifts pile up somewhere in particular. Without a world-scale mask a global
 	// layerAmount is a uniform film over the whole map, which is worse than no layer.
-	float lw = codSat( ( codMask.g * uCodLayer.x + uCodLayer.y ) * ( 0.25 + 1.5 * codMacroN ) );
+	// lw is a COVERAGE TARGET in 0..1, not a weight: 0.3 means "about thirty percent
+	// of this patch is silt". The old line then did w = sat(lw*(1+k) - bias*k), which
+	// with k≈1.8 and bias≈0.5 only went positive for lw > 0.32 — i.e. for a global
+	// amount of 0.2..0.32 the layer existed in a couple of percent of the deepest
+	// cavities of the top few percent of the macro band, and the ground was one
+	// material from kerb to horizon. The standard height blend below puts the 50%
+	// crossover exactly at bias == lw, so the coverage on screen is the number asked
+	// for, and contrast sets how hard the transition is instead of gating it away.
+	float lw = codSat( codMask.g * uCodLayer.x + uCodLayer.y * ( 0.30 + 1.45 * codMacroN ) );
 	if ( lw > 0.002 ) {
 		// Height-aware: cavityBias 1 fills crevices first (mud, water), 0 covers
 		// the peaks first (snow blowing onto a ledge).
 		float bias = mix( 1.0 - codHeight, codHeight, uCodLayer.z );
-		float w = codSat( ( lw * ( 1.0 + uCodLayer.w ) - bias * uCodLayer.w ) );
+		float soft = clamp( 1.0 / max( 0.35, uCodLayer.w ), 0.06, 1.2 );
+		float w = codSat( ( lw - bias ) / soft + 0.5 );
 		w = smoothstep( 0.0, 1.0, w );
 		w *= mix( 1.0, codSat( codWN.y * 1.5 + 0.1 ), uCodLayer2.x );
 		if ( w > 0.002 ) {
@@ -589,12 +667,19 @@ codHeight = codAlb.a;
 	// specular response too — a dirty pane is not just a more opaque clean pane.
 	// Per-pane hash: a real facade has a different film on every sheet, and identical
 	// glazing across forty windows is one of the loudest "generated" tells there is.
-	vec3 pc = floor( vCodWPos * vec3( 0.75, 0.55, 0.75 ) );
+	vec3 pcell = vCodWPos * vec3( 0.75, 0.55, 0.75 );
+	vec3 pc = floor( pcell );
+	vec3 pl = pcell - pc;
 	float pane = fract( sin( dot( pc, vec3( 12.9898, 78.233, 37.719 ) ) ) * 43758.5453 );
 	vec4 gr = texture2D( uCodGrunge, vCodUv * uCodGlass.w + pane * 7.13 );
-	// Rain carries the muck down the sheet and it dries in the bottom of the frame.
-	float down = codSat( 0.62 - fract( vCodWPos.y * 0.55 ) ) * 2.0;
-	codGlassDirt = codSat( ( gr.r * 0.45 + gr.g * 0.55 ) * ( 0.5 + 1.0 * down ) * uCodGlass.z * ( 0.55 + 0.9 * pane ) );
+	// Muck is not a uniform film over the sheet — that is exactly what turns a window
+	// into an opaque card. It collects in the frame rebate and washes down from the
+	// top, and the middle of the pane stays close to clear so the fresnel gradient and
+	// whatever is behind the glass both survive.
+	float rebate = codSat( 1.0 - min( min( pl.x, 1.0 - pl.x ), min( pl.y, 1.0 - pl.y ) ) * 5.5 );
+	float down = codSat( 0.55 - pl.y ) * 1.6;
+	float film = ( gr.r * 0.45 + gr.g * 0.55 ) * ( 0.16 + 0.55 * down + 0.85 * rebate );
+	codGlassDirt = codSat( film * uCodGlass.z * ( 0.55 + 0.9 * pane ) );
 	codAlb.rgb = mix( codAlb.rgb, codAlb.rgb * 0.55 + vec3( 0.15, 0.146, 0.136 ), codGlassDirt * 0.9 );
 	// Clean glass is optically smooth; the film is what scatters. Driving roughness
 	// from the dirt is what lets the clean part of the pane behave like a mirror.
@@ -695,6 +780,19 @@ export const FRAG_COLOR_NOOP = '/* COD: vColor is a mask, see FRAG_SURFACE */';
 // language=GLSL
 export const FRAG_ROUGHNESS = /* glsl */ `
 float roughnessFactor = clamp( mix( uCodRough.x, uCodRough.y, codOrm.g ), 0.015, 1.0 );
+{
+	// Specular anti-aliasing (Kaplanyan/Tokuyoshi, screen-space form). A smooth,
+	// high-frequency normal field under-samples its own NDF and the leftovers arrive as
+	// hard white sparkle that crawls when the camera moves — the picatinny rail on the
+	// viewmodel being the loudest example in the set. Widening the lobe by the
+	// screen-space variance of the shading normal is the standard fix and it costs two
+	// derivatives.
+	vec3 dnx = dFdx( codNw );
+	vec3 dny = dFdy( codNw );
+	float var2 = dot( dnx, dnx ) + dot( dny, dny );
+	float a = roughnessFactor * roughnessFactor;
+	roughnessFactor = clamp( sqrt( min( a + 0.45 * var2, 1.0 ) ), 0.015, 1.0 );
+}
 `;
 
 // language=GLSL
@@ -817,8 +915,12 @@ export const FRAG_ALPHA_TAIL = /* glsl */ `
 {
 	// Fresnel: near-transparent head-on, near-opaque at grazing. That transition IS
 	// glass — a pane with a constant alpha reads as a sheet of dark plastic.
+	// The dirt term used to add up to 0.65 of flat opacity on its own, which swamped
+	// the fresnel ramp and left every pane a matte cream card. It contributes a third
+	// of that now, so the gradient from near-clear head-on to near-mirror at grazing
+	// is what you actually see.
 	float f = pow( 1.0 - codSat( dot( codNw, codVw ) ), 5.0 );
-	diffuseColor.a = codSat( uCodGlass.x + f * uCodGlass.y + codGlassDirt * 0.85 );
+	diffuseColor.a = codSat( uCodGlass.x + f * uCodGlass.y + codGlassDirt * 0.30 );
 }
 #endif
 `;

@@ -63,7 +63,16 @@ export const PALETTE = {
      global amount, multiplied by the world-space macro band in the shader and biased
      into the cavities, gives grit collecting in the ruts of the road, silt over the
      paving joints and wind-drifted sand banking up on the dirt — patchy, at 20 m
-     scale, and only on up-facing geometry so it never smears up a wall. */
+     scale, and only on up-facing geometry so it never smears up a wall.
+
+     Round 2 raised the amounts off zero and the ground still did not change, because
+     the shader's weight was `sat(lw*(1+k) - bias*k)`: with k ≈ 1.8 and the height
+     bias sitting near 0.5, nothing went positive below lw ≈ 0.32, so 0.2 bought a
+     couple of percent coverage in the deepest cavities of the top of the macro band.
+     materialExtensions now runs the standard height blend, whose 50% crossover is at
+     bias == lw, so `layerAmount` finally means what it says: it is the *coverage
+     fraction* at the middle of the macro band. `layerContrast` is now purely the
+     hardness of the transition (higher = harder edge), not a gate. */
   'ground.road': {
     m: 'asphalt',
     o: {
@@ -71,10 +80,10 @@ export const PALETTE = {
       grime: 0.7,
       puddleLevel: 0.5,
       layer: 'gravel',
-      layerAmount: 0.2,
+      layerAmount: 0.44,
       layerCavityBias: 0.85,
       layerUpFacing: 1,
-      layerContrast: 1.9,
+      layerContrast: 2.4,
       layerRepeat: 1.35,
     },
   },
@@ -85,10 +94,11 @@ export const PALETTE = {
       grime: 0.9,
       puddleLevel: 0.45,
       layer: 'dirt_packed',
-      layerAmount: 0.24,
+      layerAmount: 0.4,
       layerCavityBias: 0.9,
       layerUpFacing: 1,
-      layerContrast: 1.7,
+      layerContrast: 2.0,
+      layerRoughness: 1.05,
     },
   },
   'ground.dirt': {
@@ -96,11 +106,11 @@ export const PALETTE = {
     o: {
       vertexColors: true,
       layer: 'sand',
-      layerAmount: 0.32,
+      layerAmount: 0.5,
       // Drifted sand fills the hollows and banks against anything standing in it.
       layerCavityBias: 0.78,
       layerUpFacing: 1,
-      layerContrast: 2.1,
+      layerContrast: 1.8,
       layerRepeat: 0.75,
       grime: 0.5,
       puddleLevel: 0.55,
@@ -143,8 +153,19 @@ export const PALETTE = {
   'fabric.awning2': { m: 'tarp', o: { side: 'double', vertexColors: true, grime: 1.0 }, tint: 0x4a6a86 },
   'fabric.canvas': { m: 'fabric_canvas', o: { side: 'double', vertexColors: true, grime: 1.1, repeat: 1.6 }, tint: 0xbcb096 },
 
+  /* ── produce ────────────────────────────────────────────────────────────
+     Three tints of one recipe, so the market stalls actually have *goods* on them.
+     Same program, three clones — a heap of oranges next to a heap of greens is the
+     only thing that separates a market from a row of empty trestles, and colour is
+     doing almost all of that work at 8 m. */
+  'veg.citrus': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.35, repeat: 5.0 }, tint: 0xc87d22 },
+  'veg.tomato': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.35, repeat: 5.0 }, tint: 0xa8362a },
+  'veg.green': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.4, repeat: 5.0 }, tint: 0x6d7f34 },
+
   /* ── interior ───────────────────────────────────────────────────────── */
   'int.tile': { m: 'ceramic_tile', o: { vertexColors: true, grime: 1.0 } },
+  'int.tileWorn': { m: 'ceramic_tile', o: { vertexColors: true, grime: 1.45, repeat: 1.2 }, tint: 0x9a9184 },
+  'int.screed': { m: 'concrete_cast', o: { vertexColors: true, grime: 1.3, repeat: 2.0 }, tint: 0x8f8779 },
   'int.plaster': { m: 'plaster_cracked', o: { vertexColors: true, grime: 0.85 }, tint: 0xcfc8b6 },
 
   /* ── water & signage ────────────────────────────────────────────────── */

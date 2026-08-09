@@ -714,6 +714,14 @@ class Group {
     this.u = [];
     this.c = [];
     this.i = [];
+    /**
+     * True once anything in this group authored its own UVs through `uvFn`. Merging a
+     * prop into a district normally adds a random UV offset so two copies of the same
+     * crate do not show the same knot in the same place — but an *atlas* UV is an
+     * index, not a tiling coordinate, and shifting it by 1.7 lands on a different
+     * shop's sign. Explicit UVs are therefore never offset.
+     */
+    this.lockUv = false;
   }
   get count() {
     return this.p.length / 3;
@@ -843,6 +851,7 @@ export class Accum {
         uu = t[0];
         vv = t[1];
         g.u.push(uu, vv);
+        g.lockUv = true;
       } else {
         if (ay >= ax && ay >= az) {
           uu = lx;
@@ -916,7 +925,12 @@ export class Accum {
           g.n.push(nx, ny, nz);
         }
       }
-      for (let k = 0; k < src.u.length; k += 2) g.u.push(src.u[k] + ou, src.u[k + 1] + ov);
+      if (src.lockUv) {
+        g.lockUv = true;
+        for (let k = 0; k < src.u.length; k++) g.u.push(src.u[k]);
+      } else {
+        for (let k = 0; k < src.u.length; k += 2) g.u.push(src.u[k] + ou, src.u[k + 1] + ov);
+      }
       for (let k = 0; k < src.c.length; k++) g.c.push(src.c[k]);
       for (let k = 0; k < src.i.length; k++) g.i.push(src.i[k] + base);
     }

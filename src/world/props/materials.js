@@ -16,7 +16,8 @@
  * `_animateCloth()` below turns into wind motion. See props/geom.js.
  */
 import * as THREE from 'three';
-import { chainLinkAlpha } from './geom.js';
+import { chainLinkAlpha, Rng } from './geom.js';
+import { signageLayout, drawSignageAtlas } from './signage.js';
 
 /**
  * key -> { base, opts, surface? , tint?, rough? }
@@ -74,6 +75,12 @@ export const PROP_MATS = {
 
   /* ── alpha-cutout weaves: built by PropPalette.cutout() in registerCutouts() ── */
   chain: { base: 'galvanised_metal', opts: { repeat: 2.6 } },
+
+  /* ── the written world: one canvas atlas, two materials. props/signage.js ──── */
+  /** opaque enamel/board faces — shop fascias, street plates, unit numbers */
+  signage: { base: 'painted_steel_chipped', opts: {} },
+  /** alpha-tested paint straight onto a wall, shutter or road */
+  signageDecal: { base: 'painted_steel_chipped', opts: {} },
 };
 
 /** Emissive lamp lens — read by the night pose, so it is deliberately restrained. */
@@ -134,6 +141,7 @@ export class PropPalette {
     if (key === 'lens') return this.lens(0xffc07a, 3.4);
     if (key === 'lensCold') return this.lens(0xcfe2ff, 2.2);
     if (key === 'chain') return this.registerCutouts().chain;
+    if (key === 'signage' || key === 'signageDecal') return this.signageMaterial(key === 'signageDecal');
     const mat = this._build(key);
     this.cache.set(key, mat);
     return mat;
@@ -216,6 +224,88 @@ export class PropPalette {
     if (w && Number.isFinite(w.x)) u.set(w.x, w.y, Math.max(0, w.z + (w.w || 0) * 0.5), u.w);
     const t = globals?.time;
     u.w = Number.isFinite(t) ? t : u.w + 0.016;
+  }
+
+  /* ══════════════════════════════════════════════════════════════ signage ══ */
+
+  /**
+   * The signage atlas. Drawn once into a 1024² canvas (see props/signage.js) and
+   * uploaded as a single sRGB `CanvasTexture`, so every readable mark in the world —
+   * fascias, plates, stencils, graffiti, road paint, cracks — shares one texture and
+   * therefore one draw call per district per material.
+   *
+   * @returns {{layout: object, texture: THREE.Texture|null}}
+   */
+  signageAtlas() {
+    if (this._signage) return this._signage;
+    const layout = signageLayout();
+    let texture = null;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = layout.W;
+      canvas.height = layout.H;
+      const g = canvas.getContext('2d');
+      if (g) {
+        // Deterministic: seeded from the props stream, never Math.random().
+        const rng = new Rng(0x5164a7 ^ ((this.ctx.rng ? Math.floor(this.ctx.rng() * 0xffffff) : 0x2b1d) >>> 0));
+        drawSignageAtlas(g, layout, () => rng.next());
+        texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+        texture.magFilter = THREE.LinearFilter;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.generateMipmaps = true;
+        texture.anisotropy = Math.min(8, this.ctx.renderer?.capabilities?.getMaxAnisotropy?.() || 1);
+        texture.needsUpdate = true;
+        this.textures.push(texture);
+      }
+    } catch (err) {
+      console.warn('[props] signage atlas failed', err?.message || err);
+    }
+    this._signage = { layout, texture };
+    return this._signage;
+  }
+
+  /**
+   * Board face (opaque) or paint decal (alpha-tested, polygon-offset). Deliberately a
+   * plain Standard material rather than a MaterialLibrary recipe: the library owns
+   * `map` and would overwrite the atlas with its own tiling albedo. All the wear,
+   * grime, chipping and overspray is painted into the canvas instead, and the sky's
+   * aerial perspective is injected by hand so a distant fascia hazes with everything
+   * else.
+   */
+  signageMaterial(decal) {
+    const ck = decal ? 'signageDecal' : 'signage';
+    const hit = this.cache.get(ck);
+    if (hit) return hit;
+    const { texture } = this.signageAtlas();
+    const mat = new THREE.MeshStandardMaterial({
+      name: `prop:${ck}`,
+      map: texture,
+      color: 0xffffff,
+      roughness: decal ? 0.94 : 0.62,
+      metalness: 0.0,
+      envMapIntensity: 0.55,
+      transparent: false,
+      alphaTest: decal ? 0.34 : 0.5,
+      side: THREE.FrontSide,
+      dithering: true,
+    });
+    if (decal) {
+      mat.polygonOffset = true;
+      mat.polygonOffsetFactor = -3;
+      mat.polygonOffsetUnits = -6;
+    }
+    mat.userData.propMaterial = ck;
+    mat.userData.surface = decal ? 'concrete' : 'metal';
+    try {
+      this.ctx.sky?.applyAerialPerspective?.(mat);
+    } catch {
+      /* aerial perspective is a nicety; the sign still renders */
+    }
+    this.owned.push(mat);
+    this.cache.set(ck, mat);
+    return mat;
   }
 
   /** Builds (once) the chain-link weave. 60 mm apertures, alpha-tested. */

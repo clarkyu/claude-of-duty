@@ -763,19 +763,32 @@ function buildMarketInterior(bat, def, ys, roofY, rng) {
   // material — a literal blockout mass with no material identity, still in the frame.
   // `marketStall` is a real stall: steel frame, canvas canopy, timber counter, and it
   // gives the hall the silhouette a market is supposed to have.
+  /*
+   * Six of the same prefab at three scales, all empty, is a furniture showroom. Each
+   * stall now names a frame `variant` (pipe canopy / lean-to / timber A-frame) and a
+   * `goods` deck (which produce, whether it hangs textiles, which end the balance is
+   * on) so no two read alike, and every one of them is *stocked* — see
+   * kit/Street.js marketStall().
+   */
   const stalls = [
-    [mx1 + 2.2, z0 + 4.6, 0],
-    [mx1 + 2.4, z0 + 10.4, 0],
-    [mx1 + 2.3, z0 + 16.2, 0],
-    [x1 - 3.4, z0 + 7.2, Math.PI],
-    [x1 - 3.6, z0 + 13.6, Math.PI],
-    [x1 - 3.5, z0 + 19.4, Math.PI],
+    [mx1 + 2.2, z0 + 4.6, 0, 0, 0, 2.4, 1.5],
+    [mx1 + 2.4, z0 + 10.4, 0, 2, 1, 2.7, 1.6],
+    [mx1 + 2.3, z0 + 16.2, 0, 1, 2, 2.3, 1.45],
+    [x1 - 3.4, z0 + 7.2, Math.PI, 1, 3, 2.5, 1.5],
+    [x1 - 3.6, z0 + 13.6, Math.PI, 0, 2, 2.6, 1.7],
+    [x1 - 3.5, z0 + 19.4, Math.PI, 2, 1, 2.4, 1.4],
   ];
-  for (const [sx, sz, syaw] of stalls) {
+  for (const [sx, sz, syaw, variant, goods, sw, sd] of stalls) {
     if (sx <= mx1 || sx >= x1 - 1.2) continue;
-    marketStall(bat, sx, g, sz, syaw + (rng() - 0.5) * 0.12, { width: 2.4, depth: 1.5, height: 2.2 });
+    marketStall(bat, sx, g, sz, syaw + (rng() - 0.5) * 0.12, {
+      width: sw,
+      depth: sd,
+      height: 2.1 + rng() * 0.28,
+      variant,
+      goods,
+    });
   }
-  // Two plain trestle counters as low cover between the stalls.
+  // Two plain trestle counters as low cover between the stalls — with stock on them.
   for (const [cx, cz, yaw] of [
     [(mx1 + x1) * 0.5 + 0.4, z0 + 7.8, Math.PI / 2],
     [(mx1 + x1) * 0.5 + 0.2, z0 + 17.0, Math.PI / 2],
@@ -783,9 +796,48 @@ function buildMarketInterior(bat, def, ys, roofY, rng) {
     lowWall(bat, cx - Math.cos(yaw) * 1.4, cz + Math.sin(yaw) * 1.4, cx + Math.cos(yaw) * 1.4, cz - Math.sin(yaw) * 1.4, g, g + 0.92, 0.55, 'wood.weathered', {
       copingMat: 'struct.concreteClean',
     });
+    for (let i = 0; i < 4; i++) {
+      const t = (i + 0.5) / 4;
+      const bx = cx - Math.cos(yaw) * 1.4 + Math.cos(yaw) * 2.8 * t;
+      const bz = cz + Math.sin(yaw) * 1.4 - Math.sin(yaw) * 2.8 * t;
+      const bh = 0.16 + rng() * 0.16;
+      bat.b(rng() > 0.5 ? 'wood.ply' : 'struct.panelPale').box([bx, g + 0.96 + bh * 0.5, bz], [0.17, bh * 0.5, 0.15], { chamfer: 0.012 });
+      bat.b(rng() > 0.5 ? 'veg.citrus' : 'veg.green').cylinder(
+        [bx, g + 0.96 + bh, bz], [bx, g + 1.0 + bh, bz], 0.13, 8, { radius2: 0.06 }
+      );
+    }
   }
   crateStack(bat, x1 - 2.2, z0 + 3.4, g, g + 1.9, 0.3, rng);
   crateStack(bat, mx1 + 1.3, z1 - 3.0, g, g + 1.5, -0.25, rng);
+
+  /*
+   * Break the floor. An unbroken tile grid running wall to wall with a stain overlay
+   * on top of it is the single loudest "this ground is a texture" tell there is, so
+   * the tile is physically interrupted: a screed patch where tiles have gone, a worn
+   * lane down the middle of the hall in a duller tile, a threshold band at each door
+   * and a floor gully with a grate.
+   */
+  const hallCx = (mx1 + x1) * 0.5 + 0.6;
+  bat.b('int.tileWorn').box([hallCx, g + 0.012, (z0 + z1) * 0.5], [(x1 - mx1) * 0.22, 0.012, (z1 - z0) * 0.42], { chamfer: 0.008 });
+  for (const [px, pz, pw, pd] of [
+    [mx1 + 3.4, z0 + 8.2, 1.5, 1.1],
+    [x1 - 4.6, z0 + 16.0, 1.2, 1.6],
+    [hallCx + 1.4, z1 - 4.2, 1.8, 1.2],
+  ]) {
+    bat.b('int.screed').box([px, g + 0.018, pz], [pw * 0.5, 0.018, pd * 0.5], { chamfer: 0.012 });
+    /* a lip of broken tile round the patch */
+    bat.b('int.tileWorn').box([px, g + 0.024, pz], [pw * 0.5 + 0.09, 0.008, pd * 0.5 + 0.09], { chamfer: 0.02 });
+  }
+  /* floor gully with a cast grate, running to the north door */
+  const gz = z0 + 2.6;
+  bat.b('int.screed').box([hallCx, g + 0.006, gz], [(x1 - mx1) * 0.34, 0.03, 0.16], { chamfer: 0.02 });
+  for (let i = 0; i < 9; i++) {
+    const gx = hallCx - (x1 - mx1) * 0.3 + i * ((x1 - mx1) * 0.6) / 8;
+    bat.b('metal.rust').box([gx, g + 0.028, gz], [0.03, 0.014, 0.13], { chamfer: 0.004 });
+  }
+  /* threshold bands in worn stone at the two main doors */
+  bat.b('struct.concreteClean').box([x0 + 9, g + 0.02, z1 - t - 0.35], [1.5, 0.02, 0.35], { chamfer: 0.012 });
+  bat.b('struct.concreteClean').box([x0 + 5.5, g + 0.02, z0 + t + 0.35], [1.7, 0.02, 0.35], { chamfer: 0.012 });
 }
 
 /**
@@ -914,41 +966,125 @@ function buildShopInterior(bat, def, ys, rng) {
     lowWall(bat, back.ax, back.az, back.bx, back.bz, g, g + 0.94, 0.56, 'wood.weathered', {
       copingMat: 'struct.concreteClean',
     });
-
-    // Wall shelving: three boards on brackets against the long inner wall.
-    const shx = unitAxis === 'x' ? cx : ux1 - 0.4;
-    const shz = unitAxis === 'x' ? uz1 - 0.4 : cz;
-    const shL = unitAxis === 'x' ? Math.min(2.6, (ux1 - ux0) * 0.5) : Math.min(2.6, (uz1 - uz0) * 0.5);
-    const bm = bat.b('wood.ply');
-    for (let s = 0; s < 3; s++) {
-      const sy = g + 0.9 + s * 0.62;
-      if (unitAxis === 'x') bm.box([shx, sy, shz], [shL, 0.024, 0.24], { chamfer: 0.008 });
-      else bm.box([shx, sy, shz], [0.24, 0.024, shL], { chamfer: 0.008 });
-      // stock: a few boxes standing on the board
+    /*
+     * Stock ON the counter. A bare counter reads as a low wall, which is exactly what
+     * it was. Till, a jar row, a stack of trays, a paper roll on a spindle and a
+     * carrier-bag hook — all four-to-twelve triangles apiece.
+     */
+    {
+      const cAx = back.ax;
+      const cAz = back.az;
+      const cBx = back.bx;
+      const cBz = back.bz;
+      const at = (t, off = 0) => [
+        lerp(cAx, cBx, t) + (unitAxis === 'x' ? 0 : off),
+        0,
+        lerp(cAz, cBz, t) + (unitAxis === 'x' ? off : 0),
+      ];
+      const top = g + 0.97;
+      /* till: a boxy body with a raised display head */
+      const [tx, , tz] = at(0.18);
+      bat.b('struct.panelPale').box([tx, top + 0.11, tz], [0.19, 0.11, 0.16], { chamfer: 0.014 });
+      bat.b('metal.paintCream').box([tx, top + 0.26, tz - 0.03], [0.13, 0.05, 0.09], { chamfer: 0.01, });
+      bat.b('sign.lit').box([tx, top + 0.27, tz + 0.06], [0.1, 0.032, 0.006], { chamfer: 0.003 });
+      /* jar row */
+      for (let j = 0; j < 5; j++) {
+        const [jx, , jz] = at(0.34 + j * 0.055, -0.1);
+        const jh = 0.13 + rng() * 0.09;
+        bat.b('glass.shop').cylinder([jx, top, jz], [jx, top + jh, jz], 0.052, 9);
+        bat.b(rng() > 0.5 ? 'veg.citrus' : 'veg.green').cylinder([jx, top + 0.012, jz], [jx, top + jh * 0.8, jz], 0.044, 8);
+        bat.b('metal.galv').cylinder([jx, top + jh, jz], [jx, top + jh + 0.014, jz], 0.055, 9);
+      }
+      /* stacked trays and a paper roll on a spindle */
+      const [sx2, , sz2] = at(0.68, 0.02);
+      for (let s = 0; s < 3; s++) {
+        bat.b('wood.ply').box([sx2 + s * 0.012, top + 0.035 + s * 0.062, sz2], [0.2, 0.03, 0.15], { chamfer: 0.008 });
+      }
+      const [px2, , pz2] = at(0.86, -0.06);
+      bat.b('metal.rust').cylinder([px2, top, pz2 - 0.1], [px2, top, pz2 + 0.1], 0.008, 5);
+      bat.b('struct.panelPale').cylinder([px2, top, pz2 - 0.07], [px2, top, pz2 + 0.07], 0.055, 10);
+      /* a hook rail under the counter nose with carrier bags on it */
+      const [hx, , hz] = at(0.5, 0.3);
+      bat.b('metal.galv').cylinder([hx - 0.35, g + 0.86, hz], [hx + 0.35, g + 0.86, hz], 0.008, 5);
       for (let b = 0; b < 4; b++) {
-        const ft = (b + 0.5) / 4;
-        const bx2 = unitAxis === 'x' ? lerp(shx - shL + 0.2, shx + shL - 0.2, ft) : shx;
-        const bz2 = unitAxis === 'x' ? shz : lerp(shz - shL + 0.2, shz + shL - 0.2, ft);
-        if (rng() < 0.35) continue;
-        const bh = 0.14 + rng() * 0.16;
-        bat
-          .b(rng() > 0.5 ? 'wood.painted' : 'struct.panelPale')
-          .box([bx2, sy + 0.024 + bh * 0.5, bz2], [0.11, bh * 0.5, 0.11], { chamfer: 0.012 });
+        bat.b('struct.panelPale').box([hx - 0.28 + b * 0.19, g + 0.72, hz - 0.01], [0.07, 0.13, 0.02], { chamfer: 0.01 });
       }
     }
-    // Bracket pairs under the shelves.
-    const brm = bat.b('metal.rust');
-    for (const s of [-1, 1]) {
-      const bx2 = unitAxis === 'x' ? shx + s * (shL - 0.25) : shx;
-      const bz2 = unitAxis === 'x' ? shz : shz + s * (shL - 0.25);
-      brm.box([bx2, g + 1.52, bz2], [0.02, 0.65, 0.02], { chamfer: 0 });
+
+    /*
+     * Wall shelving. It used to be sited on the *far* wall of the unit, which for the
+     * `weapon` camera (standing inside unit 3 looking north) put every stocked board
+     * ten metres behind the lens. It now runs along the back wall the shopfront faces
+     * — the wall a camera standing in the unit is looking straight at — and a second,
+     * shorter run goes on the party partition.
+     */
+    const shelfRuns =
+      unitAxis === 'x'
+        ? [
+            { x: cx, z: uz0 + 0.34, L: Math.min(2.4, (ux1 - ux0) * 0.42), axis: 'x' },
+            { x: ux0 - 0.55, z: uz0 + 2.6, L: 1.5, axis: 'z' },
+          ]
+        : [
+            { x: ux0 + 0.34, z: cz, L: Math.min(2.4, (uz1 - uz0) * 0.42), axis: 'z' },
+            { x: ux0 + 2.6, z: uz0 - 0.55, L: 1.5, axis: 'x' },
+          ];
+    for (const run of shelfRuns) {
+      if (run.L < 0.6) continue;
+      const bm = bat.b('wood.ply');
+      for (let s = 0; s < 3; s++) {
+        const sy = g + 0.86 + s * 0.6;
+        if (run.axis === 'x') bm.box([run.x, sy, run.z], [run.L, 0.024, 0.23], { chamfer: 0.008 });
+        else bm.box([run.x, sy, run.z], [0.23, 0.024, run.L], { chamfer: 0.008 });
+        // stock: boxes, tins and sacks standing on the board — never an empty shelf
+        const slots = Math.max(3, Math.round(run.L * 2.6));
+        for (let b = 0; b < slots; b++) {
+          const ft = (b + 0.5) / slots;
+          const bx2 = run.axis === 'x' ? lerp(run.x - run.L + 0.16, run.x + run.L - 0.16, ft) : run.x;
+          const bz2 = run.axis === 'x' ? run.z : lerp(run.z - run.L + 0.16, run.z + run.L - 0.16, ft);
+          if (rng() < 0.16) continue;
+          const kind = rng();
+          const bh = 0.13 + rng() * 0.17;
+          if (kind < 0.45) {
+            bat
+              .b(rng() > 0.5 ? 'wood.painted' : 'struct.panelPale')
+              .box([bx2, sy + 0.024 + bh * 0.5, bz2], [0.1, bh * 0.5, 0.1], { chamfer: 0.012 });
+          } else if (kind < 0.78) {
+            bat.b('metal.paintCream').cylinder([bx2, sy + 0.026, bz2], [bx2, sy + 0.026 + bh * 0.7, bz2], 0.055, 9);
+            bat.b(rng() > 0.5 ? 'veg.tomato' : 'veg.citrus').cylinder(
+              [bx2, sy + 0.03, bz2], [bx2, sy + 0.026 + bh * 0.66, bz2], 0.057, 9
+            );
+          } else {
+            bat.b('fabric.canvas').cylinder([bx2, sy + 0.026, bz2], [bx2, sy + 0.026 + bh * 0.8, bz2], 0.075, 8, { radius2: 0.055 });
+          }
+        }
+      }
+      // Bracket pairs under the shelves.
+      const brm = bat.b('metal.rust');
+      for (const s of [-1, 1]) {
+        const bx2 = run.axis === 'x' ? run.x + s * (run.L - 0.22) : run.x;
+        const bz2 = run.axis === 'x' ? run.z : run.z + s * (run.L - 0.22);
+        brm.box([bx2, g + 1.5, bz2], [0.02, 0.64, 0.02], { chamfer: 0 });
+      }
     }
   }
-  // Floor grime strip where the traffic runs — a wear lane, authored as geometry so it
-  // survives whatever the material library is doing.
-  bat.b('int.tile').box([(ix0 + ix1) * 0.5, g + 0.008, (iz0 + iz1) * 0.5], [(ix1 - ix0) * 0.32, 0.008, (iz1 - iz0) * 0.3], {
-    chamfer: 0.004,
+  /*
+   * Break the floor. The tile grid used to run unbroken wall to wall under a stain
+   * overlay that had nothing to do with the geometry. Now the wear lane is a *different
+   * tile*, there is a screed patch where tiles have lifted, and the shopfront has a
+   * stone threshold — so what you read as wear is actually there.
+   */
+  bat.b('int.tileWorn').box([(ix0 + ix1) * 0.5, g + 0.01, (iz0 + iz1) * 0.5], [(ix1 - ix0) * 0.3, 0.01, (iz1 - iz0) * 0.26], {
+    chamfer: 0.006,
   });
+  for (let k = 0; k < units; k++) {
+    const f = (k + 0.5) / units;
+    const px = unitAxis === 'x' ? lerp(ix0, ix1, f) + (rng() - 0.5) * 1.4 : lerp(ix0 + 1, ix1 - 1, rng());
+    const pz = unitAxis === 'x' ? lerp(iz0 + 1.5, iz1 - 1.5, rng()) : lerp(iz0, iz1, f) + (rng() - 0.5) * 1.4;
+    bat.b('int.screed').box([px, g + 0.016, pz], [0.55 + rng() * 0.4, 0.016, 0.45 + rng() * 0.4], { chamfer: 0.01 });
+  }
+  /* threshold strip along the shopfront side */
+  if (unitAxis === 'x') bat.b('struct.concreteClean').box([(ix0 + ix1) * 0.5, g + 0.018, iz1 - 0.22], [(ix1 - ix0) * 0.5, 0.018, 0.22], { chamfer: 0.012 });
+  else bat.b('struct.concreteClean').box([ix1 - 0.22, g + 0.018, (iz0 + iz1) * 0.5], [0.22, 0.018, (iz1 - iz0) * 0.5], { chamfer: 0.012 });
 }
 
 function buildGarageInterior(bat, def, ys, rng) {
@@ -1155,6 +1291,24 @@ export function buildBackdrop(bat, def) {
 
   bat.b(def.wall).box([cx, h * 0.5, cz], [hx, h * 0.5, hz], { chamfer: 0.08 });
   bat.b('struct.concreteClean').box([cx, h + 0.35, cz], [hx + 0.12, 0.35, hz + 0.12], { chamfer: 0.05 });
+
+  /**
+   * `far` blocks are the hill town at 230-360 m. A setback tower still reads at that
+   * range (it is silhouette); windows, ribs and water tanks do not resolve at all and
+   * are a third of the backdrop's triangles, so they stop here.
+   */
+  if (def.far) {
+    const s1 = hash2(seed, 3);
+    if (s1 > 0.4) {
+      const sh = h * (0.2 + s1 * 0.3);
+      const sx = hx * 0.5;
+      const sz = hz * 0.5;
+      bat.b(def.wall).box([cx + (hash2(seed + 5, 9) - 0.5) * hx, h + sh * 0.5, cz], [sx, sh * 0.5, sz], { chamfer: 0.08 });
+    }
+    bat.uvScale = 1;
+    bat.uvOffset = [0, 0];
+    return;
+  }
 
   // A skyline is silhouette, and a row of identical rectangles is the one shape that
   // reads as scenery. Each block gets a setback tower, a stair housing and a couple

@@ -998,6 +998,14 @@ export default function createProps(ctx) {
      */
     for (const f of facades) f._key = sightlineDistance(f.x, f.z) + hash01(f.x, f.z) * 2.5;
     facades.sort((a, b) => a._key - b._key);
+    /**
+     * Roofs get the same treatment, and for the same reason. A skyline is only worth
+     * paying for where a camera can see it: an even sprinkle of water tanks over
+     * 100 x 100 m spends the whole slice on rooftops behind the player. Tall roofs are
+     * weighted slightly forward of low ones because they carry the actual silhouette.
+     */
+    for (const c of roofs) c._key = sightlineDistance(c.x, c.z) - c.y * 1.4 + hash01(c.x * 1.7, c.z * 1.3) * 3.0;
+    roofs.sort((a, b) => a._key - b._key);
 
     const P = {
       rng,

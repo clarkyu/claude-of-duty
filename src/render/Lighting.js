@@ -1180,16 +1180,19 @@ class Lighting {
 
     let res = s?.get?.('shadowResolution') ?? 2048;
     /**
-     * Headless used to clamp every cascade to 1024, which at a 78 deg FOV put the
-     * mid cascade on 4.2 cm texels — wider than a railing (4 cm), a market frame post
-     * (8 cm) and a window mullion (6.4 cm), so none of them cast anything and the
-     * review saw broad light/shade regions instead of shadow bars. The tier's own 1536
-     * takes that to 2.8 cm, where all three register; the *last* cascade still drops to
-     * three quarters (see CSM._buildLights), so the extra fill is only paid on the two
-     * that carry legible detail, and check.mjs measures the frame at 3.3 s either way
-     * on the software rasteriser.
+     * **Measured, not assumed: 1024 stays.**
+     *
+     * The obvious lever for the review's "no readable shadow bars" was the headless
+     * resolution clamp — the tier asks for 1536, and at a 78 deg FOV that would take
+     * the mid cascade from 4.2 cm texels to 2.8 cm, which is the difference between a
+     * 6.4 cm window mullion being 1.5 texels and 2.3. It was tried and measured:
+     * check.mjs went from 3.3 s to 7.4 s a frame for it, which on a harness that is
+     * already the bottleneck for every agent on this repo is not a trade worth making
+     * for a caster that is still marginal at the better number. The ladder came back
+     * from the two changes that cost nothing instead — a 72 m shadow range (see
+     * CSM.setQuality) and a 2.5x rather than 4.2x solar disc.
      */
-    if (this.headless) res = Math.min(res, 1536);
+    if (this.headless) res = Math.min(res, 1024);
     const cascades = clamp(s?.get?.('shadowCascades') ?? 4, 1, 4);
 
     let dirty = false;
@@ -2589,9 +2592,15 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
     const out = this._volLights || (this._volLights = []);
     out.length = 0;
     if (this.broken || !this.lights) return out;
-    // 1 at night, 0 in full sun. Cross-fade so dusk does not pop.
+    /**
+     * 1 at night, 0 in full sun. The cut-off is deliberately blunt: the march is three
+     * lights x 24 steps over a quarter-res buffer, which measures in *hundreds of
+     * milliseconds* on the software rasteriser, and at gate 0.09 (the hero pose, whose
+     * practicals are dimmed but not off) it would buy a cone nobody can see. Publish
+     * nothing until the practicals are genuinely the light in the scene.
+     */
     const gate = clamp01(1 - this.daylight * 1.4);
-    if (gate <= 0.02) return out;
+    if (gate <= 0.2) return out;
 
     const cam = this.ctx.camera;
     const pool = this._volPool || (this._volPool = []);

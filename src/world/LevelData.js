@@ -440,36 +440,94 @@ export const FUEL = {
  * these are 8 m sheds and some are 30 m slabs, and `buildBackdrop` puts a setback
  * tower on most of them on top of that.
  */
+/*
+ * ── Why these are so much taller than they look on paper ────────────────────────
+ * A street-level camera sees the backdrop only in the slot of sky ABOVE the near
+ * rooflines. The market hall parapet sits at 9.1 m and 31 m from the hero camera,
+ * which is 13.4 degrees; a 24 m block at 100 m subtends 12.6 degrees and is therefore
+ * *completely invisible* from the street no matter how carefully it is modelled. That
+ * is exactly what happened: every rank was built, none of it was in any frame.
+ *
+ * The rule this list now follows is `h > 1.7 + 0.24 * distance` for anything meant to
+ * be seen down a street — which for the first rank at 60-100 m means 25-40 m, and for
+ * the second rank at 130-190 m means 40-70 m. Real Levantine cities have exactly this
+ * profile: a low old town in the foreground and 12-20 storey concrete on the ridge
+ * behind it.
+ */
 export const BACKDROP = [
-  { rect: [-96, -86, -66, -60], h: 8, wall: 'wall.sand' },
-  { rect: [-60, -92, -34, -62], h: 24, wall: 'wall.bone' },
-  { rect: [-28, -88, -4, -60], h: 12, wall: 'wall.terracotta' },
-  { rect: [2, -96, 30, -62], h: 31, wall: 'wall.sand' },
-  { rect: [36, -84, 66, -60], h: 9, wall: 'wall.ochre' },
-  { rect: [70, -70, 100, -30], h: 21, wall: 'wall.bone' },
-  { rect: [72, -12, 98, 30], h: 11, wall: 'wall.sand' },
-  { rect: [68, 40, 96, 76], h: 27, wall: 'wall.terracotta' },
-  { rect: [10, 62, 48, 92], h: 13, wall: 'wall.bone' },
-  { rect: [-40, 60, -2, 88], h: 19, wall: 'wall.ochre' },
-  { rect: [-92, 46, -56, 82], h: 10, wall: 'wall.sand' },
-  { rect: [-100, -18, -70, 30], h: 26, wall: 'wall.bone' },
+  /* first rank, 60-110 m: reads immediately over the playspace rooflines */
+  { rect: [-96, -86, -66, -60], h: 26, wall: 'wall.sand' },
+  { rect: [-60, -92, -34, -62], h: 38, wall: 'wall.bone' },
+  { rect: [-28, -88, -4, -60], h: 29, wall: 'wall.terracotta' },
+  { rect: [2, -96, 30, -62], h: 44, wall: 'wall.sand' },
+  { rect: [36, -84, 66, -60], h: 23, wall: 'wall.ochre' },
+  { rect: [70, -70, 100, -30], h: 34, wall: 'wall.bone' },
+  { rect: [72, -12, 98, 30], h: 25, wall: 'wall.sand' },
+  { rect: [68, 40, 96, 76], h: 37, wall: 'wall.terracotta' },
+  { rect: [10, 62, 48, 92], h: 27, wall: 'wall.bone' },
+  { rect: [-40, 60, -2, 88], h: 33, wall: 'wall.ochre' },
+  { rect: [-92, 46, -56, 82], h: 24, wall: 'wall.sand' },
+  { rect: [-100, -18, -70, 30], h: 36, wall: 'wall.bone' },
+  /* infill between the first-rank blocks, so the rank is a town and not a picket
+     fence with sky between the posts */
+  { rect: [-34, -74, -6, -56], h: 19, wall: 'wall.ochre' },
+  { rect: [30, -78, 42, -58], h: 22, wall: 'wall.bone' },
+  { rect: [-70, -60, -50, -50], h: 16, wall: 'wall.terracotta' },
+  { rect: [56, -58, 78, -44], h: 18, wall: 'wall.sand' },
 
   /* Second rank at 110-190 m: the depth cue that turns one row of boxes into a town.
-     These are half as tall on average and much more varied, so the near rank always
-     has something reading against it. */
-  { rect: [-150, -160, -104, -122], h: 17, wall: 'wall.bone' },
-  { rect: [-92, -168, -46, -128], h: 29, wall: 'wall.sand' },
-  { rect: [-30, -172, 18, -132], h: 12, wall: 'wall.ochre' },
-  { rect: [30, -166, 88, -124], h: 34, wall: 'wall.bone' },
-  { rect: [104, -140, 158, -96], h: 20, wall: 'wall.terracotta' },
-  { rect: [126, -60, 176, 6], h: 15, wall: 'wall.sand' },
-  { rect: [132, 28, 184, 92], h: 28, wall: 'wall.bone' },
-  { rect: [58, 106, 116, 156], h: 18, wall: 'wall.ochre' },
-  { rect: [-34, 116, 30, 168], h: 24, wall: 'wall.sand' },
-  { rect: [-124, 98, -60, 150], h: 13, wall: 'wall.bone' },
-  { rect: [-168, 4, -116, 66], h: 22, wall: 'wall.terracotta' },
-  { rect: [-176, -74, -122, -18], h: 16, wall: 'wall.sand' },
+     Taller than the first rank, because at that distance anything shorter is behind
+     it. */
+  { rect: [-150, -160, -104, -122], h: 44, wall: 'wall.bone' },
+  { rect: [-92, -168, -46, -128], h: 62, wall: 'wall.sand' },
+  { rect: [-30, -172, 18, -132], h: 38, wall: 'wall.ochre' },
+  { rect: [30, -166, 88, -124], h: 68, wall: 'wall.bone' },
+  { rect: [104, -140, 158, -96], h: 46, wall: 'wall.terracotta' },
+  { rect: [126, -60, 176, 6], h: 40, wall: 'wall.sand' },
+  { rect: [132, 28, 184, 92], h: 54, wall: 'wall.bone' },
+  { rect: [58, 106, 116, 156], h: 42, wall: 'wall.ochre' },
+  { rect: [-34, 116, 30, 168], h: 50, wall: 'wall.sand' },
+  { rect: [-124, 98, -60, 150], h: 36, wall: 'wall.bone' },
+  { rect: [-168, 4, -116, 66], h: 48, wall: 'wall.terracotta' },
+  { rect: [-176, -74, -122, -18], h: 41, wall: 'wall.sand' },
+  /* the north-west block the hero camera looks straight down the market hall at */
+  { rect: [-118, -126, -66, -96], h: 52, wall: 'wall.ochre' },
+  { rect: [-56, -128, -16, -100], h: 47, wall: 'wall.bone' },
+  { rect: [-8, -132, 40, -104], h: 58, wall: 'wall.terracotta' },
+
+  /**
+   * Third rank, 230-360 m: the hill town. Small blocks stepping up a slope, each one
+   * sitting a little higher than the one in front, which is the layer that reads as
+   * *landscape* rather than as another row of buildings. `far` drops the window quads
+   * and the roof plant — none of it resolves past 200 m and it is a third of the
+   * backdrop's triangles.
+   */
+  ...hillTown(),
 ];
+
+/**
+ * A stepped hillside of small houses climbing away to the north-north-west, which is
+ * the bearing every street pose looks down. Deterministic — no RNG at module scope.
+ */
+function hillTown() {
+  const out = [];
+  const walls = ['wall.sand', 'wall.bone', 'wall.ochre', 'wall.terracotta'];
+  /* five terraces, each further back and higher up the slope */
+  for (let row = 0; row < 5; row++) {
+    const z = -238 - row * 30;
+    const base = 22 + row * 26; // the ground rises away from the town
+    const n = 9 - row;
+    for (let i = 0; i < n; i++) {
+      const t = n === 1 ? 0.5 : i / (n - 1);
+      const cx = -300 + t * 600 + ((row % 2) * 34 - 17);
+      const w = 26 + ((i * 13 + row * 7) % 22);
+      const d = 20 + ((i * 7 + row * 11) % 16);
+      const h = base + ((i * 17 + row * 23) % 26);
+      out.push({ rect: [cx - w / 2, z - d / 2, cx + w / 2, z + d / 2], h, wall: walls[(i + row) % 4], far: true });
+    }
+  }
+  return out;
+}
 
 /**
  * Tall non-playable silhouette elements at 150-400 m. A skyline is silhouette: without
@@ -477,18 +535,39 @@ export const BACKDROP = [
  * kind: 'minaret' | 'tower' | 'crane' | 'stack' | 'mast' | 'dome'
  */
 export const SKYLINE = [
-  { kind: 'minaret', x: -118, z: -150, base: 0, h: 46, r: 3.4 },
-  { kind: 'minaret', x: 96, z: 168, base: 0, h: 38, r: 3.0 },
-  { kind: 'dome', x: -104, z: -132, base: 0, h: 22, r: 11 },
-  { kind: 'tower', x: 172, z: -104, base: 0, h: 52, r: 7.5 }, // water tower
-  { kind: 'tower', x: -196, z: 52, base: 0, h: 41, r: 6.4 },
-  { kind: 'stack', x: 58, z: -212, base: 0, h: 64, r: 3.6 }, // smokestack
-  { kind: 'stack', x: 74, z: -222, base: 0, h: 47, r: 2.9 },
-  { kind: 'crane', x: -46, z: -196, base: 0, h: 44, jib: 34, yaw: 0.6 },
-  { kind: 'crane', x: 128, z: 118, base: 0, h: 38, jib: 29, yaw: -2.1 },
-  { kind: 'mast', x: -224, z: -30, base: 0, h: 58 },
-  { kind: 'mast', x: 214, z: 92, base: 0, h: 49 },
-  { kind: 'crane', x: 168, z: -158, base: 0, h: 50, jib: 36, yaw: 2.6 },
+  /* ── near landmarks, 70-140 m: the ones a STREET camera can actually see ──────
+     A silhouette only exists if it clears the roofline in front of it. These sit
+     just beyond the fence line on the bearings the review cameras look down — north
+     and north-west up Souk Street, and west across the market hall — and they are
+     tall enough (35-60 m at 70-140 m) to stand clear of a 9 m parapet at 30 m. */
+  { kind: 'minaret', x: -44, z: -74, base: 0, h: 42, r: 2.9 },
+  { kind: 'dome', x: -52, z: -66, base: 0, h: 16, r: 8 },
+  { kind: 'tower', x: 46, z: -84, base: 0, h: 40, r: 5.2 }, // water tower over the north cross
+  { kind: 'crane', x: -14, z: -104, base: 0, h: 52, jib: 32, yaw: 1.1 },
+  { kind: 'minaret', x: -96, z: -46, base: 0, h: 36, r: 2.6 },
+  { kind: 'stack', x: 88, z: -96, base: 0, h: 54, r: 3.2 },
+  { kind: 'mast', x: -78, z: -112, base: 0, h: 46 },
+  { kind: 'tower', x: -84, z: 64, base: 0, h: 34, r: 5.0 },
+  { kind: 'crane', x: 62, z: 96, base: 0, h: 44, jib: 30, yaw: -1.4 },
+
+  /* ── mid distance, 150-300 m ────────────────────────────────────────────── */
+  { kind: 'minaret', x: -118, z: -150, base: 0, h: 58, r: 3.4 },
+  { kind: 'minaret', x: 96, z: 168, base: 0, h: 48, r: 3.0 },
+  { kind: 'dome', x: -104, z: -132, base: 0, h: 28, r: 11 },
+  { kind: 'tower', x: 172, z: -104, base: 0, h: 64, r: 7.5 }, // water tower
+  { kind: 'tower', x: -196, z: 52, base: 0, h: 52, r: 6.4 },
+  { kind: 'stack', x: 58, z: -212, base: 0, h: 86, r: 3.6 }, // smokestack
+  { kind: 'stack', x: 74, z: -222, base: 0, h: 64, r: 2.9 },
+  { kind: 'crane', x: -46, z: -196, base: 0, h: 62, jib: 34, yaw: 0.6 },
+  { kind: 'crane', x: 128, z: 118, base: 0, h: 50, jib: 29, yaw: -2.1 },
+  { kind: 'mast', x: -224, z: -30, base: 0, h: 74 },
+  { kind: 'mast', x: 214, z: 92, base: 0, h: 62 },
+  { kind: 'crane', x: 168, z: -158, base: 0, h: 66, jib: 36, yaw: 2.6 },
+  /* landmarks standing on the hill town, so the far terrace is not just boxes */
+  { kind: 'minaret', x: -168, z: -268, base: 30, h: 44, r: 3.0 },
+  { kind: 'minaret', x: 122, z: -296, base: 48, h: 40, r: 2.8 },
+  { kind: 'tower', x: -66, z: -330, base: 74, h: 38, r: 5.4 },
+  { kind: 'stack', x: 214, z: -252, base: 26, h: 58, r: 3.0 },
 ];
 
 /**
@@ -503,18 +582,26 @@ export const HORIZON = {
   inner: 235,
   outer: 620,
   segments: 64,
-  /** ridge height as [amplitude, frequency] pairs, summed */
-  base: 34,
+  /**
+   * Ridge height as [amplitude, frequency] pairs, summed.
+   *
+   * These were 34 m at 620 m — three degrees of elevation, which from a 1.7 m eye in
+   * a street canyon is *below every roofline in the map*, so the "layered vista" was
+   * geometry nobody could ever see. A coastal Levantine town has real hills behind
+   * it; at 620 m a 90-150 m ridge subtends 8-14 degrees and finally clears the
+   * parapets, which is the whole reason it exists.
+   */
+  base: 96,
   /* integer frequencies so the ring closes without a seam at theta = 0 */
   bands: [
-    [22, 1],
-    [13, 3],
-    [6, 7],
-    [3, 13],
+    [46, 1],
+    [26, 3],
+    [12, 7],
+    [5, 13],
   ],
   mat: 'ground.dirt',
   /** a second, higher and further ridge behind the first */
-  far: { inner: 540, outer: 1080, base: 96, amp: 44, mat: 'wall.bone' },
+  far: { inner: 540, outer: 1080, base: 205, amp: 78, mat: 'wall.bone' },
 };
 
 /**

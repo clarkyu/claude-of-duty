@@ -205,13 +205,24 @@ const ANCHORS = [
  * skyline gets what is left.
  */
 const PHASES = {
-  anchors: 0.34,
+  anchors: 0.30,
   foreground: 0.07,
-  drainage: 0.03,
-  wallLines: 0.23,
-  facades: 0.17,
-  roofs: 0.12,
-  perimeter: 0.04,
+  /**
+   * Language. Two triangles per glyph panel, so this buys the single loudest missing
+   * cue in the package for almost nothing — but it is spent early, because "cheap"
+   * only helps if the budget has not already gone.
+   */
+  markings: 0.03,
+  drainage: 0.02,
+  wallLines: 0.19,
+  facades: 0.19,
+  /**
+   * Rooflines. Was 0.12 spread over a whole city and spent sixth, which bought a
+   * dozen tanks nobody could see. The roof set is now sorted towards the review
+   * sightlines by Props.js, so this slice lands on the skyline the cameras read.
+   */
+  roofs: 0.18,
+  perimeter: 0.02,
 };
 
 export function composeScene(P) {
@@ -232,25 +243,100 @@ export function composeScene(P) {
   P.phase(slice('foreground'));
   dressForeground(P, r);
 
-  /* ---- 3. drains and manholes in the gutter lines (cheap, always worth it) */
+  /* ---- 3. the written world: road paint, unit numbers, stencils, graffiti - */
+  P.phase(slice('markings'));
+  dressMarkings(P, r);
+
+  /* ---- 4. drains and manholes in the gutter lines (cheap, always worth it) */
   P.phase(slice('drainage'));
   dressDrainage(P, r);
 
-  /* ---- 4. wall-line clutter and corner rubbish: eye level, walked past ---- */
+  /* ---- 5. wall-line clutter and corner rubbish: eye level, walked past ---- */
   P.phase(slice('wallLines'));
   dressWallLines(P, r);
 
-  /* ---- 5. facades: AC, dishes, signs, shutters, downpipes, conduit ------- */
+  /* ---- 6. facades: AC, dishes, signs, shutters, downpipes, conduit ------- */
   P.phase(slice('facades'));
   dressFacades(P, r);
 
-  /* ---- 6. rooftops: the skyline the vista and hero cameras read ---------- */
+  /* ---- 7. rooftops: the skyline the vista and hero cameras read ---------- */
   P.phase(slice('roofs'));
   dressRoofs(P, r);
 
-  /* ---- 7. perimeter fencing: razor wire on top of the existing fences ---- */
+  /* ---- 8. perimeter fencing: razor wire on top of the existing fences ---- */
   P.phase(slice('perimeter'));
   dressPerimeter(P, r);
+}
+
+/* ========================================================================== */
+/*                              the written world                             */
+/* ========================================================================== */
+
+/**
+ * Road paint, laid where a highway engineer would actually lay it. `yaw` points the
+ * artwork's "up" down the lane, so an arrow points the way traffic goes.
+ * [type, x, z, yaw, acrossMetres, alongMetres]
+ */
+const ROAD_PAINT = [
+  /* Souk Street, x 0..10, the hero / ads / firefight axis. Centre dashes first. */
+  ...[-40, -33, -26, -19, -12, -5, 2, 9, 16, 23].map((z) => ['lane_dash', 5.0, z, 0, 0.22, 2.4]),
+  /* lane arrows at the approaches to the two cross-streets */
+  ['arrow_ahead', 2.6, -14.0, 0, 1.5, 3.8],
+  ['arrow_left', 7.4, 12.0, Math.PI, 1.5, 3.8],
+  ['arrow_ahead', 7.4, -25.0, Math.PI, 1.5, 3.8],
+  ['road_slow', 2.6, 17.5, 0, 1.9, 4.2],
+  ['road_stop', 2.6, -30.5, 0, 1.9, 4.2],
+  /* zebra crossing across the Souk just north of the plaza */
+  ...[0.9, 2.2, 3.5, 4.8, 6.1, 7.4, 8.7].map((x) => ['zebra', x, 3.0, Math.PI / 2, 1.0, 2.6]),
+  /* Mid Cross, running east-west */
+  ...[-40, -30, -20, -10, 16, 24, 34, 42].map((x) => ['lane_dash', x, 1.0, Math.PI / 2, 0.22, 2.4]),
+  ['arrow_ahead', -16.0, 2.4, -Math.PI / 2, 1.4, 3.6],
+  ['hatch', 21.0, 1.0, Math.PI / 2, 2.2, 4.6],
+  /* North Cross */
+  ...[-36, -26, -16, 16, 26, 36].map((x) => ['lane_dash', x, -37.0, Math.PI / 2, 0.22, 2.4]),
+  ['road_slow', -8.0, -35.5, -Math.PI / 2, 1.8, 4.0],
+  /* Canal Road, both carriageways */
+  ...[-34, -24, -14, -4, 6, 16, 26].map((z) => ['lane_dash', 32.0, z, 0, 0.22, 2.4]),
+  ...[-30, -20, -10, 0, 10, 20].map((z) => ['lane_dash', 43.5, z, 0, 0.22, 2.4]),
+  ['arrow_ahead', 43.5, -26.0, Math.PI, 1.4, 3.6],
+  /* Hotel Front and the south cross */
+  ...[-10, -4, 2, 8, 14].map((x) => ['lane_dash', x, 26.0, Math.PI / 2, 0.22, 2.2]),
+  ['road_stop', 6.0, 23.0, 0, 1.8, 4.0],
+  ...[-30, -18, -6, 6, 18, 30].map((x) => ['lane_dash', x, 51.0, Math.PI / 2, 0.22, 2.4]),
+  /* West Alley: no markings, just a worn centre line at the mouth */
+  ['lane_dash', -47.0, -6.0, 0, 0.2, 2.0],
+  ['lane_dash', -47.0, 14.0, 0, 0.2, 2.0],
+];
+
+/** Cracks, skid marks and oil stains. The thing that stops tarmac being one sheet. */
+const GROUND_GRIME = [
+  ['crack_a', 3.4, 6.0], ['crack_b', 8.2, -2.6], ['crack_a', 1.6, -11.0], ['skid', 6.4, -6.2],
+  ['stain', 11.6, 12.0], ['crack_b', 4.4, 19.0], ['skid', 4.0, 9.5], ['crack_a', 8.8, -20.0],
+  ['stain', 2.2, -22.4], ['crack_b', 6.0, -30.0], ['crack_a', -12.0, 1.6], ['skid', -19.0, 2.2],
+  ['stain', -30.0, 0.8], ['crack_b', 20.0, 2.4], ['stain', 24.0, -19.0], ['crack_a', 18.0, -21.5],
+  ['crack_b', 32.5, -8.0], ['skid', 43.0, 6.0], ['stain', 44.0, -22.0], ['crack_a', -46.5, 4.0],
+  ['crack_b', -46.5, 24.0], ['stain', -46.0, -18.0], ['crack_a', 0.4, 26.5], ['skid', 9.0, 25.0],
+  ['crack_b', -6.0, 40.0], ['stain', -8.5, 48.0], ['crack_a', 14.0, -36.0], ['crack_b', -20.0, -36.0],
+  ['skid', 2.0, -37.5], ['stain', 26.0, -33.0], ['crack_a', -33.0, -18.0], ['crack_b', -29.0, -12.0],
+];
+
+function dressMarkings(P, r) {
+  for (const [cell, x, z, yaw, w, len] of ROAD_PAINT) {
+    if (P.budget <= 0) return;
+    P.spawn('road_mark', { x, z, yaw, cell, w, len, group: 'road', force: true });
+  }
+  for (const [cell, x, z] of GROUND_GRIME) {
+    if (P.budget <= 0) return;
+    P.spawn('road_mark', {
+      x, z,
+      yaw: r.range(0, TAU),
+      cell,
+      group: 'grime',
+      w: r.range(1.8, 3.2),
+      len: r.range(1.0, 1.9),
+      force: true,
+    });
+  }
 }
 
 /* ========================================================================== */
@@ -348,57 +434,68 @@ function dressForeground(P, r) {
  * Roof plant. The roof set was discovered by a downward raycast sweep, so this works
  * for any building the level agent adds without this file knowing about it.
  */
+/**
+ * A roofline is silhouette, and every roofline in this build was a ruler: flat parapet,
+ * slab coping, nothing else. That was two problems at once — the phase was spent sixth
+ * on 0.12 of the budget, and what little it bought was scattered uniformly over a whole
+ * city so none of it landed where a camera looks.
+ *
+ * `P.roofs` now arrives sorted towards the review sightlines (Props.js), so this walks
+ * it in that order and spends until the slice is gone. Every cell that can take
+ * something gets something: the roll is a weighted *choice*, not a gate, and the deck
+ * carries the full vocabulary — tanks, plant, aerials, dish farms, chimneys, gas
+ * bottles, stacked crates and washing.
+ */
 function dressRoofs(P, r) {
   const roofs = P.roofs;
   if (!roofs.length) return;
-  /* group cells into rough clusters per roof height so tanks land together */
-  let tanks = 0;
-  let acs = 0;
-  let aerials = 0;
-  // A skyline is silhouette. Tall variants (tanks, aerials) are what the vista camera
-  // actually reads at 60-120 m, so they are biased up hard and capped generously.
-  const maxTanks = 18;
-  const maxAc = 30;
-  const maxAerials = 20;
-  const shuffled = roofs.slice();
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = r.int(i + 1);
-    const t = shuffled[i];
-    shuffled[i] = shuffled[j];
-    shuffled[j] = t;
-  }
-  for (const cell of shuffled) {
+  const n = { tank: 0, ac: 0, aerial: 0, dish: 0, farm: 0, flue: 0 };
+  const cap = { tank: 26, ac: 40, aerial: 30, dish: 26, farm: 14, flue: 22 };
+
+  for (const cell of roofs) {
     if (P.budget <= 0) break;
-    /* keep off the very edge: a tank hanging over a parapet reads as a bug */
-    if (cell.edge < 1.5) continue;
+    /* Anything with real mass keeps off the parapet; the thin verticals — aerials,
+       flues, dishes — are deliberately allowed close to it, because interrupting the
+       parapet line is the entire point of them. */
+    const near = cell.edge >= 1.0;
+    const clear = cell.edge >= 1.7;
+    if (!near) continue;
+    const yaw = r.range(0, TAU);
+    const at = { x: cell.x + r.jitter(0.7), z: cell.z + r.jitter(0.7), y: cell.y, yaw, onRoof: true };
     const roll = r.next();
-    if (roll < 0.19 && tanks < maxTanks) {
-      if (P.spawn('water_tank', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true })) tanks++;
-    } else if (roll < 0.34 && acs < maxAc) {
-      if (P.spawn('ac_unit_roof', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true })) acs++;
-    } else if (roll < 0.45 && aerials < maxAerials) {
-      if (P.spawn('tv_aerial', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true })) aerials++;
-    } else if (roll < 0.51) {
-      P.spawn('satellite_dish', { x: cell.x, z: cell.z, y: cell.y + 0.9, yaw: r.range(0, TAU), raw: true, radius: r.range(0.3, 0.46) });
-    } else if (roll < 0.56) {
-      P.spawn('gas_cylinder', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true });
-    } else if (roll < 0.61) {
-      P.spawn('cardboard_box', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true, state: r.pick(['crushed', 'closed']) });
-    } else if (roll < 0.65) {
-      P.spawn('tyre', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true });
-    } else if (roll < 0.71) {
-      P.spawn('litter', { x: cell.x, z: cell.z, y: cell.y, onRoof: true, count: 5 + r.int(5), spread: 0.8 });
-    } else if (roll < 0.75) {
-      P.spawn('oil_drum', { x: cell.x, z: cell.z, y: cell.y, yaw: r.range(0, TAU), onRoof: true, static: true });
+
+    if (clear && roll < 0.17 && n.tank < cap.tank) {
+      if (P.spawn('water_tank', at)) n.tank++;
+    } else if (clear && roll < 0.32 && n.ac < cap.ac) {
+      if (P.spawn('ac_unit_roof', at)) n.ac++;
+    } else if (roll < 0.45 && n.aerial < cap.aerial) {
+      if (P.spawn('tv_aerial', at)) n.aerial++;
+    } else if (roll < 0.55 && n.flue < cap.flue) {
+      if (P.spawn('chimney_flue', at)) n.flue++;
+    } else if (roll < 0.63 && n.farm < cap.farm) {
+      if (P.spawn('dish_farm', at)) n.farm++;
+    } else if (roll < 0.72 && n.dish < cap.dish) {
+      P.spawn('satellite_dish', { x: at.x, z: at.z, y: cell.y + r.range(0.75, 1.2), yaw, raw: true, radius: r.range(0.3, 0.46) });
+      n.dish++;
+    } else if (roll < 0.78) {
+      P.spawn('gas_cylinder', at);
+    } else if (roll < 0.84) {
+      P.spawn('cardboard_box', { ...at, state: r.pick(['crushed', 'closed']) });
+    } else if (roll < 0.88) {
+      P.spawn('tyre', at);
+    } else if (roll < 0.94) {
+      P.spawn('litter', { x: at.x, z: at.z, y: cell.y, onRoof: true, count: 5 + r.int(5), spread: 0.8 });
+    } else if (clear) {
+      P.spawn('oil_drum', { ...at, static: true });
     }
   }
   /* laundry strung between roof parapets — pick pairs of cells on the same roof */
   let lines = 0;
-  for (let i = 0; i < shuffled.length && lines < 8; i++) {
-    const a = shuffled[i];
+  for (let i = 0; i < roofs.length && lines < 14; i++) {
+    const a = roofs[i];
     if (a.edge < 1.0) continue;
-    for (let k = i + 1; k < Math.min(shuffled.length, i + 60); k++) {
-      const b = shuffled[k];
+    for (let k = i + 1; k < Math.min(roofs.length, i + 60); k++) {
+      const b = roofs[k];
       if (Math.abs(b.y - a.y) > 0.35) continue;
       const d = Math.hypot(b.x - a.x, b.z - a.z);
       if (d < 3.2 || d > 6.5) continue;
@@ -421,126 +518,123 @@ function dressRoofs(P, r) {
  * Facade dressing. `P.facades` is a list of {x, y, z, nx, nz, height} points found by
  * horizontal raycasts, so an AC unit is always flush against a real wall.
  */
+/**
+ * A real facade *stacks*: a downpipe at one end, an AC unit over the window, a dish on
+ * the parapet, a fascia over the door and a shutter under it — all on the same three
+ * metres of wall. The previous pass rolled ONE number per sample point and used an
+ * if/else-if chain, so no segment could ever carry two things and 65 % carried nothing.
+ *
+ * Every category now rolls independently against its own probability and cap, and each
+ * one takes a lateral offset along the wall tangent so two items on the same sample
+ * point sit side by side instead of inside each other.
+ */
 function dressFacades(P, r) {
   const f = P.facades;
   if (!f.length) return;
-  let ac = 0;
-  let dish = 0;
-  let sign = 0;
-  let shutter = 0;
-  let pipe = 0;
-  let line = 0;
+  const n = { ac: 0, dish: 0, sign: 0, shutter: 0, pipe: 0, line: 0, mark: 0, plate: 0, tag: 0 };
+  const cap = { ac: 34, dish: 22, sign: 26, shutter: 20, pipe: 32, line: 12, mark: 46, plate: 34, tag: 40 };
+
   for (const w of f) {
     if (P.budget <= 0) break;
     const yaw = Math.atan2(w.nx, w.nz);
-    const roll = r.next();
-    /* high-level plant */
-    if (w.free > 3.2 && roll < 0.12 && ac < 26) {
-      P.spawn('ac_unit', { x: w.x, z: w.z, y: w.groundY + r.range(2.6, 5.4), yaw, onWall: true, normal: [w.nx, 0, w.nz] });
-      ac++;
-    } else if (w.free > 3.6 && roll < 0.17 && dish < 18) {
-      P.spawn('satellite_dish', {
-        x: w.x,
-        z: w.z,
-        y: w.groundY + r.range(3.0, 6.0),
-        yaw,
-        onWall: true,
-        normal: [w.nx, 0, w.nz],
-        radius: r.range(0.28, 0.42),
-        aim: r.jitter(0.8),
-      });
-      dish++;
-    } else if (w.free > 2.6 && roll < 0.235 && pipe < 26) {
-      P.spawn('downpipe', {
-        x: w.x,
-        z: w.z,
-        y: w.groundY,
-        yaw,
-        onWall: true,
-        normal: [w.nx, 0, w.nz],
+    const normal = [w.nx, 0, w.nz];
+    /* wall tangent: slide items along the segment so they can coexist */
+    const tx = w.nz;
+    const tz = -w.nx;
+    const at = (d) => ({ x: w.x + tx * d, z: w.z + tz * d });
+    const roll = (key, p) => n[key] < cap[key] && r.next() < p;
+    const took = (key, rec) => {
+      if (rec) n[key]++;
+      return rec;
+    };
+
+    /* ── plant, high on the wall ─────────────────────────────────────────── */
+    if (w.free > 3.2 && roll('ac', 0.34)) {
+      const p = at(r.range(-1.3, 1.3));
+      took('ac', P.spawn('ac_unit', { ...p, y: w.groundY + r.range(2.5, 5.4), yaw, onWall: true, normal }));
+    }
+    if (w.free > 3.6 && roll('dish', 0.2)) {
+      const p = at(r.range(-1.6, 1.6));
+      took('dish', P.spawn('satellite_dish', {
+        ...p, y: w.groundY + r.range(3.0, 6.2), yaw, onWall: true, normal,
+        radius: r.range(0.26, 0.42), aim: r.jitter(0.8),
+      }));
+    }
+    /* ── the vertical: a downpipe pinned to one end of the segment ───────── */
+    if (w.free > 2.6 && roll('pipe', 0.3)) {
+      const p = at(r.chance(0.5) ? -1.75 : 1.75);
+      took('pipe', P.spawn('downpipe', {
+        ...p, y: w.groundY, yaw, onWall: true, normal,
         height: Math.min(w.free, r.range(3.4, 7.0)),
-      });
-      pipe++;
-    } else if (w.free > 3.0 && roll < 0.285 && sign < 20) {
-      P.spawn('shop_sign', {
-        x: w.x,
-        z: w.z,
-        y: w.groundY + r.range(2.6, 3.3),
-        yaw,
-        onWall: true,
-        normal: [w.nx, 0, w.nz],
-        projecting: r.chance(0.65),
-        w: r.range(0.9, 1.5),
-      });
-      sign++;
-    } else if (w.free > 2.6 && roll < 0.325 && shutter < 14) {
-      P.spawn('shop_shutter', {
-        x: w.x,
-        z: w.z,
-        y: w.groundY,
-        yaw,
-        onWall: true,
-        normal: [w.nx, 0, w.nz],
-        w: r.range(1.9, 2.6),
-        h: r.range(2.0, 2.3),
-      });
-      shutter++;
-    } else if (w.free > 4.0 && roll < 0.35 && line < 10) {
-      /* laundry from a first-floor window out to the opposite wall */
+      }));
+    }
+    /* ── the shopfront: fascia over, shutter under ───────────────────────── */
+    const shopfront = w.free > 2.8 && w.groundY < 2.2;
+    if (shopfront && roll('sign', 0.3)) {
+      const p = at(r.range(-0.9, 0.9));
+      took('sign', P.spawn('shop_sign', {
+        ...p, y: w.groundY + r.range(2.55, 3.25), yaw, onWall: true, normal,
+        projecting: r.chance(0.42), w: r.range(1.05, 1.75),
+      }));
+    }
+    if (shopfront && roll('shutter', 0.22)) {
+      const p = at(r.range(-0.7, 0.7));
+      took('shutter', P.spawn('shop_shutter', {
+        ...p, y: w.groundY, yaw, onWall: true, normal,
+        w: r.range(1.9, 2.6), h: r.range(2.0, 2.3),
+      }));
+    }
+    /* ── laundry off a first-floor window ────────────────────────────────── */
+    if (w.free > 4.0 && roll('line', 0.1)) {
       const len = r.range(2.6, 4.4);
-      P.spawn('laundry_line', {
-        x: w.x,
-        z: w.z,
-        y: w.groundY + r.range(3.4, 5.0),
-        onWall: true,
-        raw: true,
-        // tied to a hook on the wall, not standing on poles
-        posts: false,
-        to: [w.nx * len, r.jitter(0.3), w.nz * len],
-        count: 2 + r.int(2),
-      });
-      line++;
-    } else if (roll < 0.52) {
-      /* Fall-through 1: surface conduit. Six cylinders, always affordable, and it is
-         what stops a 20 m facade being one unbroken plane. */
+      took('line', P.spawn('laundry_line', {
+        x: w.x, z: w.z, y: w.groundY + r.range(3.4, 5.0), onWall: true, raw: true,
+        posts: false, to: [w.nx * len, r.jitter(0.3), w.nz * len], count: 2 + r.int(2),
+      }));
+    }
+
+    /* ── language ────────────────────────────────────────────────────────── */
+    /* the unit number / street plate, at the height a plate is actually fixed */
+    if (w.groundY < 2.2 && roll('plate', 0.26)) {
+      const p = at(r.range(-1.7, 1.7));
+      took('plate', P.spawn('wall_mark', {
+        ...p, y: w.groundY + r.range(1.9, 2.5), yaw, onWall: true, normal,
+        group: r.chance(0.62) ? 'unit' : r.chance(0.5) ? 'street' : 'notice',
+        w: r.range(0.4, 0.58),
+      }));
+    }
+    /* stencilled notices at chest-to-head height */
+    if (roll('mark', 0.24)) {
+      const p = at(r.range(-1.7, 1.7));
+      took('mark', P.spawn('wall_mark', {
+        ...p, y: w.groundY + r.range(1.1, 2.4), yaw, onWall: true, normal,
+        group: 'stencil', w: r.range(0.75, 1.35),
+      }));
+    }
+    /* spray tags, low, big, and always at the base of a wall */
+    if (roll('tag', 0.3)) {
+      const p = at(r.range(-1.5, 1.5));
+      took('tag', P.spawn('wall_mark', {
+        ...p, y: w.groundY + r.range(0.75, 1.55), yaw, onWall: true, normal,
+        group: 'graffiti', w: r.range(1.1, 2.1),
+      }));
+    }
+
+    /* ── and the always-affordable filler: conduit, vents, meter boxes ───── */
+    const fill = r.next();
+    if (fill < 0.4) {
       P.spawn('wall_conduit', {
-        x: w.x,
-        z: w.z,
-        y: w.groundY + r.range(0.1, 0.5),
-        yaw,
-        onWall: true,
-        normal: [w.nx, 0, w.nz],
+        x: w.x, z: w.z, y: w.groundY + r.range(0.1, 0.5), yaw, onWall: true, normal,
         height: Math.min(Math.max(1.4, w.free - 0.6), r.range(2.2, 4.6)),
       });
-    } else if (roll < 0.64) {
-      P.spawn('wall_vent', {
-        x: w.x,
-        z: w.z,
-        y: w.groundY + r.range(2.1, 3.4),
-        yaw,
-        onWall: true,
-        normal: [w.nx, 0, w.nz],
-      });
-    } else if (roll < 0.74) {
-      P.spawn('meter_box', {
-        x: w.x,
-        z: w.z,
-        y: w.groundY + r.range(1.25, 1.7),
-        yaw,
-        onWall: true,
-        normal: [w.nx, 0, w.nz],
-      });
-    } else if (roll < 0.86) {
-      /* Fall-through 2: a short conduit stub low on the wall. Cheapest of all. */
+    } else if (fill < 0.58) {
+      P.spawn('wall_vent', { x: w.x, z: w.z, y: w.groundY + r.range(2.1, 3.4), yaw, onWall: true, normal });
+    } else if (fill < 0.74) {
+      P.spawn('meter_box', { x: w.x, z: w.z, y: w.groundY + r.range(1.25, 1.7), yaw, onWall: true, normal });
+    } else {
       P.spawn('wall_conduit', {
-        x: w.x,
-        z: w.z,
-        y: w.groundY + r.range(0.05, 0.3),
-        yaw,
-        onWall: true,
-        normal: [w.nx, 0, w.nz],
-        height: r.range(1.2, 2.2),
-        drop: r.range(0.5, 1.0),
+        x: w.x, z: w.z, y: w.groundY + r.range(0.05, 0.3), yaw, onWall: true, normal,
+        height: r.range(1.2, 2.2), drop: r.range(0.5, 1.0),
       });
     }
   }

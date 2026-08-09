@@ -174,10 +174,11 @@ export class CascadedShadowMaps {
    */
   _mapSizeFor(i, res) {
     if (i < Math.max(2, this.count - 1)) return res;
-    // Half, not three quarters: at 200 m+ of ortho the last cascade resolves nothing
-    // legible at any resolution, and halving it is what pays for the near cascades
-    // going up. 1536/1536/768 costs the same fill as the old 1024/1024/768 x 2.
-    return Math.max(512, Math.round(res * 0.5));
+    // Three quarters, and never more than 1024: past ~200 m of ortho the last cascade
+    // resolves nothing legible however many texels it gets, so the ceiling is free
+    // detail everywhere else. (Half was tried and put the headless far cascade on
+    // 46 cm texels, which loses building shadows that 31 cm still carries.)
+    return Math.max(512, Math.min(1024, Math.round(res * 0.75)));
   }
 
   _buildLights() {

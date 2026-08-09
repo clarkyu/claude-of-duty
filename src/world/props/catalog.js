@@ -63,8 +63,13 @@ export const CATALOG = {
   satellite_dish: { gen: civilian.satelliteDish, kind: 'attach', lod: false },
   water_tank: { gen: civilian.waterTank, kind: 'static' },
   tv_aerial: { gen: civilian.tvAerial, kind: 'static', lod: false },
+  chimney_flue: { gen: civilian.chimneyFlue, kind: 'static' },
+  dish_farm: { gen: civilian.dishFarm, kind: 'static', lod: false },
   shop_sign: { gen: civilian.shopSign, kind: 'attach', lod: false },
   shop_shutter: { gen: civilian.shopShutter, kind: 'attach', lod: false },
+  /* the written world — see props/signage.js */
+  wall_mark: { gen: civilian.wallMark, kind: 'attach', lod: false },
+  road_mark: { gen: civilian.roadMark, kind: 'flat', lod: false },
   cardboard_box: { gen: civilian.cardboardBox, kind: 'dynamic', mass: 3 },
   litter: { gen: civilian.litter, kind: 'flat', lod: false },
   rubble_pile: { gen: civilian.rubblePile, kind: 'static' },

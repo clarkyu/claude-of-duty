@@ -106,17 +106,24 @@ export class Minimap {
       g.rect(ix0, iz0, ix1 - ix0, iz1 - iz0);
       g.clip();
       /*
-       * Light is where you can be. The colliders on this level are wall
-       * *segments*, not building volumes, so painting footprints alone gives four
-       * thin strips per structure — a hollow outline, which is the "you cannot
-       * tell solid from walkable" complaint. The nav grid knows the real answer,
-       * so the walkable surface (streets AND the interiors you can enter) is the
-       * light plate, everything else in bounds is dark mass, and walls are drawn
-       * bright on top of both. Three tones, no ambiguity.
+       * ── The fill hierarchy ──────────────────────────────────────────────
+       * A minimap answers exactly one question: am I in the open or am I inside
+       * something. The previous bake could not answer it — building interiors are
+       * walkable, so they took the same light plate as the street and the only
+       * thing separating "inside a building" from "road" was a dashed white wall
+       * outline. Four tones, darkest to lightest:
+       *
+       *   out of bounds   near-black hatch
+       *   solid mass      #161d24   (in bounds, not walkable, not a building)
+       *   building        #202932   solid footprint, then its walkable rooms at
+       *   interior floor  #46535f   — clearly darker than the street
+       *   street          #7e8d9a   the lightest thing on the plate
+       *   walls           #f2f7fc   bright edges over all of it
        */
-      g.fillStyle = '#1b232c';
+      g.fillStyle = '#161d24';
       g.fillRect(ix0, iz0, ix1 - ix0, iz1 - iz0);
-      this._drawWalkable(g, level);
+      const walk = this._drawWalkable(g, level, '#7e8d9a');
+      this._drawBuildings(g, level, walk);
       this._drawColliders(g, level);
       g.restore();
       this._drawBorder(g);

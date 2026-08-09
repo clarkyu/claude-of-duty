@@ -89,33 +89,86 @@ import {
  * what stops any material from being flat, and keeps the roughness/metalness ranges
  * physically defensible.
  */
+/**
+ * `macro` and `wear` are the per-family *character* of the two world-space effects.
+ *
+ * macro: { tint, value, tintAmt, local, rough }
+ *   `tint` is a linear RGB multiplier (a Vector3, not a Color — a Color would be
+ *   sRGB-decoded on the way in and cannot hold a value above 1). `local` is the
+ *   frequency of the second, metre-scale band in 1/m. Before this existed there was
+ *   one 80 m band at ±30% on every material in the game, so the awning, the render
+ *   behind it and the timber all wore the same swirled topographic marble.
+ * wear: [albedoDelta, roughnessDelta] — SIGNED, and never both positive. Handled
+ *   timber and paint darken and polish; abraded masonry pales and coarsens; rubbed
+ *   steel brightens and polishes.
+ */
 const TAG_DEFAULTS = {
-  concrete: { rough: [0.42, 1.0], metal: [0, 0.04], detail: 1.0, dust: 1.0, wet: 1.0, porosity: 0.85, tileBreak: 0.6, edgeWear: 0.5, streak: 1.0 },
-  plaster: { rough: [0.55, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.9, wet: 0.9, porosity: 0.9, tileBreak: 0.5, edgeWear: 0.45, streak: 1.15 },
-  metal: { rough: [0.14, 0.95], metal: [0, 1], detail: 0.8, dust: 0.7, wet: 1.0, porosity: 0.12, tileBreak: 0.25, env: 1.05, edgeWear: 0.7, streak: 0.9 },
-  wood: { rough: [0.35, 1.0], metal: [0, 0.05], detail: 1.0, dust: 0.9, wet: 1.0, porosity: 0.75, tileBreak: 0.45, edgeWear: 0.6, streak: 0.8 },
-  dirt: { rough: [0.6, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.5, wet: 1.0, porosity: 0.95, tileBreak: 0.85, triplanar: true, edgeWear: 0.2, streak: 0 },
-  sand: { rough: [0.65, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.3, wet: 1.0, porosity: 0.95, tileBreak: 0.9, triplanar: true, edgeWear: 0.2, streak: 0 },
-  grass: { rough: [0.55, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.4, wet: 1.0, porosity: 0.9, tileBreak: 0.9, triplanar: true, edgeWear: 0.15, streak: 0 },
-  glass: { rough: [0.02, 0.5], metal: [0, 0.1], detail: 0.4, dust: 0.5, wet: 0.5, porosity: 0.05, tileBreak: 0, env: 1.2, edgeWear: 0, streak: 0 },
+  concrete: {
+    rough: [0.42, 1.0], metal: [0, 0.04], detail: 1.0, dust: 1.0, wet: 1.0, porosity: 0.85, tileBreak: 0.6, edgeWear: 0.5, streak: 1.0,
+    macro: { tint: [1.07, 1.0, 0.9], value: 0.13, tintAmt: 0.34, local: 0.16, rough: 0.1 }, wear: [0.15, 0.1],
+  },
+  plaster: {
+    rough: [0.55, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.9, wet: 0.9, porosity: 0.9, tileBreak: 0.5, edgeWear: 0.45, streak: 1.15,
+    macro: { tint: [1.08, 1.01, 0.89], value: 0.13, tintAmt: 0.36, local: 0.19, rough: 0.1 }, wear: [0.16, 0.09],
+  },
+  metal: {
+    rough: [0.14, 0.95], metal: [0, 1], detail: 0.8, dust: 0.7, wet: 1.0, porosity: 0.12, tileBreak: 0.25, env: 1.05, edgeWear: 0.7, streak: 0.9,
+    macro: { tint: [0.95, 0.95, 0.93], value: 0.08, tintAmt: 0.28, local: 0.3, rough: 0.09 }, wear: [0.2, -0.2],
+  },
+  wood: {
+    rough: [0.35, 1.0], metal: [0, 0.05], detail: 1.0, dust: 0.9, wet: 1.0, porosity: 0.75, tileBreak: 0.45, edgeWear: 0.6, streak: 0.8,
+    macro: { tint: [1.06, 0.99, 0.91], value: 0.11, tintAmt: 0.3, local: 0.32, rough: 0.07 }, wear: [-0.13, -0.14],
+  },
+  dirt: {
+    rough: [0.6, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.5, wet: 1.0, porosity: 0.95, tileBreak: 0.85, triplanar: true, edgeWear: 0.2, streak: 0,
+    macro: { tint: [1.07, 1.01, 0.92], value: 0.15, tintAmt: 0.34, local: 0.1, rough: 0.08 }, wear: [0.08, 0.05],
+  },
+  sand: {
+    rough: [0.65, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.3, wet: 1.0, porosity: 0.95, tileBreak: 0.9, triplanar: true, edgeWear: 0.2, streak: 0,
+    macro: { tint: [1.05, 1.01, 0.94], value: 0.13, tintAmt: 0.3, local: 0.09, rough: 0.06 }, wear: [0.06, 0.04],
+  },
+  grass: {
+    rough: [0.55, 1.0], metal: [0, 0.02], detail: 1.0, dust: 0.4, wet: 1.0, porosity: 0.9, tileBreak: 0.9, triplanar: true, edgeWear: 0.15, streak: 0,
+    macro: { tint: [1.05, 1.03, 0.9], value: 0.14, tintAmt: 0.32, local: 0.12, rough: 0.06 }, wear: [0.05, 0.03],
+  },
+  glass: {
+    rough: [0.02, 0.5], metal: [0, 0.1], detail: 0.4, dust: 0.5, wet: 0.5, porosity: 0.05, tileBreak: 0, env: 1.2, edgeWear: 0, streak: 0,
+    macro: { tint: [1.0, 1.0, 1.0], value: 0.05, tintAmt: 0.1, local: 0.45, rough: 0.04 }, wear: [0, 0],
+  },
   water: { rough: [0.0, 1.0], metal: [0, 0], detail: 0, dust: 0, wet: 0, porosity: 0, tileBreak: 0, env: 1.2, edgeWear: 0, streak: 0 },
   // Thin coated cloth: light comes through an awning, and without it a canopy is a
   // painted plane. `snow_packed` had this configured and the fabric tag did not.
   fabric: {
     rough: [0.55, 1.0], metal: [0, 0.05], detail: 1.0, dust: 1.0, wet: 0.8, porosity: 0.95, tileBreak: 0.4,
     edgeWear: 0.3, streak: 0.9,
+    // Canvas does not go travertine, it goes sun-bleached along the panel it is cut
+    // from: warm, high in value, and at panel scale rather than at 80 m.
+    macro: { tint: [1.11, 1.06, 0.96], value: 0.07, tintAmt: 0.46, local: 0.55, rough: 0.08 }, wear: [-0.08, 0.05],
     sss: { strength: 0.34, power: 3.2, distortion: 0.32, ambient: 0.03, color: 0xb8a98a },
   },
   flesh: { rough: [0.28, 0.72], metal: [0, 0.02], detail: 1.0, dust: 0.2, wet: 0.6, porosity: 0.3, tileBreak: 0, edgeWear: 0, streak: 0 },
-  rubber: { rough: [0.5, 1.0], metal: [0, 0.05], detail: 0.9, dust: 0.8, wet: 0.9, porosity: 0.25, tileBreak: 0.3, edgeWear: 0.4, streak: 0.5 },
-  ceramic: { rough: [0.05, 0.9], metal: [0, 0.08], detail: 0.8, dust: 0.9, wet: 1.0, porosity: 0.3, tileBreak: 0.55, env: 1.1, edgeWear: 0.55, streak: 0.7 },
+  rubber: {
+    rough: [0.5, 1.0], metal: [0, 0.05], detail: 0.9, dust: 0.8, wet: 0.9, porosity: 0.25, tileBreak: 0.3, edgeWear: 0.4, streak: 0.5,
+    macro: { tint: [0.98, 0.98, 0.98], value: 0.07, tintAmt: 0.18, local: 0.4, rough: 0.06 }, wear: [-0.1, -0.06],
+  },
+  ceramic: {
+    rough: [0.05, 0.9], metal: [0, 0.08], detail: 0.8, dust: 0.9, wet: 1.0, porosity: 0.3, tileBreak: 0.55, env: 1.1, edgeWear: 0.55, streak: 0.7,
+    macro: { tint: [1.04, 1.01, 0.96], value: 0.08, tintAmt: 0.24, local: 0.35, rough: 0.09 }, wear: [0.1, 0.12],
+  },
   foliage: {
     rough: [0.4, 0.9], metal: [0, 0.02], detail: 0.7, dust: 0.5, wet: 0.8, porosity: 0.6, tileBreak: 0,
     edgeWear: 0, streak: 0,
+    macro: { tint: [1.05, 1.02, 0.92], value: 0.1, tintAmt: 0.3, local: 0.5, rough: 0.05 }, wear: [0, 0],
     sss: { strength: 0.8, power: 2.4, distortion: 0.4, ambient: 0.09, color: 0x6f9a3c },
   },
-  snow: { rough: [0.35, 0.95], metal: [0, 0.02], detail: 1.0, dust: 0, wet: 0.7, porosity: 0.5, tileBreak: 0.9, triplanar: true, env: 1.1, edgeWear: 0.2, streak: 0 },
+  snow: {
+    rough: [0.35, 0.95], metal: [0, 0.02], detail: 1.0, dust: 0, wet: 0.7, porosity: 0.5, tileBreak: 0.9, triplanar: true, env: 1.1, edgeWear: 0.2, streak: 0,
+    macro: { tint: [0.99, 1.0, 1.03], value: 0.09, tintAmt: 0.22, local: 0.12, rough: 0.06 }, wear: [0.05, 0.02],
+  },
 };
+
+/** Fallback macro character for a tag that never declared one. */
+const MACRO_DEFAULT = { tint: [1.05, 1.0, 0.94], value: 0.12, tintAmt: 0.3, local: 0.2, rough: 0.09 };
 
 /**
  * The catalogue. `set` is the TextureForge recipe (defaults to the key). Everything
@@ -127,29 +180,59 @@ const TAG_DEFAULTS = {
  */
 const RECIPES = {
   /* ── concrete & masonry ──────────────────────────────────────────────── */
+  /*
+   * `cell` re-declares the recipe's own lattice to the runtime shader so every unit
+   * gets an independent albedo/hue/roughness jitter (COD_CELLVAR). It must match the
+   * brickCell/plankCell call in shaders/index.js exactly or the jitter cuts across the
+   * courses instead of following them. `row` is 0 for plankCell — its per-row offset is
+   * an integer number of cells, so the cell boundaries land in the same places anyway.
+   * Where a lattice material has `cell`, its stochastic `tileBreak` is turned down or
+   * off: rotating a second copy of a brick map in patches only shears the bond.
+   */
   concrete_cast: { parallax: 1.0, aoIntensity: 1.0 },
-  concrete_precast_panel: { parallax: 1.1 },
+  concrete_precast_panel: {
+    parallax: 1.1, tileBreak: 0.15,
+    cell: { counts: [2, 2], row: 0, joint: [0.007, 0.007], amount: 0.34, hue: 0.8, rough: 0.14 },
+  },
   asphalt: { rough: [0.5, 1.0], parallax: 0.7, tileBreak: 0.9, dust: 0.7 },
-  sidewalk_paving: { parallax: 1.4, tileBreak: 0.7 },
-  brick_red: { parallax: 1.6, detail: 1.0, tileBreak: 0.5 },
-  brick_painted: { parallax: 1.4, rough: [0.35, 0.98] },
+  sidewalk_paving: {
+    parallax: 1.4, tileBreak: 0.18,
+    cell: { counts: [3, 3], row: 0, joint: [0.01, 0.01], amount: 0.44, hue: 1.0, rough: 0.2 },
+  },
+  brick_red: {
+    parallax: 1.6, detail: 1.0, tileBreak: 0.12,
+    cell: { counts: [10, 32], row: 0.5, joint: [0.045, 0.105], amount: 0.5, hue: 1.15, rough: 0.18 },
+  },
+  brick_painted: {
+    parallax: 1.4, rough: [0.35, 0.98], tileBreak: 0.12,
+    cell: { counts: [10, 32], row: 0.5, joint: [0.045, 0.105], amount: 0.3, hue: 0.7, rough: 0.14 },
+  },
   rubble: { parallax: 1.2, triplanar: true, tileBreak: 0.9, dust: 1.2 },
-  roof_shingle: { parallax: 1.3, tileBreak: 0.6 },
+  roof_shingle: {
+    parallax: 1.3, tileBreak: 0.2,
+    cell: { counts: [6, 14], row: 0.5, joint: [0.014, 0.022], amount: 0.46, hue: 0.7, rough: 0.18 },
+  },
 
   /* ── plaster ─────────────────────────────────────────────────────────── */
   plaster_cracked: { parallax: 0.8 },
   stucco: { parallax: 1.0 },
 
   /* ── metal ───────────────────────────────────────────────────────────── */
-  rusted_steel: { rough: [0.22, 1.0], metal: [0, 1], parallax: 0.8, env: 1.0 },
+  rusted_steel: { rough: [0.26, 1.0], metal: [0, 1], parallax: 0.8, env: 1.3 },
   painted_steel_chipped: { rough: [0.16, 0.95], metal: [0, 1], parallax: 0.6 },
   galvanised_metal: { rough: [0.18, 0.72], metal: [0.1, 1], parallax: 0, env: 1.1 },
   brushed_aluminium: { rough: [0.12, 0.6], metal: [0.35, 1], parallax: 0, detail: 0.5, env: 1.15 },
   corrugated_metal: { rough: [0.2, 0.9], metal: [0.05, 1], parallax: 1.8, pomShadow: true, env: 1.05 },
 
   /* ── wood ────────────────────────────────────────────────────────────── */
-  wood_plank_weathered: { parallax: 1.2 },
-  wood_ply: { parallax: 0.5 },
+  wood_plank_weathered: {
+    parallax: 1.2, tileBreak: 0.15,
+    cell: { counts: [3, 7], row: 0, joint: [0.007, 0.014], amount: 0.42, hue: 1.0, rough: 0.16 },
+  },
+  wood_ply: {
+    parallax: 0.7, tileBreak: 0.15,
+    cell: { counts: [1, 4], row: 0, joint: [0.004, 0.01], amount: 0.36, hue: 0.9, rough: 0.14 },
+  },
   plywood_painted: { parallax: 0.5, rough: [0.3, 0.95] },
 
   /* ── ground ──────────────────────────────────────────────────────────── */
@@ -227,8 +310,14 @@ const RECIPES = {
     env: 1.3,
     ior: 1.52,
   },
-  ceramic_tile: { parallax: 1.6, pomShadow: true, rough: [0.05, 0.9], env: 1.1 },
-  marble_lobby: { parallax: 0.5, rough: [0.035, 0.7], env: 1.2, clearcoat: 0.25 },
+  ceramic_tile: {
+    parallax: 1.6, pomShadow: true, rough: [0.05, 0.9], env: 1.1, tileBreak: 0.15,
+    cell: { counts: [8, 8], row: 0, joint: [0.022, 0.022], amount: 0.3, hue: 1.0, rough: 0.26 },
+  },
+  marble_lobby: {
+    parallax: 0.5, rough: [0.035, 0.7], env: 1.2, clearcoat: 0.25, tileBreak: 0.2,
+    cell: { counts: [2, 2], row: 0, joint: [0.0025, 0.0025], amount: 0.22, hue: 0.6, rough: 0.1 },
+  },
 
   /* ── misc ────────────────────────────────────────────────────────────── */
   rubber_tyre: { parallax: 1.4, rough: [0.5, 1.0] },
@@ -542,15 +631,18 @@ class Library {
     // The software rasteriser pays for every step of the ray march; cap it there.
     if (headless) layers = Math.min(layers, 8);
 
-    let pomFade = { low: 0, medium: 4, high: 9, ultra: 14 }[tier] ?? 9;
+    let pomFade = { low: 0, medium: 6.5, high: 9, ultra: 14 }[tier] ?? 9;
     if (layers > 0 && pomFade <= 0) pomFade = 4;
-    if (headless) pomFade = Math.min(pomFade, 5);
+    if (headless) pomFade = Math.min(pomFade, 6.5);
 
-    // Medium buys parallax only where it is legible: deep, near-field relief — brick
-    // courses, cobble, ceramic joints, corrugation, rubble. A 0.5-amplitude surface
-    // (ply, plaster, sheet steel) gains almost nothing from POM and there is a lot of
-    // it on screen, so it stays flat and the budget goes where the depth is.
-    const pomMin = tier === 'medium' ? 1.2 : 0;
+    // Medium used to gate POM at parallaxAmount >= 1.2, which qualified brick,
+    // paving, rubble, shingle, gravel and corrugation — and disqualified cast
+    // concrete, stucco, plaster and plank, i.e. every surface the player is actually
+    // standing next to in the review poses. With the fade also pinned at 4 m the
+    // feature was contributing approximately zero pixels to any shipped frame. 0.75
+    // brings the whole 1.0-amplitude family in (concrete, stucco, dirt, sand, plank)
+    // and still keeps POM off the genuinely flat sheet stock at 0.5.
+    const pomMin = tier === 'medium' ? 0.75 : 0;
 
     let detailFade = { low: 4, medium: 14, high: 14, ultra: 20 }[tier] ?? 14;
     if (headless) detailFade = Math.min(detailFade, 14);
@@ -640,7 +732,10 @@ class Library {
       u.uCodDetail.value.set(r.detailTiling, r.detailNormalStrength, r.detailAlbedoStrength, q.detailFade);
     }
     if (u.uCodBreak) {
-      u.uCodBreak.value.set(r.breakScale, r.tileBreakAmount, 2.5, 14.0);
+      // (maskScale, strength, nearFraction, farStart) — 70% of full strength right
+      // under the player's feet, 100% past 6 m. It used to be (…, 2.5, 14): a hard
+      // zero inside 2.5 m, which is where a repeat is countable in the first place.
+      u.uCodBreak.value.set(r.breakScale, r.tileBreakAmount, 0.7, 6.0);
     }
     if (dirty) mat.needsUpdate = true;
   }
@@ -824,6 +919,10 @@ class Library {
       edgeMetal: num(recipeRaw.edgeMetal, tag === 'metal' ? 0.55 : 0),
       // Vertical world-space staining. Ground and glass do not want it.
       streak: num(recipeRaw.streak, num(tagDef.streak, 0.75)) * (opts.streak ?? 1),
+      // Per-family character of the world-space macro band and of convex wear.
+      macroChar: { ...MACRO_DEFAULT, ...(tagDef.macro || {}), ...(recipeRaw.macro2 || {}) },
+      wearDir: recipeRaw.wearDir || tagDef.wear || [0.12, 0.06],
+      cell: recipeRaw.cell || null,
     };
     r.macroAmount = this._macroFor(r, opts, recipeRaw);
 
@@ -967,7 +1066,22 @@ class Library {
         value: new THREE.Vector4(r.detailTiling, r.detailNormalStrength, r.detailAlbedoStrength, 14),
       };
     }
-    if (r.tileBreakAmount > 0) u.uCodBreak = { value: new THREE.Vector4(r.breakScale, r.tileBreakAmount, 2.5, 14) };
+    if (r.tileBreakAmount > 0) {
+      u.uCodBreak = { value: new THREE.Vector4(r.breakScale, r.tileBreakAmount, 0.7, 6) };
+    }
+    // Per-unit identity for laid surfaces. This is the *right* answer to a countable
+    // grid on brick, paving and ceramic; the rotated second sample is the right answer
+    // for asphalt and dirt, and the two are deliberately not the same mechanism.
+    if (r.cell && num(r.cell.amount, 0) > 0) {
+      defines.COD_CELLVAR = '';
+      const c = r.cell;
+      u.uCodCell = {
+        value: new THREE.Vector4(c.counts[0], c.counts[1], num(c.row, 0), num(c.amount, 0.4) * (opts.cellVar ?? 1)),
+      };
+      u.uCodCell2 = {
+        value: new THREE.Vector4(c.joint[0], c.joint[1], num(c.hue, 1), num(c.rough, 0.16)),
+      };
+    }
     if (r.macroAmount > 0) {
       // x macro strength, y convex edge-wear strength, z edge metalness lift,
       // w vertical world-space staining. All world-space: none of it repeats with the
@@ -976,6 +1090,13 @@ class Library {
       u.uCodMacro = {
         value: new THREE.Vector4(r.macroAmount, r.edgeWear, r.edgeMetal, r.streak),
       };
+      const mc = r.macroChar;
+      u.uCodMacro2 = {
+        value: new THREE.Vector4(num(mc.local, 0.2), num(mc.value, 0.12), num(mc.tintAmt, 0.3), num(mc.rough, 0.09)),
+      };
+      const tn = mc.tint || [1.05, 1, 0.94];
+      u.uCodMacroTint = { value: new THREE.Vector3(tn[0], tn[1], tn[2]) };
+      u.uCodWear = { value: new THREE.Vector4(r.wearDir[0], r.wearDir[1], 0, 0) };
     }
     if (useVCol) {
       defines.COD_VCOL = '';

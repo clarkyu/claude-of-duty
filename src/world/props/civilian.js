@@ -6,6 +6,17 @@
  * and the fabric materials carry the MaterialLibrary's sheen path.
  */
 import { chamferBox, cyl, revolve, tube, torusPrim, sheet, blob, xf, clamp01, lerp, TAU } from './geom.js';
+import { signageLayout, cellUv, cellAspect, signQuad, addSign } from './signage.js';
+
+/** The atlas layout is pure data — one copy for every generator in the module. */
+const SIGNS = signageLayout();
+
+/** Pick a cell from a group and return everything a quad needs to use it. */
+function pickCell(r, group) {
+  const list = SIGNS.groups[group] || SIGNS.groups.fascia;
+  const name = list[r.int(list.length)];
+  return { name, uv: cellUv(SIGNS, name), aspect: cellAspect(SIGNS, name) };
+}
 
 /* ========================================================================== */
 /*                                market stall                                */
@@ -395,27 +406,169 @@ export function tvAerial(a, r, o = {}) {
   return { colliders: [], height: h, radius: 0.6 };
 }
 
-/** Projecting shop sign / fascia board with a bracket. */
+/**
+ * Rendered chimney / boiler flue: a masonry stack with a galvanised pipe and a cowl.
+ * Every roofline in this part of the world has two or three, and a vertical of this
+ * proportion is what stops a parapet reading as a ruler.
+ */
+export function chimneyFlue(a, r, o = {}) {
+  const w = o.w ?? r.range(0.42, 0.68);
+  const d = o.d ?? w * r.range(0.7, 1.0);
+  const h = o.h ?? r.range(0.9, 1.9);
+  const mat = o.mat || r.pick(['concrete', 'paving', 'concrete']);
+  a.add(mat, chamferBox(w, h, d, 0.02), xf(0, h / 2, 0), { grimeHeight: h * 0.6, uvOff: [r.range(0, 2), r.range(0, 2)] });
+  /* a flaunching band and a coping slab */
+  a.add('paving', chamferBox(w + 0.09, 0.055, d + 0.09, 0.012), xf(0, h + 0.03, 0), { grime: 1.35 });
+  /* the flue itself, off-centre, with a cowl */
+  const ox = r.jitter(w * 0.18);
+  const fh = r.range(0.35, 0.8);
+  a.add('galv', cyl(0.072, fh, 9, { chamfer: 0.008 }), xf(ox, h + 0.06 + fh / 2, 0), { grimeHeight: 0.4 });
+  a.add('galv', revolve([[0.05, 0], [0.115, 0.03], [0.115, 0.09], [0.06, 0.14], [0, 0.15]], 10),
+    xf(ox, h + 0.06 + fh, 0), { grime: 1.05 });
+  if (r.chance(0.55)) {
+    a.add('rust', tube([[ox, h + 0.06 + fh * 0.6, 0], [ox + r.range(0.5, 0.9), 0.05, r.jitter(0.7)]], 0.005, 4, { cap: false }), null, {
+      grime: 1.35,
+    });
+  }
+  return {
+    colliders: [{ type: 'box', halfExtents: [w / 2, h / 2, d / 2], pos: [0, h / 2, 0], surface: 'concrete' }],
+    height: h + fh + 0.2,
+    radius: Math.max(w, d) * 0.75,
+  };
+}
+
+/**
+ * Satellite farm: a short mast carrying three or four dishes plus the junction box and
+ * the cable bundle that always hangs off one. Reads at 60 m as a distinctive cluster,
+ * which is exactly what a flat parapet needs.
+ */
+export function dishFarm(a, r, o = {}) {
+  const mastH = o.h ?? r.range(1.1, 1.8);
+  const n = o.count ?? 3 + r.int(2);
+  a.add('rust', cyl(0.038, mastH, 8, { chamfer: 0.005 }), xf(0, mastH / 2, 0, r.jitter(0.03), 0, r.jitter(0.03)), { grimeHeight: 0.5 });
+  a.add('rust', chamferBox(0.26, 0.035, 0.26, 0.006), xf(0, 0.018, 0), { grime: 1.6 });
+  for (let i = 0; i < n; i++) {
+    const ang = (i / n) * TAU + r.range(0, 0.9);
+    const y = mastH * (0.42 + (i / n) * 0.5);
+    const R = r.range(0.22, 0.38);
+    const cx = Math.cos(ang) * 0.1;
+    const cz = Math.sin(ang) * 0.1;
+    a.add('galv', tube([[0, y, 0], [cx * 2.2, y + 0.02, cz * 2.2]], 0.016, 5), null, { grime: 1.2 });
+    a.push(xf(cx * 2.2, y + 0.02, cz * 2.2, r.range(-0.55, -0.15), ang + r.jitter(0.5), 0));
+    const prof = [];
+    for (let k = 0; k <= 5; k++) {
+      const t = k / 5;
+      prof.push([R * t, (R * t * R * t) / (R * 1.6)]);
+    }
+    prof.push([R + 0.011, (R * R) / (R * 1.6) - 0.011]);
+    a.add('signWhite', revolve(prof, 14), xf(0, 0, 0, -Math.PI / 2, 0, 0), { grime: 1.1 });
+    a.add('galv', tube([[0, 0.02, 0], [R * 0.28, 0.05, R * 0.6]], 0.011, 5), null, { grime: 1.15 });
+    a.pop();
+  }
+  /* junction box at the foot and a bundle of coax dropping over the parapet */
+  a.add('galv', chamferBox(0.16, 0.2, 0.1, 0.012), xf(0.14, 0.11, 0.1), { grime: 1.2 });
+  a.add('rust', tube([[0.14, 0.2, 0.12], [0.3, 0.12, 0.3], [0.42, 0.02, 0.55]], 0.014, 5, { cap: false }), null, { grime: 1.3 });
+  return {
+    colliders: [{ type: 'box', halfExtents: [0.2, mastH / 2, 0.2], pos: [0, mastH / 2, 0], surface: 'metal' }],
+    height: mastH + 0.3,
+    radius: 0.8,
+  };
+}
+
+/**
+ * Projecting shop sign / fascia board — with the shop's actual name on it.
+ *
+ * The board used to be a coloured rectangle with a smaller white rectangle glued to
+ * the front, which is the single loudest "this is a blockout" tell a street can have.
+ * The face is now a quad UV-mapped to a fascia cell of the signage atlas: an enamelled
+ * board carrying an Arabic shop name, a French strapline and a phone number, weathered
+ * with rust bleed from the fixings. Both faces are lettered, because a projecting sign
+ * is read from both directions.
+ */
 export function shopSign(a, r, o = {}) {
-  const w = o.w ?? r.range(0.9, 1.6);
-  const h = o.h ?? r.range(0.3, 0.5);
+  const cellName = o.cell || pickCell(r, 'fascia').name;
+  const uv = cellUv(SIGNS, cellName);
+  const aspect = cellAspect(SIGNS, cellName);
   const projecting = o.projecting ?? true;
-  const face = o.mat || r.pick(['signRed', 'signWhite', 'plasticBlue', 'plasticGreen']);
+  /* Size from the artwork, never independently: a 4.5:1 fascia squashed onto a 2:1
+     board is illegible, and illegible lettering is worse than none. */
+  const w = o.w ?? r.range(1.0, 1.7);
+  const h = o.h ?? w / aspect;
+  const frame = o.mat || r.pick(['rust', 'galv', 'signWhite']);
+
   if (projecting) {
-    /* a cantilever arm out from the wall with a diagonal stay, board hung under it */
-    a.add('rust', chamferBox(0.025, 0.05, w * 0.9, 0.005), xf(0, 0.06, (w * 0.9) / 2), { grime: 1.2 });
-    a.add('rust', tube([[0, 0.34, 0.02], [0, 0.05, w * 0.72]], 0.009, 5, { cap: false }), null, { grime: 1.3 });
-    a.add(face, chamferBox(0.03, h, w * 0.86, 0.008), xf(0, -h / 2 - 0.02, (w * 0.86) / 2 + 0.05), { grime: 0.8 });
-    a.add('signWhite', chamferBox(0.008, h * 0.5, w * 0.6, 0.003), xf(0.02, -h / 2 - 0.02, (w * 0.86) / 2 + 0.05), { grime: 0.6 });
-  } else {
-    /* flat fascia against the wall */
-    a.add(face, chamferBox(w, h, 0.05, 0.01), xf(0, 0, 0.025), { grime: 0.85 });
-    a.add('signWhite', chamferBox(w * 0.72, h * 0.45, 0.01, 0.004), xf(0, 0, 0.055), { grime: 0.6 });
+    /* cantilever arm out from the wall with a diagonal stay, board hung under it */
+    a.add('rust', chamferBox(0.025, 0.05, w * 0.92, 0.005), xf(0, 0.06, (w * 0.92) / 2), { grime: 1.2 });
+    a.add('rust', tube([[0, 0.34, 0.02], [0, 0.05, w * 0.74]], 0.009, 5, { cap: false }), null, { grime: 1.3 });
+    /* the board itself, hanging in the XZ sense: local +Z is out of the wall */
+    const cz = w / 2 + 0.06;
+    const cy = -h / 2 - 0.03;
+    a.add(frame, chamferBox(0.028, h + 0.045, w + 0.04, 0.01), xf(0, cy, cz), { grime: 1.0 });
     for (const s of [-1, 1]) {
-      a.add('rust', cyl(0.012, 0.1, 6, { chamfer: 0.002 }), xf((s * w) / 2 - s * 0.08, h / 2 + 0.06, 0.05, Math.PI / 2, 0, 0), { grime: 1.2 });
+      /* the lettered face on each side of the board */
+      addSign(a, 'signage', signQuad(w, h, uv, { flipU: s < 0 }), xf(s * 0.017, cy, cz, 0, s * Math.PI * 0.5, 0), { grime: 0.5 });
+    }
+    /* two hanger eyes so the board is visibly hung, not floating */
+    for (const s of [-1, 1]) {
+      a.add('rust', torusPrim(0.02, 0.005, 8, 4), xf(0, 0.02, cz + s * w * 0.36, 0, 0, Math.PI / 2), { grime: 1.4 });
+    }
+  } else {
+    /* flat fascia against the wall, on a shallow tray with a lip */
+    a.add(frame, chamferBox(w + 0.07, h + 0.07, 0.055, 0.012), xf(0, 0, 0.028), { grime: 1.0 });
+    addSign(a, 'signage', signQuad(w, h, uv), xf(0, 0, 0.058), { grime: 0.45 });
+    /* gooseneck lamps over the fascia — the thing that says "this shop trades at night" */
+    for (const s of [-1, 1]) {
+      const lx = (s * w) / 2 - s * 0.14;
+      a.add('rust', tube([[lx, h / 2 + 0.02, 0.03], [lx, h / 2 + 0.17, 0.05], [lx, h / 2 + 0.13, 0.19]], 0.011, 5, { cap: false }), null, {
+        grime: 1.3,
+      });
+      a.add('galv', revolve([[0, 0], [0.055, 0.005], [0.06, 0.03], [0.03, 0.055], [0, 0.055]], 9),
+        xf(lx, h / 2 + 0.115, 0.2, Math.PI * 0.62, 0, 0), { grime: 1.1 });
     }
   }
   return { colliders: [], height: h, radius: w * 0.6 };
+}
+
+/**
+ * A mark on a wall: unit number, street plate, stencilled warning or a spray tag.
+ * One quad, one atlas cell, no collider — and the cheapest legibility in the map.
+ * `group` picks which family of the atlas to draw from.
+ */
+export function wallMark(a, r, o = {}) {
+  const group = o.group || r.pick(['unit', 'stencil', 'stencil', 'graffiti', 'graffiti', 'street', 'notice']);
+  const c = o.cell ? { name: o.cell, uv: cellUv(SIGNS, o.cell), aspect: cellAspect(SIGNS, o.cell) } : pickCell(r, group);
+  const board = group === 'unit' || group === 'street' || group === 'notice';
+  const w = o.w ?? (board ? r.range(0.4, 0.62) : group === 'graffiti' ? r.range(1.1, 2.0) : r.range(0.8, 1.5));
+  const h = w / c.aspect;
+  const tilt = board ? 0 : r.jitter(0.06);
+  if (board) {
+    /* enamel plate stands a few millimetres off the render on four screws */
+    a.add('galv', chamferBox(w + 0.02, h + 0.02, 0.012, 0.004), xf(0, 0, 0.012), { grime: 1.1 });
+    addSign(a, 'signage', signQuad(w, h, c.uv), xf(0, 0, 0.019), { grime: 0.4 });
+  } else {
+    /* paint on masonry: dead flat against the wall, slightly off level */
+    addSign(a, 'signageDecal', signQuad(w, h, c.uv), xf(0, 0, 0.012, 0, 0, tilt), { grime: 0.5 });
+  }
+  return { colliders: [], height: h, radius: Math.max(w, h) * 0.6, flat: true };
+}
+
+/**
+ * Paint on the road: lane arrows, STOP/SLOW, dashes, zebra bars, hatching — plus the
+ * cracks, skid marks and oil stains from the same atlas, which is what stops a
+ * carriageway reading as one sheet of uniform noise.
+ *
+ * The quad is laid in the XZ plane with the artwork's "up" pointing along +Z of the
+ * prop, so a caller aims it down the lane with `yaw`.
+ */
+export function roadMark(a, r, o = {}) {
+  const group = o.group || 'road';
+  const c = o.cell ? { name: o.cell, uv: cellUv(SIGNS, o.cell) } : pickCell(r, group);
+  const w = o.w ?? (group === 'grime' ? r.range(1.6, 3.0) : r.range(1.1, 1.5));
+  const len = o.len ?? (group === 'grime' ? w * 0.55 : r.range(2.6, 3.9));
+  const mat = 'signageDecal';
+  /* signQuad is authored in XY; -90° about X lays it flat with +Y -> +Z */
+  addSign(a, mat, signQuad(w, len, c.uv), xf(0, 0.006, 0, -Math.PI / 2, 0, 0), { grime: 0.6 });
+  return { colliders: [], height: 0.02, radius: Math.max(w, len) * 0.55, flat: true };
 }
 
 /** Rolling shutter over a shop front: slats, guide rails, a padlocked hasp. */
@@ -450,10 +603,21 @@ export function shopShutter(a, r, o = {}) {
       a.add('rust', torusPrim(0.028, 0.008, 10, 5), xf(0, by - 0.06, 0.06, Math.PI / 2, 0, 0), { grime: 1.4 });
     }
   }
-  /* graffiti-ish paint patch */
-  if (r.chance(0.45)) {
-    a.add(r.pick(['signRed', 'plasticBlue']), chamferBox(w * r.range(0.3, 0.6), r.range(0.25, 0.5), 0.004, 0.002),
-      xf(r.jitter(w * 0.2), h * r.range(0.3, 0.6), 0.048, 0, 0, r.jitter(0.15)), { grime: 1.1 });
+  /* Real graffiti — a sprayed tag from the signage atlas, bowed to follow the slats
+     so it does not float off the curtain. */
+  if (drop > 0.5 && r.chance(0.72)) {
+    const tag = pickCell(r, 'graffiti');
+    const tw = Math.min(w * r.range(0.6, 0.94), 2.1);
+    const th = tw / tag.aspect;
+    const ty = clamp01((h - slatH * n) / Math.max(0.1, h)) * 0.2 + r.range(0.32, 0.6) * drop + (h - drop);
+    addSign(a, 'signageDecal', signQuad(tw, th, tag.uv, { curve: 0.004 }),
+      xf(r.jitter(w * 0.1), ty, 0.05, 0, 0, r.jitter(0.05)), { grime: 0.7 });
+  }
+  /* the unit number stencilled on the head box — every shuttered unit has one */
+  if (r.chance(0.6)) {
+    const num = pickCell(r, 'unit');
+    const nw = 0.34;
+    addSign(a, 'signage', signQuad(nw, nw / num.aspect, num.uv), xf(w / 2 - 0.28, h + 0.1, 0.145), { grime: 0.5 });
   }
   return { colliders: [], height: h, radius: w * 0.6 };
 }
@@ -654,8 +818,12 @@ export default {
   satelliteDish,
   waterTank,
   tvAerial,
+  chimneyFlue,
+  dishFarm,
   shopSign,
   shopShutter,
+  wallMark,
+  roadMark,
   cardboardBox,
   litter,
   rubblePile,

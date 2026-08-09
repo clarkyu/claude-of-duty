@@ -346,70 +346,214 @@ export function sandbagWall(bat, x0, z0, x1, z1, y, courses = 3) {
 }
 
 /** Market stall: steel frame, canvas roof, timber counter. Signature souk silhouette. */
+/**
+ * A trader's stall, and — critically — the goods on it.
+ *
+ * Six identical four-post canopies with nothing under them is a furniture showroom,
+ * not a market. `opts.variant` (0-2) swaps the frame between a pipe canopy, a
+ * single-slope lean-to and a timber A-frame; the canopy sags on *both* axes rather
+ * than being a flat quad; and `opts.goods` (0-3) dresses the counter with produce
+ * heaps, sacks, hanging textiles, a hanging balance and a chalk price board.
+ */
 export function marketStall(bat, x, y, z, yaw, opts = {}) {
   const w = opts.width ?? 2.6;
   const d = opts.depth ?? 1.8;
   const h = opts.height ?? 2.25;
+  const variant = opts.variant ?? 0;
+  const goods = opts.goods ?? 0;
+  const rn = (i) => hash3(Math.round(x * 7), Math.round(z * 7), i);
   const m = new THREE.Matrix4().compose(
     new THREE.Vector3(x, y, z),
     new THREE.Quaternion().setFromAxisAngle(_up, yaw),
     new THREE.Vector3(1, 1, 1)
   );
   bat.push(m);
-  bat.upTo('metal.galv', 0, (mb) => {
-    for (const sx of [-1, 1])
+
+  /* ── frame ─────────────────────────────────────────────────────────────── */
+  const backH = variant === 1 ? h + 0.34 : h;
+  const frontH = variant === 1 ? h - 0.18 : h;
+  const frameMat = variant === 2 ? 'wood.weathered' : 'metal.galv';
+  const postR = variant === 2 ? 0.045 : 0.028;
+  bat.upTo(frameMat, 0, (mb) => {
+    for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
-        mb.cylinder([sx * w * 0.5, 0, sz * d * 0.5], [sx * w * 0.5, h, sz * d * 0.5], 0.028, 8);
+        const ph = sz < 0 ? backH : frontH;
+        mb.cylinder([sx * w * 0.5, 0, sz * d * 0.5], [sx * w * 0.5, ph, sz * d * 0.5], postR, variant === 2 ? 6 : 8);
       }
-    for (const sz of [-1, 1]) mb.cylinder([-w * 0.5, h, sz * d * 0.5], [w * 0.5, h, sz * d * 0.5], 0.024, 6);
-    for (const sx of [-1, 1]) mb.cylinder([sx * w * 0.5, h, -d * 0.5], [sx * w * 0.5, h, d * 0.5], 0.024, 6);
+    }
+    mb.cylinder([-w * 0.5, backH, -d * 0.5], [w * 0.5, backH, -d * 0.5], postR * 0.86, 6);
+    mb.cylinder([-w * 0.5, frontH, d * 0.5], [w * 0.5, frontH, d * 0.5], postR * 0.86, 6);
+    for (const sx of [-1, 1]) mb.cylinder([sx * w * 0.5, backH, -d * 0.5], [sx * w * 0.5, frontH, d * 0.5], postR * 0.86, 6);
+    if (variant === 2) {
+      /* an A-frame ridge over the middle, so the canopy has a spine */
+      mb.cylinder([-w * 0.5, backH + 0.3, 0], [w * 0.5, backH + 0.3, 0], postR * 0.8, 6);
+      for (const sx of [-1, 1]) mb.cylinder([sx * w * 0.5, backH, -d * 0.5], [sx * w * 0.5, backH + 0.3, 0], postR * 0.8, 5);
+    }
+    /* diagonal braces at the back corners — every real stall has them */
+    for (const sx of [-1, 1]) {
+      mb.cylinder([sx * w * 0.5, backH - 0.02, -d * 0.5], [sx * (w * 0.5 - 0.42), backH - 0.44, -d * 0.5], postR * 0.62, 5);
+    }
   });
-  bat.upTo(opts.canvas || 'fabric.awning2', 0, (mb) => {
-    const n = 6;
-    // Real sheet thickness. A canopy that terminates in a one-pixel edge reads as
-    // paper from any angle that catches the rim, which on a stall is most of them.
+
+  /* ── canopy: sags across AND along, with a ridge on the A-frame ────────── */
+  bat.upTo(opts.canvas || (variant === 1 ? 'fabric.awning' : 'fabric.awning2'), 0, (mb) => {
+    const nu = 6;
+    const nv = 4;
     const th = 0.026;
-    for (let i = 0; i < n; i++) {
-      const u0 = lerp(-w * 0.5, w * 0.5, i / n);
-      const u1 = lerp(-w * 0.5, w * 0.5, (i + 1) / n);
-      const s0 = Math.sin((i / n) * Math.PI) * 0.09;
-      const s1 = Math.sin(((i + 1) / n) * Math.PI) * 0.09;
+    const over = 0.26;
+    const surf = (u, v) => {
+      /* u across (-0.5..0.5), v back-to-front (0..1) */
+      const px = u * (w + 0.12);
+      const pz = lerp(-d * 0.5 - over * 0.4, d * 0.5 + over, v);
+      const ridge = variant === 2 ? Math.cos((v - 0.5) * Math.PI) * 0.26 : 0;
+      const sagU = Math.cos(u * Math.PI) * 0.085 - 0.085;
+      const sagV = -Math.sin(v * Math.PI) * 0.13;
+      const flap = Math.sin(u * 7.4 + rn(3) * 6) * 0.016 + Math.sin(v * 5.1 + rn(4) * 6) * 0.014;
+      const base = lerp(backH + 0.2, frontH + 0.02, v);
+      return [px, base + ridge + sagU + sagV + flap, pz];
+    };
+    for (let i = 0; i < nu; i++) {
+      for (let j = 0; j < nv; j++) {
+        const u0 = -0.5 + i / nu;
+        const u1 = -0.5 + (i + 1) / nu;
+        const v0 = j / nv;
+        const v1 = (j + 1) / nv;
+        const a = surf(u0, v0);
+        const b = surf(u1, v0);
+        const c = surf(u1, v1);
+        const e = surf(u0, v1);
+        mb.prism(
+          [[a[0], a[1] - th, a[2]], [b[0], b[1] - th, b[2]], [c[0], c[1] - th, c[2]], [e[0], e[1] - th, e[2]]],
+          [a, b, c, e]
+        );
+      }
+    }
+    /* scalloped front valance — five separate lappets, not one straight hem */
+    const lap = 5;
+    for (let i = 0; i < lap; i++) {
+      const u0 = -0.5 + i / lap;
+      const u1 = -0.5 + (i + 1) / lap;
+      const drop = 0.2 + rn(10 + i) * 0.13;
+      const p0 = surf(u0, 1);
+      const p1 = surf(u1, 1);
+      const mid = (drop + 0.06) * (1 + Math.sin(((i + 0.5) / lap) * Math.PI) * 0.4);
       mb.prism(
         [
-          [u0, h + 0.18 - s0 - th, -d * 0.5],
-          [u1, h + 0.18 - s1 - th, -d * 0.5],
-          [u1, h - s1 - th, d * 0.5],
-          [u0, h - s0 - th, d * 0.5],
+          [p0[0], p0[1] - drop, p0[2] - th],
+          [(p0[0] + p1[0]) * 0.5, p0[1] - mid, p0[2] - th],
+          [p1[0], p1[1] - drop, p1[2] - th],
+          [p1[0], p1[1], p1[2] - th],
         ],
         [
-          [u0, h + 0.18 - s0, -d * 0.5],
-          [u1, h + 0.18 - s1, -d * 0.5],
-          [u1, h - s1, d * 0.5],
-          [u0, h - s0, d * 0.5],
+          [p0[0], p0[1] - drop, p0[2]],
+          [(p0[0] + p1[0]) * 0.5, p0[1] - mid, p0[2]],
+          [p1[0], p1[1] - drop, p1[2]],
+          [p1[0], p1[1], p1[2]],
         ]
       );
     }
-    // Front valance, as a solid so the hem catches light.
-    mb.prism(
-      [
-        [-w * 0.5, h - 0.32, d * 0.52 - th],
-        [w * 0.5, h - 0.3, d * 0.52 - th],
-        [w * 0.5, h, d * 0.5 - th],
-        [-w * 0.5, h, d * 0.5 - th],
-      ],
-      [
-        [-w * 0.5, h - 0.32, d * 0.52],
-        [w * 0.5, h - 0.3, d * 0.52],
-        [w * 0.5, h, d * 0.5],
-        [-w * 0.5, h, d * 0.5],
-      ]
-    );
   });
+
+  /* ── counter ───────────────────────────────────────────────────────────── */
   bat.upTo('wood.weathered', 0, (mb) => {
     mb.box([0, 0.88, d * 0.22], [w * 0.5 - 0.02, 0.045, d * 0.28], { chamfer: 0.012 });
     for (const sx of [-1, 1]) mb.box([sx * (w * 0.5 - 0.16), 0.44, d * 0.22], [0.05, 0.44, d * 0.26], { chamfer: 0.01 });
     mb.box([0, 0.62, d * 0.5 - 0.03], [w * 0.5 - 0.02, 0.26, 0.03], { chamfer: 0.01 });
+    /* a raked display tier at the back of the counter */
+    mb.box([0, 1.06, -d * 0.06], [w * 0.5 - 0.12, 0.03, d * 0.14], { chamfer: 0.008 });
+    for (const sx of [-1, 1]) mb.box([sx * (w * 0.5 - 0.14), 0.99, -d * 0.06], [0.03, 0.1, d * 0.14], { chamfer: 0.006 });
   });
+
+  /* ── goods ─────────────────────────────────────────────────────────────── */
+  if (goods >= 0) {
+    /* open produce trays on the counter, heaped */
+    const trays = 3 + ((rn(20) * 2) | 0);
+    const tm = bat.b('wood.ply');
+    for (let i = 0; i < trays; i++) {
+      const tx = lerp(-w * 0.5 + 0.36, w * 0.5 - 0.36, trays === 1 ? 0.5 : i / (trays - 1));
+      const tw = w / trays - 0.1;
+      tm.box([tx, 0.955, d * 0.24], [tw * 0.46, 0.035, 0.2], { chamfer: 0.008 });
+      for (const sz of [-1, 1]) tm.box([tx, 0.985, d * 0.24 + sz * 0.2], [tw * 0.46, 0.055, 0.014], { chamfer: 0.005 });
+      for (const sx of [-1, 1]) tm.box([tx + sx * tw * 0.46, 0.985, d * 0.24], [0.014, 0.055, 0.2], { chamfer: 0.005 });
+    }
+    /* the heaps themselves: three colours of produce, one mound per tray */
+    const produceMats = ['veg.citrus', 'veg.tomato', 'veg.green'];
+    for (let i = 0; i < trays; i++) {
+      const tx = lerp(-w * 0.5 + 0.36, w * 0.5 - 0.36, trays === 1 ? 0.5 : i / (trays - 1));
+      const tw = w / trays - 0.1;
+      const pm = bat.b(produceMats[(i + goods) % produceMats.length]);
+      const per = 7 + ((rn(30 + i) * 5) | 0);
+      for (let k = 0; k < per; k++) {
+        const rr = 0.036 + rn(40 + i * 9 + k) * 0.026;
+        const ox = (rn(60 + i * 11 + k) - 0.5) * (tw * 0.8);
+        const oz = (rn(80 + i * 13 + k) - 0.5) * 0.3;
+        const oy = 1.0 + rr * (0.7 + rn(90 + k) * 0.9);
+        pm.cylinder([tx + ox, oy - rr * 0.55, d * 0.24 + oz], [tx + ox, oy + rr * 0.55, d * 0.24 + oz], rr, 7, { radius2: rr * 0.82 });
+      }
+    }
+    /* hessian sacks slumped at the foot of the counter, mouths rolled open */
+    const sm = bat.b('fabric.canvas');
+    const sacks = 2 + ((rn(21) * 2) | 0);
+    for (let i = 0; i < sacks; i++) {
+      const sx2 = lerp(-w * 0.5 + 0.3, w * 0.5 - 0.3, sacks === 1 ? 0.5 : i / (sacks - 1)) + (rn(22 + i) - 0.5) * 0.2;
+      const sz2 = -d * 0.22 + (rn(23 + i) - 0.5) * 0.2;
+      const sh = 0.34 + rn(24 + i) * 0.18;
+      sm.cylinder([sx2, 0.0, sz2], [sx2, sh * 0.62, sz2], 0.19 + rn(25 + i) * 0.05, 9, { radius2: 0.17 });
+      sm.cylinder([sx2, sh * 0.62, sz2], [sx2, sh, sz2], 0.17, 9, { radius2: 0.13 });
+      sm.cylinder([sx2, sh, sz2], [sx2, sh + 0.07, sz2], 0.15, 9, { radius2: 0.16 });
+      /* what is in it, proud of the mouth */
+      bat.b(produceMats[(i + goods + 1) % 3]).cylinder([sx2, sh + 0.05, sz2], [sx2, sh + 0.12, sz2], 0.13, 8, { radius2: 0.05 });
+    }
+    /* textiles hanging off the front rail — the strongest vertical a stall has */
+    if (goods % 2 === 1) {
+      const cm = bat.b('fabric.awning');
+      for (let i = 0; i < 3; i++) {
+        const hx = lerp(-w * 0.4, w * 0.4, i / 2) + (rn(50 + i) - 0.5) * 0.1;
+        const hh = 0.5 + rn(51 + i) * 0.55;
+        const hw = 0.22 + rn(52 + i) * 0.12;
+        for (let s = 0; s < 3; s++) {
+          const t0 = s / 3;
+          const t1 = (s + 1) / 3;
+          const z0 = d * 0.5 + 0.02 + Math.sin(t0 * 2.1) * 0.03;
+          const z1 = d * 0.5 + 0.02 + Math.sin(t1 * 2.1) * 0.03;
+          cm.prism(
+            [
+              [hx - hw, frontH - 0.34 - t1 * hh, z1 - 0.012],
+              [hx + hw, frontH - 0.34 - t1 * hh, z1 - 0.012],
+              [hx + hw * (1 + t1 * 0.14), frontH - 0.34 - t0 * hh, z0 - 0.012],
+              [hx - hw * (1 + t1 * 0.14), frontH - 0.34 - t0 * hh, z0 - 0.012],
+            ],
+            [
+              [hx - hw, frontH - 0.34 - t1 * hh, z1],
+              [hx + hw, frontH - 0.34 - t1 * hh, z1],
+              [hx + hw * (1 + t1 * 0.14), frontH - 0.34 - t0 * hh, z0],
+              [hx - hw * (1 + t1 * 0.14), frontH - 0.34 - t0 * hh, z0],
+            ]
+          );
+        }
+      }
+    }
+    /* hanging balance on a chain over one end of the counter */
+    const bm = bat.b('metal.galv');
+    const bx = w * (goods % 2 ? -0.34 : 0.34);
+    bm.cylinder([bx, frontH - 0.06, d * 0.16], [bx, frontH - 0.52, d * 0.16], 0.006, 4);
+    bm.cylinder([bx, frontH - 0.56, d * 0.16], [bx, frontH - 0.62, d * 0.16], 0.075, 10, { radius2: 0.03 });
+    for (let s = 0; s < 3; s++) {
+      const a = (s / 3) * TAU;
+      bm.cylinder(
+        [bx, frontH - 0.62, d * 0.16],
+        [bx + Math.cos(a) * 0.13, frontH - 0.82, d * 0.16 + Math.sin(a) * 0.13],
+        0.004,
+        4
+      );
+    }
+    bm.cylinder([bx, frontH - 0.84, d * 0.16], [bx, frontH - 0.87, d * 0.16], 0.14, 12);
+    /* chalk price board propped on the counter end */
+    bat
+      .b('wood.painted')
+      .box([-bx, 1.16, d * 0.34], [0.2, 0.26, 0.016], { chamfer: 0.006 });
+    bat.b('metal.rust').cylinder([-bx, 0.9, d * 0.34 + 0.03], [-bx, 1.16, d * 0.34 + 0.03], 0.008, 4);
+  }
   bat.pop();
   bat.boxYaw(x, y + 0.46, z, w * 0.5 - 0.02, 0.46, d * 0.28, yaw, 'wood');
   for (const sx of [-1, 1])
