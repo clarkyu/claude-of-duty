@@ -161,9 +161,47 @@ export class Minimap {
     g.restore();
   }
 
-  _drawWalkable(g, level) {
+  /**
+   * Solid building masses, then their interior floors a stop darker than the street.
+   * The footprints come from the level's own data tables, because the *colliders* are
+   * wall segments — four thin strips per structure, which is a hollow outline and
+   * exactly why solid and walkable were indistinguishable.
+   * @param {Path2D|null} walk the walkable path, re-filled clipped to each footprint
+   */
+  _drawBuildings(g, level, walk) {
+    const data = level?.data;
+    const rects = [];
+    for (const b of data?.BUILDINGS || []) if (Array.isArray(b?.rect)) rects.push(b.rect);
+    const m = data?.MINARET;
+    if (m) rects.push([m.x - m.radius - 0.6, m.z - m.radius - 0.6, m.x + m.radius + 0.6, m.z + m.radius + 0.6]);
+    const k = data?.FUEL?.kiosk?.rect;
+    if (Array.isArray(k)) rects.push(k);
+    if (!rects.length) return;
+    for (const [x0, z0, x1, z1] of rects) {
+      const [ax, az] = this._toPx(x0, z0);
+      const [bx, bz] = this._toPx(x1, z1);
+      g.fillStyle = '#202932';
+      g.fillRect(ax, az, bx - ax, bz - az);
+      if (walk) {
+        g.save();
+        g.beginPath();
+        g.rect(ax, az, bx - ax, bz - az);
+        g.clip();
+        g.fillStyle = '#46535f';
+        g.fill(walk);
+        g.restore();
+      }
+      /* a hairline round the footprint so two adjoining blocks stay separable */
+      g.strokeStyle = 'rgba(10,14,18,0.85)';
+      g.lineWidth = Math.max(1, this.pxPerM * 0.09);
+      g.strokeRect(ax, az, bx - ax, bz - az);
+    }
+  }
+
+  /** @returns {Path2D|null} the walkable surface, for re-use by _drawBuildings */
+  _drawWalkable(g, level, colour = '#5b6a78') {
     const nav = level?.navRegions;
-    if (!nav || !nav.walkable || !nav.cols) return;
+    if (!nav || !nav.walkable || !nav.cols) return null;
     const { cols, rows, cell } = nav;
     const origin = nav.origin || [this.bounds.minX, this.bounds.minZ];
     const w = nav.walkable;
@@ -187,9 +225,10 @@ export class Minimap {
         }
       }
     }
-    g.fillStyle = '#5b6a78';
+    g.fillStyle = colour;
     if (path) g.fill(path);
     else g.fill();
+    return path;
   }
 
   _drawColliders(g, level) {
@@ -224,8 +263,10 @@ export class Minimap {
         g.translate(x, z);
         if (f.yaw) g.rotate(f.yaw);
         // Walls and cover sit on top of the solid/street split as bright edges:
-        // structure, not the thing that carries the solid-vs-walkable read.
-        g.fillStyle = f.tall ? 'rgba(242,247,252,0.92)' : 'rgba(38,48,58,0.72)';
+        // structure, not the thing that carries the solid-vs-walkable read. Low
+        // cover is drawn light-on-dark rather than dark-on-dark, or it vanishes
+        // into the building mass it usually stands next to.
+        g.fillStyle = f.tall ? 'rgba(242,247,252,0.92)' : 'rgba(150,166,180,0.5)';
         g.fillRect(-w / 2, -d / 2, w, d);
         g.restore();
       }
