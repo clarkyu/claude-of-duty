@@ -814,7 +814,7 @@ export default function createWeaponSystem(ctx) {
      * viewer at hip that the tube is a live red dot rather than a pipe. */
     // Strong off-axis, almost gone once the eye is behind the sight: at hip it is the
     // "live optic" cue, but on the aiming axis it would be a pink filter over the target.
-    const glow = optic.kind === 'reflex' ? 0.095 * (1 - 0.72 * clamp01(anim?.adsBlend ?? 0)) : 0;
+    const glow = optic.kind === 'reflex' ? 0.07 * (1 - 0.72 * clamp01(anim?.adsBlend ?? 0)) : 0;
     for (const g of optic.glass || []) {
       apply(g?.uniforms);
       if (g?.uniforms?.uGlow) g.uniforms.uGlow.value = glow;

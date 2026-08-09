@@ -21,6 +21,7 @@
  *
  * Public API:
  *   build(count, hints)      place probes
+ *   anchor(position, half)   move probe 0 onto the viewer without a rebuild
  *   tick(renderer, scene)    advance the capture scheduler (call after the main render)
  *   parsGLSL()               fragment declarations + `codProbeRadiance()`
  *   uniforms                 shared uniform objects for the material patch
@@ -335,6 +336,45 @@ export class ProbeSystem {
     this.uniforms.uProbePos.value[this._cursor].w = 1;
 
     this._cursor = (this._cursor + 1) % this.probes.length;
+    return true;
+  }
+
+  /**
+   * **Move the first probe onto the viewer.**
+   *
+   * The auto-placed grid sits at the centre of the level, so most of the frame — and
+   * all of the near field, which is where a grazing view of the ground makes the
+   * environment reflection the *dominant* term on a dark surface — falls outside every
+   * probe's influence and reflects the raw sky cube instead. Standing in a 16 m canyon
+   * that means the asphalt two metres from the lens mirrors open blue sky in directions
+   * that are solid ochre masonry: the specular twin of the skyline bug the irradiance
+   * SH now measures its way out of, and a large part of why the hero foreground reads
+   * cold however warm the diffuse gets.
+   *
+   * Deliberately an in-place edit, not a `build()`: rebuilding drops `active` to zero,
+   * which flips `ready`, which changes Lighting's shader key and recompiles every
+   * material in the scene — tens of seconds on the software rasteriser. The old capture
+   * stays bound and live until the new one lands.
+   *
+   * @param {THREE.Vector3} position
+   * @param {THREE.Vector3} half half-extents of the box the probe is authoritative over
+   * @returns {boolean} true when the probe actually moved
+   */
+  anchor(position, half) {
+    const p = this.probes[0];
+    if (!p || !position) return false;
+    // Hysteresis: re-capturing six faces every time the player takes a step would cost
+    // more than the reflection is worth.
+    if (p.captured && p.position.distanceToSquared(position) < 25) return false;
+    p.position.copy(position);
+    p.min.copy(position).sub(half);
+    p.max.copy(position).add(half);
+    p.feather = Math.min(half.x, half.z) * 0.35;
+    this._syncUniformArrays();
+    if (p.captured) this.uniforms.uProbePos.value[0].w = 1;
+    this._refreshRemaining = Math.max(this._refreshRemaining, 1);
+    this._cursor = 0;
+    this._face = 0;
     return true;
   }
 

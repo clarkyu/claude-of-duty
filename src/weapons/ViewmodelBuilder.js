@@ -1185,7 +1185,12 @@ const MATSPEC = {
    * cavity bake never touches it. On the receiver's own values it came out 2.4× the
    * brightness of the gun it is bolted to — a white tube floating over a black rifle.
    * Real optic housings are also genuinely matte: bead-blasted before anodising. */
-  opticBody: { base: 'brushed_aluminium', color: 0x141619, rough: [0.68, 0.88], metal: [0.0, 0.1], uv: 70, det: 0.005, nrm: 0.85, env: 0.22, grime: 0.95 },
+  opticBody: { base: 'brushed_aluminium', color: 0x141619, rough: [0.7, 0.92], metal: [0.0, 0.1], uv: 70, det: 0.005, nrm: 0.85, env: 0.16, grime: 0.95 },
+  /* ...and so are its chamfers. Nearly half the triangles in a sight are bevels, ribs
+   * and knurling, so putting them on the receiver's rub-through shade turned the whole
+   * housing into a white tube. A sight is a sealed unit nobody handles once it is
+   * zeroed: its edges are machined, not burnished. */
+  opticEdge: { base: 'brushed_aluminium', color: 0x4e545c, rough: [0.42, 0.62], metal: [0.1, 0.3], uv: 78, det: 0.004, nrm: 0.55, env: 0.22, grime: 0.8 },
   /* ── manganese phosphate: barrel, gas block, controls, small steel ─────── */
   /* Phosphate is a porous conversion coating — it is measurably rougher than hard
    * anodising and it has to *look* it, or the barrel and the receiver read as one
@@ -1390,7 +1395,7 @@ void main() {
    * emitter*, not a wash: spread evenly over the element it turns the whole sight
    * picture pink, which is exactly what it did on the first pass. */
   float ey = ( vLocal.y / max( 1e-4, uRadius ) ) + 0.55;
-  col += uGlowColor * uGlow * ( 0.3 * exp( -r * r * 5.0 ) + exp( -ey * ey * 9.0 ) );
+  col += uGlowColor * uGlow * ( 0.25 * exp( -r * r * 5.0 ) + 0.85 * exp( -ey * ey * 9.0 ) );
 
   float a = clamp(
     uBase * 1.1 + smudge + pres * uFresnel * 0.55 + graze * uFresnel * 0.45
@@ -1887,7 +1892,11 @@ function buildUpper(sink, b) {
   // the chamfers go to bare metal rather than to the ordinary edge shade.
   const rail = railG(Math.abs(b.rail.z1 - b.receiver.z0) + 0.001, b.rail.halfW, b.rail.y, { pitch: 0.0101 });
   const railM = mTrans(0, 0, (b.rail.z1 + b.receiver.z0) * 0.5);
-  sink.pair(rail.body, 'anodised', 'wearBright', railM);
+  /* The tooth tips take the ordinary bare-aluminium edge shade rather than full
+   * rub-through: at ten pixels a tooth there are four chamfer strips per tooth, and on
+   * the brightest material on the gun that stops being a serrated rail and becomes a
+   * band of white noise. The discrete handling points keep `wearBright`. */
+  sink.pair(rail.body, 'anodised', 'anodisedEdge', railM);
   for (const s of rail.slots) sink.pair(s, 'steelDark', 'steelDark', railM.clone());
 
   // Brass deflector behind the port, and the port's rear wall.
@@ -2228,7 +2237,11 @@ function buildHandguard(sink, b) {
   // rail, so the two are one continuous sight plane the way a free-float rail is.
   const rail = railG(len + 0.004, b.rail.halfW, b.rail.y, { pitch: 0.0101 });
   const railM = mTrans(0, 0, (z0 + z1) * 0.5);
-  sink.pair(rail.body, 'anodised', 'wearBright', railM);
+  /* The tooth tips take the ordinary bare-aluminium edge shade rather than full
+   * rub-through: at ten pixels a tooth there are four chamfer strips per tooth, and on
+   * the brightest material on the gun that stops being a serrated rail and becomes a
+   * band of white noise. The discrete handling points keep `wearBright`. */
+  sink.pair(rail.body, 'anodised', 'anodisedEdge', railM);
   for (const s of rail.slots) sink.pair(s, 'steelDark', 'steelDark', railM.clone());
 
   // QD sling socket underneath.
@@ -2706,8 +2719,10 @@ function buildStock(sink, b) {
         new THREE.Euler(precision ? -0.05 : -0.03, 0, 0)
       ));
       // Moulded cheek texture: shallow and fine, not waffle.
+      // Body shade, not the scuffed-edge shade: the comb faces the key light, so on the
+      // lighter tone the moulded texture came out as a scatter of white dots.
       const combTex = stippleG(bodyW * 0.58, riserL * 0.74, 3, 8, 0.0058, 0.00055);
-      sink.add('polymerEdge', combTex, mCompose(
+      sink.add('polymer', combTex, mCompose(
         [0, riserY + 0.0039, riserZ],
         new THREE.Euler(-Math.PI * 0.5 + (precision ? -0.05 : -0.03), 0, 0)
       ));
@@ -2719,7 +2734,9 @@ function buildStock(sink, b) {
           ],
           10
         );
-        sink.pair(post, 'steelBright', 'steelBright', mCompose(
+        // Parkerised, not bright: a 3 mm polished pin at this distance is a single
+        // blown-out pixel that blooms into a white smear on the cheek piece.
+        sink.pair(post, 'steelDark', 'steelDark', mCompose(
           [s * bodyW * 0.26, combY - 0.0006, riserZ + riserL * 0.34],
           new THREE.Euler(Math.PI * 0.5, 0, 0)
         ));
@@ -3063,9 +3080,9 @@ export function buildRedDot(ctx, mats, o = {}) {
     0.0018,
     2
   );
-  sink.pair(extrudeG(clamp2, { axis: 'z', from: zF + 0.012, to: zB - 0.012 }), 'opticBody', 'anodisedEdge');
+  sink.pair(extrudeG(clamp2, { axis: 'z', from: zF + 0.012, to: zB - 0.012 }), 'opticBody', 'opticEdge');
   const recoilLug = boxG(0.0092, 0.005, 0.005, 0.0008, 1);
-  sink.pair(recoilLug, 'opticBody', 'anodisedEdge', mTrans(0, 0.0018, 0));
+  sink.pair(recoilLug, 'opticBody', 'opticEdge', mTrans(0, 0.0018, 0));
   const lever = boxG(0.0032, 0.0135, 0.023, 0.0012, 2);
   sink.pair(lever, 'phosphate', 'phosphateEdge', mCompose([-0.0158, mountH * 0.55, 0.004], new THREE.Euler(0, 0, -0.12)));
   const bolt = latheG(
@@ -3090,7 +3107,7 @@ export function buildRedDot(ctx, mats, o = {}) {
     ],
     22
   );
-  sink.pair(tube, 'opticBody', 'anodisedEdge', mTrans(0, axisY, 0));
+  sink.pair(tube, 'opticBody', 'opticEdge', mTrans(0, axisY, 0));
   // Interior — matte black so the reticle has something to sit against.
   const bore = latheG(
     [
@@ -3117,7 +3134,7 @@ export function buildRedDot(ctx, mats, o = {}) {
       ],
       22
     );
-    sink.pair(rib, 'opticBody', 'anodisedEdge', mTrans(0, axisY, 0));
+    sink.pair(rib, 'opticBody', 'opticEdge', mTrans(0, axisY, 0));
   }
 
   // Turrets: elevation on top, windage on the right.
@@ -3133,7 +3150,7 @@ export function buildRedDot(ctx, mats, o = {}) {
       14,
       { capEnd: true }
     );
-    sink.pair(t, 'opticBody', 'anodisedEdge', mCompose(pos, rot));
+    sink.pair(t, 'opticBody', 'opticEdge', mCompose(pos, rot));
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * TAU;
       const kn = plainBoxG(0.0011, 0.0011, 0.0055);
@@ -3142,7 +3159,7 @@ export function buildRedDot(ctx, mats, o = {}) {
         .premultiply(new THREE.Matrix4().makeTranslation(0, 0, 0.0072));
       const local = new THREE.Matrix4().makeTranslation(0.0062 * Math.cos(a), 0.0062 * Math.sin(a), 0.0035);
       void m;
-      sink.pair(kn, 'anodisedEdge', 'anodisedEdge', new THREE.Matrix4().multiplyMatrices(mCompose(pos, rot), local));
+      sink.pair(kn, 'opticBody', 'opticEdge', new THREE.Matrix4().multiplyMatrices(mCompose(pos, rot), local));
     }
   };
   turret(new THREE.Euler(-Math.PI * 0.5, 0, 0), [0, axisY + tubeR * 0.93, 0.006]);
@@ -3157,7 +3174,7 @@ export function buildRedDot(ctx, mats, o = {}) {
     14,
     { capEnd: true }
   );
-  sink.pair(cap, 'opticBody', 'anodisedEdge', mCompose([-tubeR * 0.93, axisY, -0.004], new THREE.Euler(0, -Math.PI * 0.5, 0)));
+  sink.pair(cap, 'opticBody', 'opticEdge', mCompose([-tubeR * 0.93, axisY, -0.004], new THREE.Euler(0, -Math.PI * 0.5, 0)));
 
   for (const m of sink.meshes(mats, 'reddot')) group.add(m);
   bakeTree(group, { cell: 0.0022, maxDist: 0.018 });
@@ -3261,7 +3278,7 @@ export function buildScope(ctx, mats, o = {}) {
   // Two-ring mount.
   for (const z of [zF + len * 0.3, zB - len * 0.22]) {
     const base = boxG(0.0295, mountH, 0.019, 0.002, 2);
-    sink.pair(base, 'opticBody', 'anodisedEdge', mTrans(0, mountH * 0.5, z));
+    sink.pair(base, 'opticBody', 'opticEdge', mTrans(0, mountH * 0.5, z));
     const ring = latheG(
       [
         [tubeR * 1.16, -0.0095, 'hard'],
@@ -3270,7 +3287,7 @@ export function buildScope(ctx, mats, o = {}) {
       18,
       { capStart: true, capEnd: true }
     );
-    sink.pair(ring, 'opticBody', 'anodisedEdge', mTrans(0, axisY, z));
+    sink.pair(ring, 'opticBody', 'opticEdge', mTrans(0, axisY, z));
     for (const s of [1, -1]) {
       const scr = latheG(
         [
@@ -3306,7 +3323,7 @@ export function buildScope(ctx, mats, o = {}) {
     ],
     24
   );
-  sink.pair(body, 'opticBody', 'anodisedEdge', mTrans(0, axisY, 0));
+  sink.pair(body, 'opticBody', 'opticEdge', mTrans(0, axisY, 0));
   sink.pair(
     latheG(
       [
@@ -3326,7 +3343,7 @@ export function buildScope(ctx, mats, o = {}) {
   for (let i = 0; i < 18; i++) {
     const a = (i / 18) * TAU;
     const kn = plainBoxG(0.0014, 0.0014, 0.016);
-    sink.pair(kn, 'anodisedEdge', 'anodisedEdge', mTrans(
+    sink.pair(kn, 'opticBody', 'opticEdge', mTrans(
       Math.cos(a) * tubeR * 1.2,
       axisY + Math.sin(a) * tubeR * 1.2,
       zF + 0.099
@@ -3348,12 +3365,12 @@ export function buildScope(ctx, mats, o = {}) {
       16,
       { capEnd: true }
     );
-    sink.pair(t, 'opticBody', 'anodisedEdge', mCompose(pos, rot));
+    sink.pair(t, 'opticBody', 'opticEdge', mCompose(pos, rot));
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * TAU;
       const kn = plainBoxG(0.0013, 0.0013, 0.009);
       const local = new THREE.Matrix4().makeTranslation(0.0088 * Math.cos(a), 0.0088 * Math.sin(a), 0.0115);
-      sink.pair(kn, 'anodisedEdge', 'anodisedEdge', new THREE.Matrix4().multiplyMatrices(mCompose(pos, rot), local));
+      sink.pair(kn, 'opticBody', 'opticEdge', new THREE.Matrix4().multiplyMatrices(mCompose(pos, rot), local));
     }
   }
   // Rubber eyepiece ring and a killflash-ish objective shade.

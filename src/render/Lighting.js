@@ -2443,6 +2443,18 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
       }
     }
 
+    // Keep the first probe on the viewer so the near field — where a grazing view of
+    // the ground makes the environment reflection the dominant term — reflects the
+    // street it is standing in rather than the open sky. See ProbeSystem.anchor().
+    if (this.probesEnabled && viewer) {
+      try {
+        _v3.set(16, 9, 16);
+        this.probes.anchor(viewer, _v3);
+      } catch (err) {
+        this._warn('probeanchor', 'probe anchoring failed', err);
+      }
+    }
+
     // Contact-shadow strength lives in a uniform so it can drop to zero the instant
     // the buffer stops being trustworthy (teleport, first frame, pipeline missing).
     const cs = this.uniforms.uCodContactParams.value;
@@ -2602,8 +2614,19 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
           cosOuter: -1,
         });
       slot.pos.copy(r.position);
-      // Same 0.15 coupling the key gets, so a lamp and the sun scatter on one scale.
-      const k = r.intensity * r._mod * this.localLightScale * gate * 0.15;
+      /**
+       * Coupling into the volumetric march.
+       *
+       * The key gets 0.15 because it is integrated over a hundred metres of ray and
+       * only has to *tint* the frame. A lamp cone is the opposite problem: it is three
+       * or four metres of ray, the weather preset authors the air at 0.0022 per metre
+       * for aerial perspective (0.9 % of a 4 m cone), and at parity with the sun the
+       * cone lands three decimal places below the pavement it stands on — measured, on
+       * the night pose, at 1e-3 of linear radiance. 1.0 is the same order as the
+       * physical coupling and puts the cone at roughly a third of the ground it lights,
+       * which is what a sodium lamp in dusty air actually looks like.
+       */
+      const k = r.intensity * r._mod * this.localLightScale * gate * 1.0;
       slot.color.set(r.color.r * k, r.color.g * k, r.color.b * k);
       slot.radius = Math.max(r.radius, 0.5);
       if (r.type === 'spot') {
