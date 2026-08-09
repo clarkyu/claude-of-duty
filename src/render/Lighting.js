@@ -1459,10 +1459,19 @@ class Lighting {
     const localShade = hz
       ? clamp01(0.3 + 0.7 * hz.openSky) * clamp01(0.45 + 0.55 * hz.groundLit)
       : 1;
+    /**
+     * **Ask the sun, not the key.** `sunDirection` / `sunIntensity` on this class are
+     * the *key light*, which after dusk is the moon — so at the 21.5 night pose the
+     * daylight test was reading a moon 24 degrees up at intensity 0.97, concluding it
+     * was daytime, and dimming every street lamp in the level to 5 % of its rating on
+     * the one frame whose entire subject is street lamps. Sky publishes the solar
+     * terms separately; use those, and fall back to the key only when there is no sky.
+     */
+    const skySun = this.ctx.sky;
+    const solarY = skySun?.sunDirection ? skySun.sunDirection.y : this.sunDirection.y;
+    const solarI = Number.isFinite(skySun?.sunIntensity) ? skySun.sunIntensity : this.sunIntensity;
     this.daylight =
-      clamp01((this.sunDirection.y - 0.005) / 0.1) *
-      clamp01(this.sunIntensity / 0.6) *
-      (0.45 + 0.55 * localShade);
+      clamp01((solarY - 0.005) / 0.1) * clamp01(solarI / 0.6) * (0.45 + 0.55 * localShade);
 
     this.csm.setKeyLight(this.sunDirection, this.sunColor, this.sunIntensity);
 

@@ -1237,6 +1237,14 @@ export function createBot(ctx, deps, opts = {}) {
     flankSide: 1,
     blindFire: false,
     holdUntil: 0,
+    /**
+     * A behaviour state a debug pose has pinned on. `pickState()` collapses to
+     * 'engage' for the whole of `holdUntil`, which is right for a bot the harness
+     * dropped into a firefight but wrong for staging one: a combat frame in which
+     * every soldier is standing bolt upright in the open is not a firefight. With
+     * this set, the arbitration keeps returning the posed state instead.
+     */
+    forcedState: null,
   };
 
   function setState(next) {
@@ -1312,7 +1320,23 @@ export function createBot(ctx, deps, opts = {}) {
     aim.committed = true;
     aim.reactionAt = -1;
     aim.trackTime = 2.4;
-    setState('engage');
+    /**
+     * `opts.state` pins a posture for the hold — 'cover', 'suppress' or 'engage'.
+     * 'cover' additionally needs somewhere to be *in*: without a cover point
+     * `runCover()` immediately hands back to 'engage', so a caller that wants a man
+     * hunkered behind a barrier passes the barrier's stand-off position too.
+     */
+    bb.forcedState = opts.state || null;
+    if (opts.coverPos) {
+      bb.coverPoint = { pos: new THREE.Vector3(opts.coverPos.x, opts.coverPos.y, opts.coverPos.z), cell: -1, score: 1 };
+      bb.coverCell = -1;
+      bb.lastCoverSearch = now + 1e6; // never re-search: the pose owns this position
+    }
+    setState(opts.state || 'engage');
+    if (opts.peekOut !== undefined) {
+      bb.peekOut = !!opts.peekOut;
+      bb.peekTimer = opts.peekTimer ?? 3.0;
+    }
   }
 
   function threatPoint(track, out) {
@@ -1361,7 +1385,10 @@ export function createBot(ctx, deps, opts = {}) {
   function pickState() {
     const track = bestTrack();
     const now = ctx.time?.elapsed ?? 0;
-    if (now < bb.holdUntil) return bot.state === 'grenade' ? 'grenade' : 'engage';
+    if (now < bb.holdUntil) {
+      if (bb.forcedState) return bot.state === 'grenade' ? 'grenade' : bb.forcedState;
+      return bot.state === 'grenade' ? 'grenade' : 'engage';
+    }
     const hurt = bot.health < bot.maxHealth * 0.34;
     const engaged = !!track && track.awareness >= 1 && (track.visible || track.confidence > 0.25);
 

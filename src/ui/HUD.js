@@ -146,7 +146,15 @@ export default function createHUD(ctx) {
 
     on('hud:hitmarker', (p) => {
       if (!p) return;
-      C.crosshair.hit(p);
+      /**
+       * Transients are CSS keyframes, and CSS runs on the wall clock. Under the
+       * review harness a single frame costs seconds, so a 0.34 s hitmarker fired
+       * on tick N has faded to nothing long before the screenshot of tick N is
+       * painted — which is exactly why no review frame has ever contained one.
+       * In headless the mark is *held* instead of animated, and cleared when the
+       * next pose is applied.
+       */
+      C.crosshair.hit({ ...p, hold: headless });
       hitSound(p);
     });
 
@@ -173,7 +181,7 @@ export default function createHUD(ctx) {
         const b = angle - yaw;
         ping(px + Math.sin(b) * p.distance, pz - Math.cos(b) * p.distance, 2.2);
       }
-      C.vitals.hit({ angle, amount: p.amount, lethal: p.lethal });
+      C.vitals.hit({ angle, amount: p.amount, lethal: p.lethal, hold: headless });
     });
 
     on('hud:timer', (p) => {
@@ -267,6 +275,13 @@ export default function createHUD(ctx) {
     on('debug:pose', (state) => {
       // Poses drive the harness; the HUD is part of every review shot.
       setVisible(!state || state.hud !== false);
+      // Held transients belong to the pose that raised them, not to the next one.
+      try {
+        C.crosshair.clearHit();
+        C.vitals.clearHits();
+      } catch {
+        /* cosmetic */
+      }
     });
   }
 

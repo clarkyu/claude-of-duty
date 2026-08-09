@@ -63,7 +63,7 @@ export class Vitals {
 
   /** @param {{angle:number, amount:number, lethal:boolean}} p bearing relative to view */
   hit(p = {}) {
-    const it = this.pool.take(this.now, 1.5);
+    const it = this.pool.take(this.now, p.hold ? 1e6 : 1.5);
     const deg = ((p.angle ?? 0) * 180) / Math.PI;
     const mag = clamp01((p.amount ?? 20) / 45);
     it.node.style.transform = `rotate(${deg.toFixed(1)}deg)`;
@@ -72,8 +72,26 @@ export class Vitals {
       wedge.setAttribute('opacity', (0.5 + 0.5 * mag).toFixed(2));
       wedge.setAttribute('transform', `scale(${(0.82 + 0.3 * mag).toFixed(2)})`);
     }
-    replay(it.node, 'go');
-    replay(this.flash, 'hit');
+    if (p.hold) {
+      // Headless review capture: the CSS keyframe runs on the wall clock and one
+      // harness frame costs seconds, so an animated arc is always already gone.
+      it.node.classList.remove('go');
+      it.node.classList.add('held');
+      it.held = true;
+    } else {
+      it.node.classList.remove('held');
+      replay(it.node, 'go');
+      replay(this.flash, 'hit');
+    }
+  }
+
+  /** Drop any held damage arcs — a new pose owns the frame now. */
+  clearHits() {
+    for (const it of this.pool.items) {
+      it.node.classList.remove('held');
+      it.held = false;
+    }
+    this.pool.clear();
   }
 
   setDowned(v) {

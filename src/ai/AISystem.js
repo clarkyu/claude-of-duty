@@ -319,6 +319,180 @@ export default function createAISystem(ctx) {
   }
 
   const _aimPt = new THREE.Vector3();
+  const _cov = new THREE.Vector3();
+  const _covStand = new THREE.Vector3();
+
+  /**
+   * Nearest piece of usable cover to `p`, and the spot a man would stand behind it
+   * given that the threat is at `from`. Waist-to-chest blockers only: a kerb is not
+   * cover and a building is not something you stand behind, you stand *in* it.
+   *
+   * Sources are the props system's own footprint index (barriers, drums, crates,
+   * wrecks, spools) and the level's box colliders (jersey barriers, planters, low
+   * walls) — nothing here invents geometry, so a soldier is always behind something
+   * that is genuinely there.
+   *
+   * @returns {{stand: THREE.Vector3, top: number}|null}
+   */
+  function findCoverNear(p, from, radius = 4.2) {
+    let best = null;
+    let bestD = Infinity;
+    const consider = (cx, cz, y0, y1, rx, rz) => {
+      const top = y1;
+      if (top < 0.55 || top > 1.85) return;
+      const dx = cx - p.x;
+      const dz = cz - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d > radius) return;
+      if (d < bestD) {
+        bestD = d;
+        best = { cx, cz, top, rx, rz, y0 };
+      }
+    };
+    try {
+      for (const f of ctx.props?.footprints?.() || []) consider(f.x, f.z, f.y0, f.y1, f.rx, f.rz);
+    } catch {
+      /* props may not be up */
+    }
+    const cols = ctx.level?.colliders;
+    if (Array.isArray(cols)) {
+      for (const c of cols) {
+        if (!c || c.type !== 'box') continue;
+        const pos = c.pos || c.position;
+        const h = c.halfExtents;
+        if (!pos || !h) continue;
+        const hx = h.x ?? h[0] ?? 0;
+        const hy = h.y ?? h[1] ?? 0;
+        const hz = h.z ?? h[2] ?? 0;
+        if (hy > 1.1 || hy < 0.24) continue;
+        if (hx > 4 || hz > 4) continue; // a 40 m wall is not "a piece of cover"
+        consider(pos.x, pos.z, (pos.y ?? 0) - hy, (pos.y ?? 0) + hy, hx, hz);
+      }
+    }
+    if (!best) return null;
+    /* stand on the far side of it from the threat, one stand-off back */
+    _cov.set(best.cx - from.x, 0, best.cz - from.z);
+    if (_cov.lengthSq() < 1e-4) return null;
+    _cov.normalize();
+    const back = Math.max(best.rx, best.rz) + 0.5;
+    _covStand.set(best.cx + _cov.x * back, p.y, best.cz + _cov.z * back);
+    if (nav?.ready) {
+      const k = nav.nearestWalkable(_covStand.x, _covStand.z, 2.0);
+      if (k < 0) return null;
+      _covStand.y = nav.groundAt(_covStand.x, _covStand.z);
+    } else {
+      _covStand.y = ctx.level?.groundY?.(_covStand.x, _covStand.z) ?? p.y;
+    }
+    if (!visibleFromCamera(_covStand)) return null;
+    return { stand: _covStand.clone(), top: best.top };
+  }
+
+  /* ── staged combat: keep the frame alive while a pose holds ─────────────── */
+
+  /**
+   * A capture is one rendered frame at the end of a warm-up. A muzzle flash lives for
+   * about three frames and a burst gap is half a second, so whether the "combat" pose
+   * contained any combat at all was a coin flip — and it kept coming up tails. While a
+   * pose is staged this keeps at least one gun talking every single frame and puts
+   * incoming rounds (tracer + impact spark + dust) on the geometry around the lens,
+   * which is what the player is actually experiencing.
+   */
+  const staged = { on: false, until: 0, list: [], i: 0, frame: 0 };
+  const _sp0 = new THREE.Vector3();
+  const _sp1 = new THREE.Vector3();
+  const _sdir = new THREE.Vector3();
+  const _sup = new THREE.Vector3();
+
+  function tickStaged() {
+    const now = ctx.time?.elapsed ?? 0;
+    if (!staged.on || now > staged.until) {
+      staged.on = false;
+      return;
+    }
+    staged.frame++;
+    const rng = ctx.rng || Math.random;
+    const live = staged.list.filter((b) => b && b.alive);
+    if (!live.length) return;
+
+    /**
+     * The HUD side of being in a firefight: a hitmarker for the player's own burst
+     * and a directional arc for the rounds coming back. Raised here rather than in
+     * the pose handler so the HUD's own pose reset (which clears held transients)
+     * has already run.
+     */
+    if (staged.frame === 1) {
+      try {
+        ctx.camera?.getWorldPosition(_camPos);
+        ctx.bus?.emit?.('hud:hitmarker', { lethal: false, headshot: false });
+        const src = live[0]?.position;
+        if (src) {
+          const yaw = ctx.player?.yaw ?? ctx.camera?.rotation?.y ?? 0;
+          ctx.bus?.emit?.('hud:damage', { angle: Math.atan2(src.x - _camPos.x, _camPos.z - src.z) + yaw, amount: 22 });
+        }
+      } catch {
+        /* hud optional */
+      }
+    }
+
+    /* 1. never let every gun be between bursts on the frame that gets captured */
+    let last = -1;
+    for (const b of live) last = Math.max(last, b.lastFireTime ?? -1);
+    if (now - last > 0.045) {
+      for (let k = 0; k < live.length; k++) {
+        const b = live[(staged.i + k) % live.length];
+        const inr = b?._internals;
+        if (!inr) continue;
+        inr.gun.reloading = false;
+        inr.gun.burstLeft = Math.max(inr.gun.burstLeft, 2 + Math.floor(rng() * 3));
+        inr.gun.nextShotAt = now - 0.001;
+        inr.gun.nextBurstAt = now;
+        b.ammo = Math.max(b.ammo, 12);
+        b.reserve = 600;
+        staged.i = (staged.i + k + 1) % live.length;
+        break;
+      }
+    }
+
+    /* 2. incoming: their rounds landing on the geometry around the camera */
+    if (!ctx.fx || staged.frame % 2) return;
+    ctx.camera?.getWorldPosition(_camPos);
+    for (let n = 0; n < 2; n++) {
+      const b = live[(staged.frame + n) % live.length];
+      if (!b) continue;
+      _sp0.copy(b.eyePosition || b.position);
+      _sp0.y = (b.position?.y ?? 0) + (b.stance === 'crouch' ? 1.0 : 1.45);
+      /* a round that missed: 0.6-2.2 m off the lens, and slightly past it */
+      _sp1
+        .copy(_camPos)
+        .addScaledVector(_side, (rng() * 2 - 1) * 2.2)
+        .add(_sup.set(0, (rng() * 2 - 1) * 1.1, 0))
+        .addScaledVector(_camDir, -(1.5 + rng() * 4));
+      _sdir.subVectors(_sp1, _sp0);
+      const dist = _sdir.length();
+      if (dist < 1) continue;
+      _sdir.multiplyScalar(1 / dist);
+      let hit = null;
+      try {
+        hit = ctx.physics?.raycast?.(_sp0, _sdir, dist + 6, 1 | 8);
+      } catch {
+        hit = null;
+      }
+      const end = hit ? hit.point : _sp1;
+      try {
+        ctx.fx.tracer?.(_sp0, end, { owner: 'ai', width: 0.013, intensity: 6.5, heat: 1 });
+        if (hit) {
+          ctx.fx.impact?.(hit.point, hit.normal, {
+            surface: hit.surface || 'concrete',
+            energy: 1450,
+            scale: 1.15,
+            decal: false,
+          });
+        }
+      } catch {
+        /* fx is optional and must never break a pose */
+      }
+    }
+  }
 
   /**
    * Lanes: [metres down the view axis, metres lateral, aim bearing offset].
@@ -404,6 +578,24 @@ export default function createAISystem(ctx) {
       placed.push(best);
       placedBots.add(bot);
 
+      /**
+       * ── Staging the firefight ────────────────────────────────────────────
+       * Six men standing bolt upright in the middle of an open street is not a
+       * combat frame, it is a police line-up. Every soldier looks for real cover
+       * within 4 m — a jersey barrier, a wrecked car, an oil drum, a low wall —
+       * and if he finds one he is planted *behind* it relative to the lens, put
+       * into the `cover` behaviour and told whether he is down out of sight or up
+       * over the top. What is left over goes to `suppress`, which crouches and
+       * shoots. Only a third stay standing.
+       */
+      const cover = findCoverNear(best, _camPos);
+      let role = i % 3 === 0 ? 'engage' : 'suppress';
+      if (cover) {
+        best.copy(cover.stand);
+        role = i % 2 === 0 ? 'cover' : 'suppress';
+      }
+      const peekOut = role !== 'cover' || i % 4 !== 3;
+
       // What this soldier is shooting at: the lens, or a bearing past it.
       // Two different points, because they are consumed differently — a contact that
       // names an *entity* is resolved by solveAimPoint(), which adds the chest offset
@@ -414,22 +606,22 @@ export default function createAISystem(ctx) {
       _aimPt.set(_camPos.x, _camPos.y - 0.16, _camPos.z).addScaledVector(_side, bearing);
       const yaw = Math.atan2(_aimPt.x - best.x, _aimPt.z - best.z);
       bot.spawn(best, yaw);
-      // Some of them are pinned down: `suppression` is what the engage behaviour
-      // actually reads, so setting it gets a genuine crouch rather than a posed one.
-      bot.suppression = i % 3 === 1 ? 0.65 : 0;
-      bot.stance = i % 3 === 1 ? 'crouch' : 'stand';
-      bot.setState('engage');
+      // `suppression` is what the engage/cover behaviours actually read, so setting
+      // it buys a genuine crouch and genuine blind fire rather than a posed one.
+      bot.suppression = role === 'engage' ? 0.15 : 0.82;
+      bot.stance = role === 'engage' || (role === 'cover' && peekOut) ? 'stand' : 'crouch';
 
       // Pin a live contact so the aim solution, the muzzle flash and the animation
       // are all doing the real thing rather than miming it — and so a single blocked
       // LOS ray cannot drop a soldier back to patrol mid-capture.
       const target = ctx.player || null;
+      const hold = { state: role, peekOut, peekTimer: 3.5, coverPos: role === 'cover' ? best : undefined };
       if (bearing !== 0) {
         // Off-bearing: an override contact on the bare point, so the aim converges
         // there instead of snapping back onto the player over the warm frames.
-        bot.forceCombat(_aimPt, 45, { entity: null, override: true });
+        bot.forceCombat(_aimPt, 45, { ...hold, entity: null, override: true });
       } else {
-        bot.forceCombat(_chest, 45);
+        bot.forceCombat(_chest, 45, hold);
         if (target && bot.sensor) {
           perception?.registerTarget?.(target);
           const t = bot.sensor.tracks.get(target);
@@ -489,6 +681,27 @@ export default function createAISystem(ctx) {
       }
       bot?.spawn(_cand, 0);
     }
+
+    /* ── the rest of the frame: smoke, and a live exchange of fire ─────────── */
+    const now = ctx.time?.elapsed ?? 0;
+    staged.on = true;
+    staged.until = now + 40;
+    staged.list = [...placedBots];
+    staged.i = 0;
+    staged.frame = 0;
+    try {
+      /* Smoke drifting across the middle distance — the depth cue and the story
+         beat a combat frame needs, popped a few metres off the firing line so it
+         veils rather than blocks. */
+      _cand.copy(_camPos).addScaledVector(_camDir, 16).addScaledVector(_side, -5.2);
+      _cand.y = (nav?.ready ? nav.groundAt(_cand.x, _cand.z) : ctx.level?.groundY?.(_cand.x, _cand.z)) ?? 0;
+      ctx.fx?.smoke?.({ position: _cand, radius: 3.6, duration: 26, density: 0.85, rise: 0.7, color: 0xc8c4bc });
+      _cand.copy(_camPos).addScaledVector(_camDir, 26).addScaledVector(_side, 6.0);
+      _cand.y = (nav?.ready ? nav.groundAt(_cand.x, _cand.z) : ctx.level?.groundY?.(_cand.x, _cand.z)) ?? 0;
+      ctx.fx?.smoke?.({ position: _cand, radius: 2.8, duration: 24, density: 0.6, rise: 0.9, color: 0xb8b2a6 });
+    } catch {
+      /* fx optional */
+    }
   }
 
   function onPose(state) {
@@ -498,6 +711,7 @@ export default function createAISystem(ctx) {
       if (state.aiDebug !== undefined) setDebug(!!state.aiDebug);
       const want = state.bots;
       if (want === undefined) return;
+      staged.on = false;
       if (want === 'none' || want === 0 || want === false) {
         for (const b of bots) b.character?.setVisible?.(false);
         enabled = false;
@@ -563,6 +777,16 @@ export default function createAISystem(ctx) {
     }
     if (!enabled) return;
     const step = Math.min(dt, 0.1);
+
+    // Runs BEFORE the bots tick, so a gun topped up here fires on this very frame.
+    if (staged.on) {
+      try {
+        tickStaged();
+      } catch (err) {
+        warn('staged combat', err);
+        staged.on = false;
+      }
+    }
 
     perception?.update(step);
     squads?.update(step);

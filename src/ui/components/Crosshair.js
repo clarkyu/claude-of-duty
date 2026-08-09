@@ -164,7 +164,25 @@ export class Crosshair {
     this.marks[kind].style.display = '';
     this._lastKind = kind;
     setClass(this.hmWrap, 'kill', kind === 'lethal');
-    replay(this.hmWrap, 'go');
+    if (info.hold) {
+      // Headless review capture: hold the mark rather than animating it out. See
+      // the note on `hud:hitmarker` in HUD.js.
+      setClass(this.hmWrap, 'go', false);
+      setClass(this.hmWrap, 'held', true);
+    } else {
+      setClass(this.hmWrap, 'held', false);
+      replay(this.hmWrap, 'go');
+    }
+  }
+
+  /** Drop a held hitmarker (a new pose owns the frame now). */
+  clearHit() {
+    setClass(this.hmWrap, 'held', false);
+    setClass(this.hmWrap, 'go', false);
+    if (this._lastKind) {
+      this.marks[this._lastKind].style.display = 'none';
+      this._lastKind = null;
+    }
   }
 
   setHidden(v) {

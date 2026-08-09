@@ -288,6 +288,12 @@
 .cod-hm.kill.go {
   animation: cod-hm-kill 0.46s var(--ease-out) forwards;
 }
+/* Held state for the headless review capture: see HUD.js `hud:hitmarker`. */
+.cod-hm.held {
+  animation: none;
+  opacity: 1;
+  transform: scale(1.02);
+}
 @keyframes cod-hm {
   0% { opacity: 0; transform: scale(0.55) rotate(-6deg); }
   16% { opacity: 1; transform: scale(1.06) rotate(0deg); }
@@ -336,6 +342,10 @@
 }
 .cod-dmg.go {
   animation: cod-dmg 1.5s var(--ease-out) forwards;
+}
+.cod-dmg.held {
+  animation: none;
+  opacity: 0.9;
 }
 @keyframes cod-dmg {
   0% { opacity: 0; }

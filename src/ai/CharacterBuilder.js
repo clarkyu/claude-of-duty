@@ -374,21 +374,35 @@ function mergeParts(parts) {
  * boots and gloves near-black. Kit that is all one value is exactly what makes a
  * character read as a mannequin under a hard sun.
  */
+/*
+ * ── Why there is a `scarf` slot ─────────────────────────────────────────────────
+ * Magnified 7x, the previous soldier put helmet, torso, arms, thighs and boots in one
+ * narrow brown band. The albedo ladder was there on paper (uniform 0x3c412e → boot
+ * 0x131211) but everything on a body is lit by the same sky and the same sun at
+ * roughly the same grazing angle, so a two-stop albedo spread renders as half a stop.
+ *
+ * What separates a real soldier is not more contrast inside the brown — it is the
+ * things that are NOT brown: a light shemagh at the collar (which also gives the head
+ * a neck to sit on instead of dropping straight into the shoulders), a coloured
+ * brassard on the arm, a strip of skin at the jaw. Those get their own slot and their
+ * own hue, so the read survives any exposure the grade lands on. Boots and gloves go
+ * darker again, and the face goes lighter, to widen what is left.
+ */
 export const VARIANTS = [
   {
     id: 'olive',
-    uniform: 0x3c412e, webbing: 0x1d1f19, helmet: 0x22241c,
-    boot: 0x131211, metalKit: 0x25272b, skin: 0x9a6f50, grime: 0.6,
+    uniform: 0x3c412e, webbing: 0x191b15, helmet: 0x1a1c15,
+    boot: 0x0d0c0b, metalKit: 0x232529, skin: 0xa9805e, scarf: 0xc2b79b, grime: 0.6,
   },
   {
     id: 'coyote',
-    uniform: 0x554c37, webbing: 0x2a2419, helmet: 0x2f2a1f,
-    boot: 0x1a1611, metalKit: 0x2a2723, skin: 0x8a5c3e, grime: 0.75,
+    uniform: 0x574e37, webbing: 0x241f16, helmet: 0x26221a,
+    boot: 0x131010, metalKit: 0x27241f, skin: 0x9a6a48, scarf: 0x9c3f33, grime: 0.75,
   },
   {
     id: 'urban',
-    uniform: 0x33363b, webbing: 0x18191b, helmet: 0x1d1e21, boot: 0x101011,
-    metalKit: 0x212327, skin: 0x784e33, grime: 0.5,
+    uniform: 0x34373c, webbing: 0x141517, helmet: 0x17181b, boot: 0x0b0b0c,
+    metalKit: 0x1f2126, skin: 0x8a5c3e, scarf: 0x7d8b93, grime: 0.5,
   },
 ];
 
@@ -525,11 +539,14 @@ export default function createCharacterBuilder(ctx) {
         [X, L.ankleY + 0.085 * s, -0.004 * s, 0.078 * s, 0.080 * s],
       ], RAD(12), true, true), 'uniform', [thighB, shinB, 'pelvis', footB], 0.4);
 
-      // Cargo pocket, outboard, with a flap.
-      box('uniform', [thighB], 0.5, 0.055 * s, 0.17 * s, 0.115 * s, 0.022 * s,
-        X + side * 0.115 * s, L.hipY - 0.19 * s, 0.012 * s, 0, 0, side * 0.08);
-      box('webbing', [thighB], 0.6, 0.05 * s, 0.045 * s, 0.12 * s, 0.014 * s,
-        X + side * 0.118 * s, L.hipY - 0.115 * s, 0.012 * s, 0, 0, side * 0.08);
+      // Cargo pocket, outboard, with a flap. Pushed 12 mm further out and given a
+      // fatter round-over: at the old offset most of the box was buried inside the
+      // 126 mm trouser tube, so from the front it read as a hard rectangular step
+      // cut into the leg rather than as a pocket sitting on it.
+      box('uniform', [thighB], 0.5, 0.062 * s, 0.17 * s, 0.115 * s, 0.03 * s,
+        X + side * 0.127 * s, L.hipY - 0.19 * s, 0.012 * s, 0, 0, side * 0.08);
+      box('webbing', [thighB], 0.6, 0.056 * s, 0.045 * s, 0.12 * s, 0.018 * s,
+        X + side * 0.13 * s, L.hipY - 0.115 * s, 0.012 * s, 0, 0, side * 0.08);
 
       // Knee pad — three raised ribs so it is not a flat slab.
       box('webbing', [shinB, thighB], 0.75, 0.132 * s, 0.155 * s, 0.072 * s, 0.026 * s,
@@ -560,11 +577,45 @@ export default function createCharacterBuilder(ctx) {
       }
     }
 
-    /* drop-leg holster, right thigh */
-    box('webbing', ['thighR'], 0.6, 0.075 * s, 0.155 * s, 0.09 * s, 0.026 * s,
-      L.hipX + 0.125 * s, L.hipY - 0.235 * s, -0.005 * s, 0, 0, 0.1);
-    box('webbing', ['thighR'], 0.55, 0.028 * s, 0.10 * s, 0.02 * s, 0.008 * s,
-      L.hipX + 0.16 * s, L.hipY - 0.16 * s, -0.005 * s, 0, 0, 0.1, 1);
+    /*
+     * Drop-leg holster, right thigh.
+     *
+     * The old one was a 75 mm slab centred 125 mm out from the leg axis, so its inner
+     * half sat *inside* a 120 mm trouser tube and only 40 mm stood proud — which from
+     * the front is a hard-edged rectangle half-swallowed by the thigh, i.e. exactly
+     * the "rectangular notch bitten out of the silhouette" the review picked up at 7x.
+     * A real drop-leg rig hangs clear of the leg on a hanger strap and is held on by a
+     * band round the thigh, so that is what this is now: a tapered holster body wholly
+     * outside the leg, a wrap strap that visibly ties it on, and the hanger up to the
+     * belt. Nothing intersects anything.
+     */
+    {
+      const hx = L.hipX + 0.155 * s;
+      const hy = L.hipY - 0.245 * s;
+      /* hanger strap from the belt down the outside of the hip */
+      add(tubeGeom([
+        [L.hipX + 0.13 * s, L.hipY + 0.045 * s, -0.01 * s, 0.022 * s, 0.008 * s],
+        [hx, L.hipY - 0.09 * s, -0.008 * s, 0.024 * s, 0.008 * s],
+        [hx, hy + 0.07 * s, -0.006 * s, 0.024 * s, 0.008 * s],
+      ], 6, true, true), 'webbing', ['thighR', 'pelvis'], 0.62);
+      /* the holster body: tapered, muzzle-down, hanging clear of the trouser */
+      add(tubeGeom([
+        [hx, hy + 0.078 * s, 0.004 * s, 0.048 * s, 0.056 * s],
+        [hx, hy + 0.02 * s, 0.002 * s, 0.046 * s, 0.052 * s],
+        [hx, hy - 0.05 * s, 0, 0.034 * s, 0.04 * s],
+        [hx, hy - 0.078 * s, 0, 0.026 * s, 0.03 * s],
+      ], RAD(9), true, true), 'webbing', ['thighR'], 0.6);
+      /* retention hood over the top, and the pistol grip proud of it */
+      box('webbing', ['thighR'], 0.5, 0.052 * s, 0.03 * s, 0.06 * s, 0.012 * s,
+        hx, hy + 0.09 * s, 0.004 * s, 0, 0, 0, 1);
+      box('boot', ['thighR'], 0.45, 0.03 * s, 0.062 * s, 0.042 * s, 0.014 * s,
+        hx, hy + 0.125 * s, -0.012 * s, -0.28, 0, 0.06, 1);
+      /* thigh band: a strap that actually wraps the leg, so the rig is attached */
+      add(tubeGeom([
+        [L.hipX, hy - 0.03 * s, 0, 0.098 * s, 0.1 * s],
+        [L.hipX, hy + 0.012 * s, 0, 0.1 * s, 0.102 * s],
+      ], RAD(10), false, false), 'webbing', ['thighR'], 0.72);
+    }
 
     /* ── hips, belt, torso ──────────────────────────────────────────────── */
     add(tubeGeom([
@@ -684,9 +735,18 @@ export default function createCharacterBuilder(ctx) {
       // Elbow pad.
       box('webbing', [lB, uB], 0.8, 0.082 * s, 0.11 * s, 0.05 * s, 0.022 * s,
         ex, L.elbowY - 0.005 * s, -0.058 * s, 0.06, 0, 0);
-      // Shoulder patch / brassard.
-      box('webbing', [uB], 0.5, 0.022 * s, 0.065 * s, 0.085 * s, 0.008 * s,
-        sx + side * 0.078 * s, L.shoulderY - 0.03 * s, 0, 0, 0, 0, 1);
+      /**
+       * Brassard. A band right round the deltoid in the accent colour, plus a small
+       * flash on top of it — the one saturated mark on the whole soldier, and at
+       * 25 m the thing that says "unit" rather than "shape". A flat patch pressed
+       * into the sleeve reads as a decal; a band that wraps reads as worn.
+       */
+      add(tubeGeom([
+        [sx, L.shoulderY - 0.012 * s, 0, 0.083 * s, 0.081 * s],
+        [sx + side * 0.002 * s, L.shoulderY - 0.062 * s, 0, 0.079 * s, 0.077 * s],
+      ], RAD(9), false, false), 'scarf', [uB], 0.5);
+      box('webbing', [uB], 0.45, 0.02 * s, 0.05 * s, 0.062 * s, 0.008 * s,
+        sx + side * 0.082 * s, L.shoulderY - 0.036 * s, 0.004 * s, 0, 0, 0, 1);
 
       // Glove: palm block, thumb, knuckle plate.
       box('boot', [hB, lB], 0.7, 0.058 * s, 0.12 * s, 0.095 * s, 0.026 * s,
@@ -697,12 +757,34 @@ export default function createCharacterBuilder(ctx) {
         wx, L.wristY - 0.105 * s, 0.012 * s, 0, 0, 0, 1);
     }
 
-    /* ── neck & head ────────────────────────────────────────────────────── */
+    /* ── neck & head ──────────────────────────────────────────────────────
+     * The neck was there, but it was 56 mm of skin between a 108 mm collar and a
+     * 64 mm balaclava, so at any distance the head read as sitting straight on the
+     * shoulders. It is now longer and thinner, and the shemagh below it does the
+     * separating: a light cloth roll at the collar with a tail over one shoulder,
+     * which is both the value break the soldier was missing and the reason the head
+     * has somewhere to sit.
+     */
     add(tubeGeom([
-      [0, L.neckY - 0.055 * s, -0.004 * s, 0.054 * s, 0.050 * s],
-      [0, L.neckY + 0.03 * s, 0, 0.050 * s, 0.048 * s],
+      [0, L.neckY - 0.085 * s, -0.006 * s, 0.058 * s, 0.054 * s],
+      [0, L.neckY - 0.02 * s, -0.002 * s, 0.049 * s, 0.047 * s],
+      [0, L.neckY + 0.03 * s, 0, 0.048 * s, 0.046 * s],
       [0, L.neckY + 0.062 * s, 0.004 * s, 0.056 * s, 0.054 * s],
     ], RAD(9), true, false), 'skin', ['head', 'chest'], 0.25);
+
+    /* shemagh: a rolled collar, thicker at the front, with a tail down one shoulder */
+    add(tubeGeom([
+      [0, L.neckY - 0.105 * s, -0.004 * s, 0.082 * s, 0.076 * s],
+      [0, L.neckY - 0.062 * s, 0.006 * s, 0.088 * s, 0.082 * s],
+      [0, L.neckY - 0.022 * s, 0.004 * s, 0.076 * s, 0.072 * s],
+    ], RAD(10), true, true), 'scarf', ['head', 'chest'], 0.42);
+    /* the tail, thrown back over the left shoulder */
+    add(tubeGeom([
+      [-0.04 * s, L.neckY - 0.09 * s, -0.05 * s, 0.05 * s, 0.03 * s],
+      [-0.1 * s, L.neckY - 0.16 * s, -0.1 * s, 0.062 * s, 0.026 * s],
+      [-0.14 * s, L.neckY - 0.27 * s, -0.13 * s, 0.055 * s, 0.02 * s],
+      [-0.13 * s, L.neckY - 0.34 * s, -0.12 * s, 0.036 * s, 0.014 * s],
+    ], RAD(7), true, true), 'scarf', ['chest', 'head'], 0.5);
 
     // Skull. Rings from jaw to crown; the last two shrink to close the dome.
     const hy = L.neckY;
@@ -945,6 +1027,16 @@ export default function createCharacterBuilder(ctx) {
     skin: {
       name: 'skin_head', repeat: 0.12, detail: 0.35, key: 'skin',
       tune: { sheen: 0, spec: 0.4, env: 1.0 },
+    },
+    /**
+     * Shemagh, brassard and shoulder tab. The one light, saturated thing on the
+     * model — a full stop and a half above the uniform and a different hue — so the
+     * silhouette has an internal read at 40 m instead of one flat mass. Costs one
+     * extra draw call per soldier and is worth every one of them.
+     */
+    scarf: {
+      name: 'fabric_canvas', repeat: 0.4, detail: 0.55, key: 'scarf',
+      tune: { sheen: 0.34, sheenColor: 0x6b6455, spec: 0.26, env: 0.85, rough: 0.95 },
     },
   };
   const matCache = new Map();
