@@ -578,7 +578,7 @@ export function drawSignageAtlas(g, layout, rnd) {
   cell('hatch', (w, h) => {
     roadPaint(g, rnd, w, h, () => {
       g.lineWidth = w * 0.06;
-      g.strokeStyle = '#e6e2d4';
+      g.strokeStyle = '#b8b3a4';
       g.strokeRect(w * 0.06, h * 0.04, w * 0.88, h * 0.92);
       g.lineWidth = w * 0.05;
       for (let i = -1; i < 4; i++) {
@@ -591,26 +591,56 @@ export function drawSignageAtlas(g, layout, rnd) {
   });
 }
 
-/** Worn white road paint: lay the shape, then abrade it hard. */
+/**
+ * Worn road paint: lay the shape, then abrade it hard.
+ *
+ * Deliberately NOT white. A 128-texel cell stretched onto a 1.4 x 3.6 m patch is
+ * 3 cm per texel, so at two metres from the lens a coarse erosion pattern reads as a
+ * bite taken out of a bright white slab rather than as wear. The paint is a dirty
+ * bone, the erosion is finer and more of it, and there is a grime pass on top.
+ */
 function roadPaint(g, rnd, w, h, shape) {
-  g.fillStyle = '#e6e2d4';
+  g.fillStyle = '#b8b3a4';
   shape();
-  /* tyre wear across the middle of the marking */
   g.save();
   g.globalCompositeOperation = 'destination-out';
-  for (let i = 0; i < 46; i++) {
+  /* the two wheel tracks that wear a marking out first */
+  for (const lane of [0.3, 0.72]) {
+    const grd = g.createLinearGradient(w * (lane - 0.16), 0, w * (lane + 0.16), 0);
+    grd.addColorStop(0, 'rgba(0,0,0,0)');
+    grd.addColorStop(0.5, 'rgba(0,0,0,0.5)');
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grd;
+    g.fillRect(0, 0, w, h);
+  }
+  g.fillStyle = '#000';
+  for (let i = 0; i < 150; i++) {
     const px = rnd() * w;
     const py = rnd() * h;
-    const r = 1 + rnd() * 7;
-    g.globalAlpha = 0.35 + rnd() * 0.5;
+    const r = 0.5 + rnd() * 3.2;
+    g.globalAlpha = 0.25 + rnd() * 0.55;
     g.beginPath();
     g.ellipse(px, py, r, r * (0.4 + rnd() * 0.8), rnd() * 3, 0, Math.PI * 2);
     g.fill();
   }
-  g.globalAlpha = 0.55;
-  for (let x = 0; x < w; x += 3 + rnd() * 5) g.fillRect(x, 0, 1 + rnd() * 2, h);
+  g.globalAlpha = 0.4;
+  for (let x = 0; x < w; x += 1 + rnd() * 3) g.fillRect(x, 0, 0.6 + rnd() * 1.2, h);
   g.restore();
-  grain(g, 0, 0, w, h, rnd, 0.3);
+  grain(g, 0, 0, w, h, rnd, 0.6);
+  /* road dirt over the top, so fresh paint never sits on filthy tarmac */
+  g.save();
+  g.globalCompositeOperation = 'source-atop';
+  for (let i = 0; i < 26; i++) {
+    const px = rnd() * w;
+    const py = rnd() * h;
+    const r = 3 + rnd() * 14;
+    const grd = g.createRadialGradient(px, py, 0, px, py, r);
+    grd.addColorStop(0, `rgba(38,34,28,${(0.18 + rnd() * 0.3).toFixed(2)})`);
+    grd.addColorStop(1, 'rgba(38,34,28,0)');
+    g.fillStyle = grd;
+    g.fillRect(px - r, py - r, r * 2, r * 2);
+  }
+  g.restore();
 }
 
 /** Branching crack network with a dark core and a lighter spall lip. */

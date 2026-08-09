@@ -256,19 +256,38 @@ export class PropPalette {
     const mat = new THREE.MeshStandardMaterial({
       name: `prop:${ck}`,
       map: texture,
-      color: 0xffffff,
-      roughness: decal ? 0.94 : 0.62,
+      /**
+       * Not white. An enamelled board painted a mid green reads at about 0.3 albedo;
+       * multiplied by an 11-intensity sun through ACES it clips to cream and the
+       * fascia comes out as a blank pale panel with a ghost of lettering on it —
+       * measured on the first capture. A stop and a half down puts the board back
+       * below the sunlit stucco it is bolted to, which is where a painted sign
+       * actually sits, and the shop colours survive.
+       */
+      color: decal ? 0xb4b0a8 : 0xa9a59c,
+      roughness: decal ? 0.94 : 0.72,
       metalness: 0.0,
-      envMapIntensity: 0.55,
-      transparent: false,
-      alphaTest: decal ? 0.34 : 0.5,
+      envMapIntensity: decal ? 0.35 : 0.4,
       side: THREE.FrontSide,
       dithering: true,
     });
     if (decal) {
+      /*
+       * Genuinely blended, not alpha-tested. Half of what this material carries is
+       * *soft*: aerosol overspray round a tag, the fade at the edge of an oil stain,
+       * the worn-out middle of a road arrow. A cutout turns every one of those into a
+       * hard-edged blob, which reads worse than having no decal there at all. It costs
+       * one transparent pass on flat geometry that never overlaps itself.
+       */
+      mat.transparent = true;
+      mat.depthWrite = false;
+      mat.alphaTest = 0.012;
       mat.polygonOffset = true;
-      mat.polygonOffsetFactor = -3;
-      mat.polygonOffsetUnits = -6;
+      mat.polygonOffsetFactor = -4;
+      mat.polygonOffsetUnits = -8;
+    } else {
+      mat.transparent = false;
+      mat.alphaTest = 0.5;
     }
     mat.userData.propMaterial = ck;
     mat.userData.surface = decal ? 'concrete' : 'metal';

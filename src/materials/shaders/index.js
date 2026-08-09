@@ -406,15 +406,15 @@ Surf mSurface(SurfIn c){
   // pale flint and a dark basalt at 1.3 cm are the difference between a cast face and
   // a cream card at 8 m, which is exactly the distance a jersey barrier is seen from.
   vec4 aw = tWorley(c.uv, vec2(88.0), 1.0, uSeed + 7.0);
-  col *= 0.92 + 0.17 * aw.z;
+  col *= 0.87 + 0.27 * aw.z;
   float prox = smoothstep(0.55, 0.86, c.h.x);                 // stones sit proud
-  col = mix(col, col * 1.26 + 0.03, smoothstep(0.66, 0.99, aw.z) * prox * 0.5);
-  col = mix(col, col * 0.72, smoothstep(0.28, 0.02, aw.z) * prox * 0.45);
+  col = mix(col, col * 1.34 + 0.035, smoothstep(0.58, 0.97, aw.z) * prox * 0.62);
+  col = mix(col, col * 0.64, smoothstep(0.34, 0.02, aw.z) * prox * 0.55);
   float pour = n01(tFbm(c.uv, vec2(2.0, 17.0), OCT(4), uSeed + 59.0));
-  col *= 0.955 + 0.09 * pour;
+  col *= 0.915 + 0.17 * pour;
   // Form-board seam: a dark line where the grout ran, with a pale laitance lip.
   float seam = c.h.w;
-  col = mix(col, col * vec3(0.70, 0.695, 0.68), seam * 0.55);
+  col = mix(col, col * vec3(0.60, 0.595, 0.575), seam * 0.7);
   col = mix(col, col * 1.15 + 0.02, sat(seam * 3.0) * (1.0 - smoothstep(0.20, 0.55, seam)) * 0.35);
   float eff = smoothstep(0.60, 0.94, n01(tFbm(c.uv, vec2(3.0), OCT(4), uSeed + 61.0)));
   col = mix(col, vec3(0.80, 0.79, 0.755), eff * 0.5);
@@ -661,7 +661,7 @@ Surf mSurface(SurfIn c){
   },
 
   plaster_cracked: {
-    worldSize: 3.0, depth: 0.015, surface: 'plaster',
+    worldSize: 3.0, depth: 0.021, surface: 'plaster',
     glsl: /* glsl */ `
 /*
  * Cracked render, authored the way it actually fails.
@@ -742,12 +742,12 @@ Surf mSurface(SurfIn c){
   float skim = n01(tFbm(shearX(c.uv, -2.0), vec2(30.0, 96.0), OCT(3), uSeed + 19.0));
   vec3  sandg = pebbles(c.uv, vec2(155.0), 1.0, 0.40, uSeed + 23.0);
   float grit = n01(tFbm(c.uv, vec2(430.0), 3, uSeed + 29.0));
-  plaster *= 0.90 + 0.19 * flt;                                  // float pass, ~15 cm
-  plaster *= 0.955 + 0.085 * skim;                               // darby marks, ~5 cm
+  plaster *= 0.855 + 0.30 * flt;                                 // float pass, ~15 cm
+  plaster *= 0.930 + 0.145 * skim;                               // darby marks, ~5 cm
   // Sharp sand in the mix: a pale quartz grain and a dark one, both at 2 cm.
-  plaster = mix(plaster, plaster * 1.22 + 0.03, smoothstep(0.55, 0.95, sandg.y) * 0.34);
-  plaster = mix(plaster, plaster * 0.74, smoothstep(0.30, 0.02, sandg.y) * 0.30);
-  plaster *= 0.945 + 0.11 * grit;                                // fine skin, ~7 mm
+  plaster = mix(plaster, plaster * 1.30 + 0.035, smoothstep(0.48, 0.93, sandg.y) * 0.44);
+  plaster = mix(plaster, plaster * 0.66, smoothstep(0.36, 0.02, sandg.y) * 0.40);
+  plaster *= 0.920 + 0.16 * grit;                                // fine skin, ~7 mm
 
   Cell sb = brickCell(c.uv, vec2(8.0, 26.0), 0.5, vec2(0.05, 0.11), uSeed + 71.0);
   vec3 substrate = mix(vec3(0.500, 0.485, 0.455), vec3(0.400, 0.215, 0.165) * (0.7 + 0.6 * sb.rnd.x), sb.face);
@@ -777,14 +777,14 @@ Surf mSurface(SurfIn c){
   s.albedo = col;
   // Exposed blockwork is coarser than the finished render; the chipped lip is not.
   s.rough = 0.86 + spall * 0.10 - damp * 0.18 + slot * 0.06 - st * 0.08 - lip * 0.06
-          - rim * 0.05 + (sandg.x - 0.5) * 0.07 + (grit - 0.5) * 0.05;
+          - rim * 0.05 + (sandg.x - 0.5) * 0.12 + (grit - 0.5) * 0.09 + (flt - 0.5) * 0.07;
   s.ao = 1.0 - slot * 0.55 - spall * 0.18;
   return s;
 }`,
   },
 
   stucco: {
-    worldSize: 2.5, depth: 0.012, surface: 'plaster',
+    worldSize: 2.5, depth: 0.017, surface: 'plaster',
     glsl: /* glsl */ `
 vec4 mHeight(vec2 uv){
   // trowelled swirls: warped low frequency plus a coarse aggregate skin.
@@ -811,12 +811,12 @@ Surf mSurface(SurfIn c){
   // Aggregate: c.h.w is the per-stone random from the 2.3 cm pebble field, so a pale
   // quartz grain and a dark one can be picked out individually instead of the whole
   // skin being shaded by one 12% multiply.
-  col = mix(col, col * 1.24 + 0.028, smoothstep(0.62, 0.98, c.h.w) * 0.40);
-  col = mix(col, col * 0.76, smoothstep(0.34, 0.03, c.h.w) * 0.34);
+  col = mix(col, col * 1.32 + 0.032, smoothstep(0.54, 0.96, c.h.w) * 0.48);
+  col = mix(col, col * 0.68, smoothstep(0.40, 0.03, c.h.w) * 0.42);
   float sandskin = n01(tFbm(c.uv, vec2(700.0), 3, uSeed + 37.0));
-  col *= 0.945 + 0.11 * sandskin;
+  col *= 0.920 + 0.16 * sandskin;
   float dashc = n01(tFbm(shearX(c.uv, 2.0), vec2(27.0, 39.0), OCT(4), uSeed + 31.0));
-  col *= 0.945 + 0.105 * dashc;
+  col *= 0.900 + 0.20 * dashc;
   float grime = sat(c.cav * 2.8);
   col = mix(col, vec3(0.235, 0.220, 0.190), grime * 0.5);
   float st = runoff(c.uv, 16.0, uSeed + 71.0);
@@ -827,7 +827,7 @@ Surf mSurface(SurfIn c){
   col = mix(col, vec3(0.615, 0.585, 0.520), dustField(c.uv, c.up, 0.0, uSeed + 101.0) * 0.35);
   s.albedo = col;
   s.rough = 0.93 - c.h.z * 0.05 + grime * 0.03 - st * 0.10
-          + (sandskin - 0.5) * 0.06 + (c.h.w - 0.5) * 0.05;
+          + (sandskin - 0.5) * 0.10 + (c.h.w - 0.5) * 0.09 + (dashc - 0.5) * 0.06;
   s.ao = 1.0 - grime * 0.28;
   return s;
 }`,

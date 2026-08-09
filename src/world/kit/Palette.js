@@ -164,7 +164,16 @@ export const PALETTE = {
   'veg.green': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.4, repeat: 5.0 }, tint: 0x6d7f34 },
 
   /* ── interior ───────────────────────────────────────────────────────── */
-  'int.tile': { m: 'ceramic_tile', o: { vertexColors: true, grime: 1.0 } },
+  /**
+   * The macro band on the tile is dialled back hard. At full strength it painted a
+   * 20 m blotch pattern across the floor that has nothing to do with the 30 cm tile
+   * joints underneath it — a stain overlay unrelated to the geometry, which is worse
+   * than a clean floor because it advertises that the wear is a texture. The wear is
+   * now carried by *geometry*: a different tile in the traffic lane, screeded patches
+   * where tiles have lifted, a stone threshold and a floor gully. See
+   * buildMarketInterior() / buildShopInterior().
+   */
+  'int.tile': { m: 'ceramic_tile', o: { vertexColors: true, grime: 1.0, macro: 0.45 } },
   'int.tileWorn': { m: 'ceramic_tile', o: { vertexColors: true, grime: 1.45, repeat: 1.2 }, tint: 0x9a9184 },
   'int.screed': { m: 'concrete_cast', o: { vertexColors: true, grime: 1.3, repeat: 2.0 }, tint: 0x8f8779 },
   'int.plaster': { m: 'plaster_cracked', o: { vertexColors: true, grime: 0.85 }, tint: 0xcfc8b6 },
@@ -247,10 +256,12 @@ export class Palette {
     const mat = new THREE.MeshStandardMaterial({
       name: 'sign.fascia',
       map: texture,
-      color: 0xffffff,
-      roughness: 0.66,
+      // See props/materials.js signageMaterial(): white here clips the board to cream
+      // under an 11-intensity sun and the lettering stops reading.
+      color: 0xa9a59c,
+      roughness: 0.72,
       metalness: 0.0,
-      envMapIntensity: 0.6,
+      envMapIntensity: 0.4,
       dithering: true,
     });
     this.owned.push(mat);

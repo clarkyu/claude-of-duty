@@ -126,10 +126,44 @@ export function parapet(bat, r, y, height, opts = {}) {
           let b = -sl * 0.5 + sw * (i + 1) - 0.008;
           if (i === 0 && runsToStart) a -= over + 0.008;
           if (i === nStones - 1 && runsToEnd) b += over + 0.008;
-          const jitter = (hash3(Math.round(mx * 4), Math.round(mz * 4), i) - 0.5) * 0.012;
+          const h4 = hash3(Math.round(mx * 4), Math.round(mz * 4), i);
+          /* One stone in twelve has gone: a notch in the coping line, and the wall
+             top showing through it. A dead-level run of coping from corner to corner
+             is the single reason every roofline in the build read as a ruler. */
+          if (h4 > 0.92 && i > 0 && i < nStones - 1) continue;
+          // a stone settled out of course, and a run of them that never sits level
+          const jitter = (h4 - 0.5) * 0.012 - (h4 > 0.84 ? 0.03 : 0);
           mb.box([(a + b) * 0.5, height + 0.055 + jitter, 0], [(b - a) * 0.5, 0.055, over], { chamfer: 0.016 });
         }
       });
+      /**
+       * Parapet piers. A Levantine parapet is not a continuous band — it is piers
+       * every few metres with panels between them, and the piers stand proud of the
+       * coping. Two boxes each, and it is what turns a flat top edge into a rhythm
+       * the eye can read at 60 m.
+       */
+      if (opts.piers !== false && bat.lod === 0 && sl > 2.6) {
+        const pierGap = opts.pierGap ?? 4.6;
+        const nP = Math.max(1, Math.round(sl / pierGap));
+        bat.upTo(mat, 0, (mb) => {
+          for (let i = 0; i <= nP; i++) {
+            const u = -sl * 0.5 + (sl * i) / nP;
+            if (i > 0 && i < nP && Math.abs(u) > sl * 0.5 - 0.3) continue;
+            const hp = hash3(Math.round(mx * 4) + 17, Math.round(mz * 4) + 7, i);
+            const rise = 0.2 + hp * 0.26;
+            mb.box([u, height * 0.5 + rise * 0.5, 0], [0.19, (height + rise) * 0.5, t * 0.62], { chamfer: 0.02 });
+          }
+        });
+        bat.upTo(copeMat, 0, (mb) => {
+          for (let i = 0; i <= nP; i++) {
+            const u = -sl * 0.5 + (sl * i) / nP;
+            if (i > 0 && i < nP && Math.abs(u) > sl * 0.5 - 0.3) continue;
+            const hp = hash3(Math.round(mx * 4) + 17, Math.round(mz * 4) + 7, i);
+            const rise = 0.2 + hp * 0.26;
+            mb.box([u, height + rise + 0.05, 0], [0.24, 0.05, over + 0.02], { chamfer: 0.014 });
+          }
+        });
+      }
       bat.pop();
       bat.boxYaw(mx, y + (height + 0.11) * 0.5, mz, sl * 0.5, (height + 0.11) * 0.5, t * 0.5 + 0.05, yaw, surf);
     }

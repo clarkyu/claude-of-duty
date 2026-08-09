@@ -442,20 +442,18 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
       const p0 = surf(u0, 1);
       const p1 = surf(u1, 1);
       const mid = (drop + 0.06) * (1 + Math.sin(((i + 0.5) / lap) * Math.PI) * 0.4);
-      mb.prism(
-        [
-          [p0[0], p0[1] - drop, p0[2] - th],
-          [(p0[0] + p1[0]) * 0.5, p0[1] - mid, p0[2] - th],
-          [p1[0], p1[1] - drop, p1[2] - th],
-          [p1[0], p1[1], p1[2] - th],
-        ],
-        [
-          [p0[0], p0[1] - drop, p0[2]],
-          [(p0[0] + p1[0]) * 0.5, p0[1] - mid, p0[2]],
-          [p1[0], p1[1] - drop, p1[2]],
-          [p1[0], p1[1], p1[2]],
-        ]
-      );
+      /* Five points, walked as a ring: top-left, top-right, bottom-right, the low
+         point of the scallop, bottom-left. The first pass omitted the top-left
+         corner, which turned every lappet into a wedge sticking out at 45° — a row
+         of dark tabs rather than a hem. */
+      const ring = (zoff) => [
+        [p0[0], p0[1], p0[2] + zoff],
+        [p1[0], p1[1], p1[2] + zoff],
+        [p1[0], p1[1] - drop, p1[2] + zoff],
+        [(p0[0] + p1[0]) * 0.5, p0[1] - mid, p0[2] + zoff],
+        [p0[0], p0[1] - drop, p0[2] + zoff],
+      ];
+      mb.prism(ring(-th), ring(0));
     }
   });
 
@@ -487,13 +485,28 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
       const tx = lerp(-w * 0.5 + 0.36, w * 0.5 - 0.36, trays === 1 ? 0.5 : i / (trays - 1));
       const tw = w / trays - 0.1;
       const pm = bat.b(produceMats[(i + goods) % produceMats.length]);
-      const per = 7 + ((rn(30 + i) * 5) | 0);
+      /* Bigger than life. Measured on the interior capture: 4 cm fruit on a 0.95 m
+         counter, seen from 9 m, is three pixels and reads as noise on the timber —
+         which is indistinguishable from an empty stall. 6-9 cm heaped proud of the
+         tray is what says "there are goods here" at the distance the room is
+         actually photographed from. */
+      const per = 8 + ((rn(30 + i) * 5) | 0);
       for (let k = 0; k < per; k++) {
-        const rr = 0.036 + rn(40 + i * 9 + k) * 0.026;
-        const ox = (rn(60 + i * 11 + k) - 0.5) * (tw * 0.8);
-        const oz = (rn(80 + i * 13 + k) - 0.5) * 0.3;
-        const oy = 1.0 + rr * (0.7 + rn(90 + k) * 0.9);
+        const rr = 0.052 + rn(40 + i * 9 + k) * 0.034;
+        const ox = (rn(60 + i * 11 + k) - 0.5) * (tw * 0.82);
+        const oz = (rn(80 + i * 13 + k) - 0.5) * 0.28;
+        const oy = 1.02 + rr * (0.8 + rn(90 + k) * 1.0);
         pm.cylinder([tx + ox, oy - rr * 0.55, d * 0.24 + oz], [tx + ox, oy + rr * 0.55, d * 0.24 + oz], rr, 7, { radius2: rr * 0.82 });
+      }
+      /* a second heap on the raked back tier, which is the one the eye reads first */
+      for (let k = 0; k < 4; k++) {
+        const rr = 0.05 + rn(120 + i * 7 + k) * 0.03;
+        const ox = (rn(140 + i * 5 + k) - 0.5) * (tw * 0.7);
+        pm.cylinder(
+          [tx + ox, 1.09 + rr * 0.2, -d * 0.06],
+          [tx + ox, 1.09 + rr * 1.1, -d * 0.06],
+          rr, 7, { radius2: rr * 0.8 }
+        );
       }
     }
     /* hessian sacks slumped at the foot of the counter, mouths rolled open */
@@ -660,9 +673,15 @@ export function signBoard(bat, x, y, z, yaw, w, h, opts = {}) {
   /* Which fascia: deterministic from the board's own position, so a rebuild puts the
      same shop on the same wall. */
   const cellIdx = Math.abs(Math.round(x * 3) + Math.round(z * 7) + Math.round(w * 11)) % SIGN_FASCIA.length;
-  const uv = cellUv(SIGN_LAYOUT, SIGN_FASCIA[cellIdx]);
+  const cellName = SIGN_FASCIA[cellIdx];
+  const uv = cellUv(SIGN_LAYOUT, cellName);
+  const cellDef = SIGN_LAYOUT.cells[cellName];
+  const aspect = cellDef ? cellDef.w / cellDef.h : 5.33;
   const ax = w * 0.5 - 0.05;
-  const ay = h * 0.5 - 0.05;
+  // Never stretch the artwork: an Arabic fascia squashed to a different aspect is
+  // illegible, and illegible lettering is worse than no lettering. The face keeps the
+  // cell's proportions and the frame takes up the slack.
+  const ay = Math.min(h * 0.5 - 0.05, ax / aspect);
   bat.upTo(opts.faceMat || 'sign.fascia', 0, (mb) => {
     mb.quad(
       [-ax, -ay, 0.058],

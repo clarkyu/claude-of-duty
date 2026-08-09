@@ -690,15 +690,21 @@ export default function createAISystem(ctx) {
     staged.i = 0;
     staged.frame = 0;
     try {
-      /* Smoke drifting across the middle distance — the depth cue and the story
-         beat a combat frame needs, popped a few metres off the firing line so it
-         veils rather than blocks. */
-      _cand.copy(_camPos).addScaledVector(_camDir, 16).addScaledVector(_side, -5.2);
+      /*
+       * Dust and smoke in the middle distance — the depth cue a combat frame needs.
+       * Measured on the first capture: at 16 m, radius 3.6 and density 0.85 in a pale
+       * grey, this veiled a third of the frame, lifted the black point across the
+       * whole left side and fed the bloom/chromatic-aberration chain until the image
+       * had rainbow arcs in it. Pushed back, made smaller, and recoloured to the tan
+       * of masonry dust rather than white smoke, it does the same job at a fifth of
+       * the screen coverage.
+       */
+      _cand.copy(_camPos).addScaledVector(_camDir, 23).addScaledVector(_side, -6.4);
       _cand.y = (nav?.ready ? nav.groundAt(_cand.x, _cand.z) : ctx.level?.groundY?.(_cand.x, _cand.z)) ?? 0;
-      ctx.fx?.smoke?.({ position: _cand, radius: 3.6, duration: 26, density: 0.85, rise: 0.7, color: 0xc8c4bc });
-      _cand.copy(_camPos).addScaledVector(_camDir, 26).addScaledVector(_side, 6.0);
+      ctx.fx?.smoke?.({ position: _cand, radius: 2.6, duration: 26, density: 0.42, rise: 0.7, color: 0x9a9083 });
+      _cand.copy(_camPos).addScaledVector(_camDir, 33).addScaledVector(_side, 7.5);
       _cand.y = (nav?.ready ? nav.groundAt(_cand.x, _cand.z) : ctx.level?.groundY?.(_cand.x, _cand.z)) ?? 0;
-      ctx.fx?.smoke?.({ position: _cand, radius: 2.8, duration: 24, density: 0.6, rise: 0.9, color: 0xb8b2a6 });
+      ctx.fx?.smoke?.({ position: _cand, radius: 2.2, duration: 24, density: 0.32, rise: 0.9, color: 0x8e8578 });
     } catch {
       /* fx optional */
     }
@@ -707,11 +713,14 @@ export default function createAISystem(ctx) {
   function onPose(state) {
     if (!state) return;
     try {
+      // A staged firefight belongs to the pose that asked for one. Every pose ends it,
+      // including the ones that say nothing about bots — otherwise the viewmodel shot
+      // taken after the combat shot is still full of tracers.
+      staged.on = false;
       if (state.difficulty) setDifficulty(state.difficulty);
       if (state.aiDebug !== undefined) setDebug(!!state.aiDebug);
       const want = state.bots;
       if (want === undefined) return;
-      staged.on = false;
       if (want === 'none' || want === 0 || want === false) {
         for (const b of bots) b.character?.setVisible?.(false);
         enabled = false;

@@ -823,6 +823,14 @@ function buildMarketInterior(bat, def, ys, roofY, rng) {
     [mx1 + 3.4, z0 + 8.2, 1.5, 1.1],
     [x1 - 4.6, z0 + 16.0, 1.2, 1.6],
     [hallCx + 1.4, z1 - 4.2, 1.8, 1.2],
+    /* The three metres of floor directly under the `interior` review camera at
+       (-14.4, -3.2): the first capture showed an unbroken tile grid running away
+       from the lens, which is the exact complaint. A lifted patch, a screeded
+       repair and a broken course put the joint pattern in conflict with itself
+       where the eye actually lands. */
+    [x0 + 7.2, z1 - 3.4, 2.2, 1.5],
+    [x0 + 4.4, z1 - 5.6, 1.4, 1.9],
+    [x0 + 10.6, z1 - 6.4, 1.7, 1.2],
   ]) {
     bat.b('int.screed').box([px, g + 0.018, pz], [pw * 0.5, 0.018, pd * 0.5], { chamfer: 0.012 });
     /* a lip of broken tile round the patch */
@@ -987,12 +995,16 @@ function buildShopInterior(bat, def, ys, rng) {
       bat.b('struct.panelPale').box([tx, top + 0.11, tz], [0.19, 0.11, 0.16], { chamfer: 0.014 });
       bat.b('metal.paintCream').box([tx, top + 0.26, tz - 0.03], [0.13, 0.05, 0.09], { chamfer: 0.01, });
       bat.b('sign.lit').box([tx, top + 0.27, tz + 0.06], [0.1, 0.032, 0.006], { chamfer: 0.003 });
-      /* jar row */
+      /* Tin row. Deliberately NOT glass: five transparent cylinders a metre from the
+         `weapon` review camera is five layers of blended overdraw across a third of
+         the frame, and on the software rasteriser the harness captures with that is
+         the difference between a 4-minute frame and a timed-out one. Painted tins
+         with a printed band read the same at this distance and cost nothing. */
       for (let j = 0; j < 5; j++) {
         const [jx, , jz] = at(0.34 + j * 0.055, -0.1);
         const jh = 0.13 + rng() * 0.09;
-        bat.b('glass.shop').cylinder([jx, top, jz], [jx, top + jh, jz], 0.052, 9);
-        bat.b(rng() > 0.5 ? 'veg.citrus' : 'veg.green').cylinder([jx, top + 0.012, jz], [jx, top + jh * 0.8, jz], 0.044, 8);
+        bat.b('metal.paintCream').cylinder([jx, top, jz], [jx, top + jh, jz], 0.052, 9);
+        bat.b(rng() > 0.5 ? 'veg.citrus' : 'veg.green').cylinder([jx, top + jh * 0.28, jz], [jx, top + jh * 0.72, jz], 0.055, 9);
         bat.b('metal.galv').cylinder([jx, top + jh, jz], [jx, top + jh + 0.014, jz], 0.055, 9);
       }
       /* stacked trays and a paper roll on a spindle */
@@ -1020,14 +1032,8 @@ function buildShopInterior(bat, def, ys, rng) {
      */
     const shelfRuns =
       unitAxis === 'x'
-        ? [
-            { x: cx, z: uz0 + 0.34, L: Math.min(2.4, (ux1 - ux0) * 0.42), axis: 'x' },
-            { x: ux0 - 0.55, z: uz0 + 2.6, L: 1.5, axis: 'z' },
-          ]
-        : [
-            { x: ux0 + 0.34, z: cz, L: Math.min(2.4, (uz1 - uz0) * 0.42), axis: 'z' },
-            { x: ux0 + 2.6, z: uz0 - 0.55, L: 1.5, axis: 'x' },
-          ];
+        ? [{ x: cx, z: uz0 + 0.34, L: Math.min(2.4, (ux1 - ux0) * 0.42), axis: 'x' }]
+        : [{ x: ux0 + 0.34, z: cz, L: Math.min(2.4, (uz1 - uz0) * 0.42), axis: 'z' }];
     for (const run of shelfRuns) {
       if (run.L < 0.6) continue;
       const bm = bat.b('wood.ply');

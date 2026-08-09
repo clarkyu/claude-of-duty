@@ -114,15 +114,15 @@ export class Minimap {
        * outline. Four tones, darkest to lightest:
        *
        *   out of bounds   near-black hatch
-       *   solid mass      #161d24   (in bounds, not walkable, not a building)
-       *   building        #202932   solid footprint, then its walkable rooms at
-       *   interior floor  #46535f   — clearly darker than the street
-       *   street          #7e8d9a   the lightest thing on the plate
+       *   solid mass      #101820   (in bounds, not walkable, not a building)
+       *   building        #1a222b   solid footprint, then its walkable rooms at
+       *   interior floor  #3f4c58   — clearly darker than the street
+       *   street          #94a3b0   the lightest thing on the plate
        *   walls           #f2f7fc   bright edges over all of it
        */
-      g.fillStyle = '#161d24';
+      g.fillStyle = '#101820';
       g.fillRect(ix0, iz0, ix1 - ix0, iz1 - iz0);
-      const walk = this._drawWalkable(g, level, '#7e8d9a');
+      const walk = this._drawWalkable(g, level, '#94a3b0');
       this._drawBuildings(g, level, walk);
       this._drawColliders(g, level);
       g.restore();
@@ -180,14 +180,14 @@ export class Minimap {
     for (const [x0, z0, x1, z1] of rects) {
       const [ax, az] = this._toPx(x0, z0);
       const [bx, bz] = this._toPx(x1, z1);
-      g.fillStyle = '#202932';
+      g.fillStyle = '#1a222b';
       g.fillRect(ax, az, bx - ax, bz - az);
       if (walk) {
         g.save();
         g.beginPath();
         g.rect(ax, az, bx - ax, bz - az);
         g.clip();
-        g.fillStyle = '#46535f';
+        g.fillStyle = '#3f4c58';
         g.fill(walk);
         g.restore();
       }

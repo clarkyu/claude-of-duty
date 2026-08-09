@@ -357,7 +357,8 @@ float codHeight = 0.5;
 float codPomShadow = 1.0;
 float codWetAmount = 0.0;
 float codGrime = 0.0;
-float codMacroN = 0.5;    // world-space low-frequency band, 0..1
+float codMacroN = 0.5;    // world-space low-frequency band (~20 m), 0..1
+float codMacroL = 0.5;    // world-space metre-scale band, 0..1
 float codStreak = 0.0;    // world-space vertical staining
 float codGlassDirt = 0.0;
 
@@ -430,20 +431,26 @@ vec3 codNw;
 	if ( amt > 0.01 ) {
 		vec2 muv = vCodUv * uCodBreak.x;
 		vec4 mk = texture2D( uCodGrunge, muv );
-		float ang = ( mk.g - 0.5 ) * 2.6;
-		float ca = cos( ang ), sa = sin( ang );
-		mat2 R = mat2( ca, - sa, sa, ca );
-		vec2 uv2 = R * ( codUv * 0.83 ) + vec2( mk.g * 5.13, mk.a * 3.77 );
 		float w = smoothstep( 0.38, 0.62, mk.b * 0.55 + mk.g * 0.45 ) * amt;
-		codAlb = mix( codAlb, texture2D( map, uv2 ), w );
-		codOrm = mix( codOrm, texture2D( roughnessMap, uv2 ), w );
-		vec3 n2 = texture2D( normalMap, uv2 ).xyz * 2.0 - 1.0;
-		n2.xy = codRot( n2.xy * uCodNrmScale, ca, sa );
-		#ifdef COD_TRIPLANAR
-			codNw = normalize( mix( codNw, normalize( codTBN * n2 ), w * 0.6 ) );
-		#else
-			codNw = normalize( mix( codNw, normalize( codTBN * n2 ), w ) );
-		#endif
+		// The three re-fetches are the whole cost of this feature and the blotch mask
+		// is zero over more than half of any surface, so they belong inside the mask
+		// test, not inside the distance test. Turning the near field back on and
+		// gating on w is together cheaper than the old distance gate was.
+		if ( w > 0.02 ) {
+			float ang = ( mk.g - 0.5 ) * 2.6;
+			float ca = cos( ang ), sa = sin( ang );
+			mat2 R = mat2( ca, - sa, sa, ca );
+			vec2 uv2 = R * ( codUv * 0.83 ) + vec2( mk.g * 5.13, mk.a * 3.77 );
+			codAlb = mix( codAlb, texture2D( map, uv2 ), w );
+			codOrm = mix( codOrm, texture2D( roughnessMap, uv2 ), w );
+			vec3 n2 = texture2D( normalMap, uv2 ).xyz * 2.0 - 1.0;
+			n2.xy = codRot( n2.xy * uCodNrmScale, ca, sa );
+			#ifdef COD_TRIPLANAR
+				codNw = normalize( mix( codNw, normalize( codTBN * n2 ), w * 0.6 ) );
+			#else
+				codNw = normalize( mix( codNw, normalize( codTBN * n2 ), w ) );
+			#endif
+		}
 	}
 }
 #endif
@@ -493,17 +500,25 @@ codHeight = codAlb.a;
 	// with a texture repeat. uCodGrunge packs r = fine dirt, g = large blotches,
 	// b = cell net, a = downward streaks.
 	//
-	// TWO bands now, and the response belongs to the material. One 80 m fetch driving
-	// a +/-30% albedo multiply on everything made the awning, the render behind it and
-	// the timber all wear the same swirled topographic marble; the fix is not to delete
-	// it (a long wall does drift) but to halve the amplitude, put a metre-scale band
-	// under it, and let each family say what its drift IS — batch mismatch for
-	// concrete, sun bleach for canvas, dulling for metal.
-	vec4 mA = texture2D( uCodGrunge, vCodWPos.xz * 0.0125 + vCodWPos.y * 0.0031 );
-	vec4 mB = texture2D( uCodGrunge, ( vCodWPos.xz + vCodWPos.y * 0.41 ) * uCodMacro2.x + 0.37 );
-	codMacroN = codSat( mA.g * 0.62 + mA.r * 0.38 );
-	float broad = codMacroN - 0.5;
-	float local = ( mB.g * 0.45 + mB.r * 0.55 ) - 0.5;
+	// TWO bands now, and the response belongs to the material. One fetch driving a
+	// +/-30% albedo multiply on everything made the awning, the render behind it and
+	// the timber all wear the same swirled topographic marble; the fix is not to
+	// delete it (a long wall does drift) but to cut the amplitude, separate a
+	// metre-scale band out of it, and let each family say what its drift IS — batch
+	// mismatch for concrete, sun bleach for canvas, dulling for metal.
+	//
+	// Still ONE fetch. The grunge atlas is generated at four different intrinsic
+	// frequencies (g = 4 cycles, a = 22, b = 14, r = 48), so a single sample already
+	// contains a broad band in .g and a band an order of magnitude tighter in .r —
+	// a second sampler would have bought nothing except the frame budget. uCodMacro2.x
+	// scales the whole fetch, which is how a material picks the pair of world scales
+	// it wants: 1.0 gives 20 m / 1.7 m for masonry, 4.0 gives 5 m / 0.4 m for canvas.
+	vec2 mUv = ( vCodWPos.xz + vCodWPos.y * 0.25 ) * ( 0.0125 * uCodMacro2.x );
+	vec4 mA = texture2D( uCodGrunge, mUv );
+	codMacroN = codSat( mA.g * 0.72 + mA.r * 0.28 );
+	codMacroL = mA.r;
+	float broad = mA.g - 0.5;
+	float local = mA.r - 0.5;
 	float macro = broad * 0.60 + local * 0.40;
 	float amt = uCodMacro.x;
 	codAlb.rgb *= 1.0 + macro * uCodMacro2.y * amt;
@@ -533,9 +548,12 @@ codHeight = codAlb.a;
 	// and polished. The direction is now a per-recipe signed pair. The trigger is also
 	// tightened to proud AND open texels and cut by a world-space band, so two crates
 	// side by side no longer carry a byte-identical outline.
+	// The decorrelating band reuses the cell/streak channels of the macro fetch rather
+	// than taking one of its own — on the software rasteriser the sampler is the
+	// entire budget, and .b/.a are decorrelated from the .g/.r used above.
 	float open = smoothstep( 0.28, 0.78, codOrm.r );
 	float convex = smoothstep( 0.74, 0.98, codHeight ) * open;
-	float band = 0.30 + 1.25 * codSat( texture2D( uCodGrunge, vCodWPos.xy * 0.29 + vCodWPos.zx * 0.17 ).r );
+	float band = 0.30 + 1.25 * codSat( mA.b * 0.6 + mA.a * 0.4 );
 	float wear = codSat( convex * band ) * uCodMacro.y * ( 1.0 - codStreak * 0.6 );
 	codAlb.rgb *= 1.0 + uCodWear.x * wear;
 	codOrm.g = codSat( codOrm.g + uCodWear.y * wear );
@@ -563,7 +581,12 @@ codHeight = codAlb.a;
 	// material from kerb to horizon. The standard height blend below puts the 50%
 	// crossover exactly at bias == lw, so the coverage on screen is the number asked
 	// for, and contrast sets how hard the transition is instead of gating it away.
-	float lw = codSat( codMask.g * uCodLayer.x + uCodLayer.y * ( 0.30 + 1.45 * codMacroN ) );
+	// Both bands, not just the 20 m one: driving coverage from the broad band alone
+	// makes the layer a uniform wash inside any one frame — mathematically present,
+	// visually identical to no layer at all. The metre-scale term is what turns it
+	// into grit gathered in the ruts and sand banked against a kerb.
+	float lw = codSat( codMask.g * uCodLayer.x
+	                 + uCodLayer.y * ( 0.22 + 1.05 * codMacroN + 0.80 * ( codMacroL - 0.5 ) ) );
 	if ( lw > 0.002 ) {
 		// Height-aware: cavityBias 1 fills crevices first (mud, water), 0 covers
 		// the peaks first (snow blowing onto a ledge).
@@ -572,16 +595,23 @@ codHeight = codAlb.a;
 		float w = codSat( ( lw - bias ) / soft + 0.5 );
 		w = smoothstep( 0.0, 1.0, w );
 		w *= mix( 1.0, codSat( codWN.y * 1.5 + 0.1 ), uCodLayer2.x );
-		if ( w > 0.002 ) {
+		// Now that the blend actually produces coverage these three fetches are no
+		// longer free: they run over most of the ground instead of over the couple of
+		// percent the broken weight used to allow. 0.03 is below the point where the
+		// mix is visible, and the layer's normal only matters once the layer is the
+		// dominant material, so it gets its own higher gate.
+		if ( w > 0.03 ) {
 			vec2 luv = codUv * uCodLayer2.y;
 			codAlb.rgb = mix( codAlb.rgb, texture2D( uCodLayerMap, luv ).rgb, w );
 			vec4 lorm = texture2D( uCodLayerOrm, luv );
 			codOrm.r = mix( codOrm.r, lorm.r, w );
 			codOrm.g = mix( codOrm.g, lorm.g * uCodLayer2.z, w );
 			codOrm.b = mix( codOrm.b, lorm.b, w );
-			vec3 ln = texture2D( uCodLayerNormal, luv ).xyz * 2.0 - 1.0;
-			ln.xy *= uCodLayer2.w;
-			codNw = normalize( mix( codNw, normalize( codTBN * ln ), w ) );
+			if ( w > 0.18 ) {
+				vec3 ln = texture2D( uCodLayerNormal, luv ).xyz * 2.0 - 1.0;
+				ln.xy *= uCodLayer2.w;
+				codNw = normalize( mix( codNw, normalize( codTBN * ln ), w ) );
+			}
 		}
 	}
 }
@@ -787,11 +817,16 @@ float roughnessFactor = clamp( mix( uCodRough.x, uCodRough.y, codOrm.g ), 0.015,
 	// viewmodel being the loudest example in the set. Widening the lobe by the
 	// screen-space variance of the shading normal is the standard fix and it costs two
 	// derivatives.
+	// The variance term has to be CLAMPED. Unclamped (and at 0.45) a tiled floor seen
+	// at a grazing angle — where the shading normal swings hard from pixel to pixel —
+	// had its roughness pushed towards 1 across the whole plane, which killed the grout
+	// specular and measurably flattened the surface it was supposed to protect. 0.18
+	// with a 0.12 ceiling still removes the rail sparkle and cannot wash out a surface.
 	vec3 dnx = dFdx( codNw );
 	vec3 dny = dFdy( codNw );
-	float var2 = dot( dnx, dnx ) + dot( dny, dny );
+	float var2 = min( dot( dnx, dnx ) + dot( dny, dny ), 0.12 );
 	float a = roughnessFactor * roughnessFactor;
-	roughnessFactor = clamp( sqrt( min( a + 0.45 * var2, 1.0 ) ), 0.015, 1.0 );
+	roughnessFactor = clamp( sqrt( min( a + 0.18 * var2, 1.0 ) ), 0.015, 1.0 );
 }
 `;
 

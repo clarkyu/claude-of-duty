@@ -278,22 +278,27 @@ export function composeScene(P) {
  * [type, x, z, yaw, acrossMetres, alongMetres]
  */
 const ROAD_PAINT = [
-  /* Souk Street, x 0..10, the hero / ads / firefight axis. Centre dashes first. */
-  ...[-40, -33, -26, -19, -12, -5, 2, 9, 16, 23].map((z) => ['lane_dash', 5.0, z, 0, 0.22, 2.4]),
+  /* Souk Street, x 0..10, the hero / ads / firefight axis. Centre dashes first.
+     Nothing here lands on the raised plaza (x 1..11, z 4..14) or inside a footprint:
+     a lane arrow painted on a shop floor is worse than no arrow at all. */
+  ...[-40, -33, -26, -19, -12, -5, 2, 16, 23].map((z) => ['lane_dash', 5.0, z, 0, 0.22, 2.4]),
   /* lane arrows at the approaches to the two cross-streets */
   ['arrow_ahead', 2.6, -14.0, 0, 1.5, 3.8],
-  ['arrow_left', 7.4, 12.0, Math.PI, 1.5, 3.8],
+  /* Not closer than ~8 m to the hero lens at (8.5, 22): a 1.4 m marking two metres
+     from the camera is 3 cm of texel per pixel and its wear pattern reads as a bite
+     out of a white slab rather than as worn paint. */
+  ['arrow_left', 7.4, 14.6, Math.PI, 1.5, 3.8],
   ['arrow_ahead', 7.4, -25.0, Math.PI, 1.5, 3.8],
   ['road_slow', 2.6, 17.5, 0, 1.9, 4.2],
   ['road_stop', 2.6, -30.5, 0, 1.9, 4.2],
   /* zebra crossing across the Souk just north of the plaza */
   ...[0.9, 2.2, 3.5, 4.8, 6.1, 7.4, 8.7].map((x) => ['zebra', x, 3.0, Math.PI / 2, 1.0, 2.6]),
   /* Mid Cross, running east-west */
-  ...[-40, -30, -20, -10, 16, 24, 34, 42].map((x) => ['lane_dash', x, 1.0, Math.PI / 2, 0.22, 2.4]),
+  ...[-40, -30, -20, -10, 32, 44].map((x) => ['lane_dash', x, 1.0, Math.PI / 2, 0.22, 2.4]),
   ['arrow_ahead', -16.0, 2.4, -Math.PI / 2, 1.4, 3.6],
-  ['hatch', 21.0, 1.0, Math.PI / 2, 2.2, 4.6],
+  ['hatch', -34.0, 1.0, Math.PI / 2, 2.2, 4.6],
   /* North Cross */
-  ...[-36, -26, -16, 16, 26, 36].map((x) => ['lane_dash', x, -37.0, Math.PI / 2, 0.22, 2.4]),
+  ...[-36, -26, -16, 0, 8, 44].map((x) => ['lane_dash', x, -37.0, Math.PI / 2, 0.22, 2.4]),
   ['road_slow', -8.0, -35.5, -Math.PI / 2, 1.8, 4.0],
   /* Canal Road, both carriageways */
   ...[-34, -24, -14, -4, 6, 16, 26].map((z) => ['lane_dash', 32.0, z, 0, 0.22, 2.4]),
@@ -313,11 +318,13 @@ const GROUND_GRIME = [
   ['crack_a', 3.4, 6.0], ['crack_b', 8.2, -2.6], ['crack_a', 1.6, -11.0], ['skid', 6.4, -6.2],
   ['stain', 11.6, 12.0], ['crack_b', 4.4, 19.0], ['skid', 4.0, 9.5], ['crack_a', 8.8, -20.0],
   ['stain', 2.2, -22.4], ['crack_b', 6.0, -30.0], ['crack_a', -12.0, 1.6], ['skid', -19.0, 2.2],
-  ['stain', -30.0, 0.8], ['crack_b', 20.0, 2.4], ['stain', 24.0, -19.0], ['crack_a', 18.0, -21.5],
+  ['stain', -30.0, 0.8], ['crack_b', 12.0, 2.4], ['stain', 24.0, -19.0], ['crack_a', 18.0, -21.5],
   ['crack_b', 32.5, -8.0], ['skid', 43.0, 6.0], ['stain', 44.0, -22.0], ['crack_a', -46.5, 4.0],
   ['crack_b', -46.5, 24.0], ['stain', -46.0, -18.0], ['crack_a', 0.4, 26.5], ['skid', 9.0, 25.0],
-  ['crack_b', -6.0, 40.0], ['stain', -8.5, 48.0], ['crack_a', 14.0, -36.0], ['crack_b', -20.0, -36.0],
-  ['skid', 2.0, -37.5], ['stain', 26.0, -33.0], ['crack_a', -33.0, -18.0], ['crack_b', -29.0, -12.0],
+  ['crack_b', -6.0, 40.0], ['stain', -8.5, 48.0], ['crack_a', 10.0, -36.0], ['crack_b', -20.0, -36.0],
+  ['skid', 2.0, -37.5], ['stain', 31.0, -33.0], ['crack_a', -23.0, -18.0], ['crack_b', -23.5, -24.0],
+  /* the hero foreground: the two metres of tarmac the marketing frame opens on */
+  ['crack_a', 7.6, 20.4], ['skid', 3.2, 21.5], ['stain', 9.4, 16.6], ['crack_b', 1.4, 22.6],
 ];
 
 function dressMarkings(P, r) {
@@ -432,10 +439,9 @@ function dressForeground(P, r) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Roof plant. The roof set was discovered by a downward raycast sweep, so this works
- * for any building the level agent adds without this file knowing about it.
- */
-/**
+ * Roof plant. The roof set is discovered by a downward raycast sweep, so this works for
+ * any building the level agent adds without this file knowing about it.
+ *
  * A roofline is silhouette, and every roofline in this build was a ruler: flat parapet,
  * slab coping, nothing else. That was two problems at once — the phase was spent sixth
  * on 0.12 of the budget, and what little it bought was scattered uniformly over a whole
@@ -571,11 +577,14 @@ function dressFacades(P, r) {
     }
     /* ── the shopfront: fascia over, shutter under ───────────────────────── */
     const shopfront = w.free > 2.8 && w.groundY < 2.2;
-    if (shopfront && roll('sign', 0.3)) {
+    if (shopfront && roll('sign', 0.32)) {
       const p = at(r.range(-0.9, 0.9));
+      /* A blade sign hanging off a bracket is small; a fascia over a shopfront is
+         2-3 m wide, and at that size its lettering is still readable at 15 m. */
+      const projecting = r.chance(0.38);
       took('sign', P.spawn('shop_sign', {
-        ...p, y: w.groundY + r.range(2.55, 3.25), yaw, onWall: true, normal,
-        projecting: r.chance(0.42), w: r.range(1.05, 1.75),
+        ...p, y: w.groundY + (projecting ? r.range(2.7, 3.3) : r.range(2.5, 3.0)), yaw, onWall: true, normal,
+        projecting, w: projecting ? r.range(1.0, 1.6) : r.range(2.0, 3.0),
       }));
     }
     if (shopfront && roll('shutter', 0.22)) {
@@ -600,8 +609,8 @@ function dressFacades(P, r) {
       const p = at(r.range(-1.7, 1.7));
       took('plate', P.spawn('wall_mark', {
         ...p, y: w.groundY + r.range(1.9, 2.5), yaw, onWall: true, normal,
-        group: r.chance(0.62) ? 'unit' : r.chance(0.5) ? 'street' : 'notice',
-        w: r.range(0.4, 0.58),
+        group: r.chance(0.55) ? 'unit' : r.chance(0.5) ? 'street' : 'notice',
+        w: r.range(0.5, 0.78),
       }));
     }
     /* stencilled notices at chest-to-head height */
@@ -609,7 +618,7 @@ function dressFacades(P, r) {
       const p = at(r.range(-1.7, 1.7));
       took('mark', P.spawn('wall_mark', {
         ...p, y: w.groundY + r.range(1.1, 2.4), yaw, onWall: true, normal,
-        group: 'stencil', w: r.range(0.75, 1.35),
+        group: 'stencil', w: r.range(1.1, 1.9),
       }));
     }
     /* spray tags, low, big, and always at the base of a wall */
@@ -617,7 +626,7 @@ function dressFacades(P, r) {
       const p = at(r.range(-1.5, 1.5));
       took('tag', P.spawn('wall_mark', {
         ...p, y: w.groundY + r.range(0.75, 1.55), yaw, onWall: true, normal,
-        group: 'graffiti', w: r.range(1.1, 2.1),
+        group: 'graffiti', w: r.range(1.5, 2.6),
       }));
     }
 
