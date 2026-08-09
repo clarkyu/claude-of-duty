@@ -401,6 +401,21 @@ export function createProcAnim(ctx) {
       if (v) sightLocal.copy(v);
     },
 
+    /**
+     * Jump the aim transition straight to `v` (0 hip, 1 fully mounted).
+     *
+     * Only the screenshot harness uses this. `applyPose` sets a state and then steps a
+     * handful of deterministic frames, which for the ADS pose is a fraction of the
+     * 0.26 s mount: the review shot was catching the weapon a third of the way up, eye
+     * still several degrees off the optical axis, so the tube sat off-centre and the
+     * dot was floating near the edge of the glass. The pose is meant to be "aiming
+     * down the sight", not "starting to".
+     */
+    snapAds(v) {
+      adsRaw = clamp(v, 0, 1);
+      adsBlend = adsRaw;
+    },
+
     get adsBlend() {
       return adsBlend;
     },

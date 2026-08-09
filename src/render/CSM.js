@@ -116,7 +116,18 @@ export class CascadedShadowMaps {
     this.pcfTaps = 12;
     this.blockerTaps = 8;
     this.searchScale = 6.0;
-    this.maxRadiusTexels = 14.0;
+    /**
+     * Ceiling on the PCSS filter, in texels.
+     *
+     * 14 texels is 0.67 m of blur in the mid cascade, which is wider than most of the
+     * things this level asks to be legible: a market frame, a railing post, a
+     * scaffolding standard. Past a certain width a penumbra stops reading as "this
+     * shadow's far end is soft" and starts reading as "there is a vague dark region
+     * here", and the review's note that the plaza has light/shade *areas* instead of
+     * shadow *bars* is exactly that failure. 9 texels keeps the contact-to-tip ramp
+     * PCSS exists for and stops the tip dissolving.
+     */
+    this.maxRadiusTexels = 9.0;
     this.baseRadiusTexels = 1.1;
 
     this.direction = new THREE.Vector3(0.35, 0.72, 0.6).normalize();
@@ -155,6 +166,17 @@ export class CascadedShadowMaps {
 
   /* ─────────────────────────────────────────────────────────────────── lights */
 
+  /**
+   * Texels for cascade `i`. The last cascade covers 30x the area of the near ones and
+   * resolves nothing legible at any resolution, so it never grows past 768 — which is
+   * what makes raising the near cascades to 1536 affordable. Only the *last* one is
+   * shrunk: with 4 cascades the third is still doing mid-field work.
+   */
+  _mapSizeFor(i, res) {
+    if (i < Math.max(2, this.count - 1)) return res;
+    return Math.max(512, Math.min(768, Math.round(res * 0.75)));
+  }
+
   _buildLights() {
     this._disposeLights();
     const res = this.resolution;
@@ -163,9 +185,7 @@ export class CascadedShadowMaps {
       light.name = `csm.cascade${i}`;
       light.castShadow = true;
       light.frustumCulled = false;
-      // Far cascades cover 30x the area of the near one; spending equal texels on
-      // them is wasted memory. Three quarters is invisible in motion.
-      const r = i >= 2 ? Math.max(512, Math.round(res * 0.75)) : res;
+      const r = this._mapSizeFor(i, res);
       light.shadow.mapSize.set(r, r);
       light.shadow.camera.near = 0.05;
       light.shadow.camera.far = 400;
@@ -226,7 +246,7 @@ export class CascadedShadowMaps {
     // mapSize can only change before the map is allocated, so tear them down.
     for (let i = 0; i < this.lights.length; i++) {
       const light = this.lights[i];
-      const size = i >= 2 ? Math.max(512, Math.round(r * 0.75)) : r;
+      const size = this._mapSizeFor(i, r);
       light.shadow.mapSize.set(size, size);
       light.shadow.map?.depthTexture?.dispose?.();
       light.shadow.map?.dispose?.();
@@ -302,7 +322,17 @@ export class CascadedShadowMaps {
         this.maxDistance = 120;
         break;
     }
-    if (headless) this.maxDistance = Math.min(this.maxDistance, 90);
+    /**
+     * Headless caps the range harder than the tier asks for, and that *buys* shadow
+     * detail rather than costing it. The last cascade's texels are (2 · 1.65 · far) /
+     * mapSize, so at 90 m and a 78 deg FOV the far slice lands on 37 cm texels — a
+     * railing is 4 cm, a market frame 8, a scaffolding standard 10, and none of them
+     * survive rasterisation at that footprint. That is why the plaza had broad
+     * light/shade regions and no shadow bars. 72 m puts the same slice at 23 cm and
+     * pulls the mid cascade from 4.8 to 4.1 cm, which is where the legible casters are;
+     * the cascade fade already starts at 0.82·far, so nothing pops.
+     */
+    if (headless) this.maxDistance = Math.min(this.maxDistance, 72);
     const changed = before !== `${this.pcss}|${this.pcfTaps}|${this.blockerTaps}`;
     if (changed) this.version++;
     return changed;

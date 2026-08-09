@@ -31,6 +31,9 @@
  *   physLuminance   number         un-adapted sky radiance (Hillaire units)
  *   zenithColor / horizonColor / groundColor / fogColor   Color
  *   ambientColor    Color          hemisphere-averaged sky, for a fallback ambient
+ *   nightSkyColor   Color          airglow + light-pollution radiance floor the dome
+ *                                  adds after dusk and `sampleSky` does not know about
+ *   cloudCoverage   number         0..1, current deck cover
  *   starVisibility  number         0..1
  *   envTexture      Texture        PMREM cube-uv, assign straight to scene.environment
  *   envCubeTexture  CubeTexture    raw radiance cube (pre-PMREM)
@@ -94,8 +97,24 @@ const IRRADIANCE_SCALE = 13.0;
 
 const SITE_LAT = 34 * DEG;
 const SUN_DEC = 8 * DEG;
-const MOON_DEC = -5 * DEG;
-const MOON_ELONGATION = 120 * DEG; // waxing gibbous, ~75% lit
+/**
+ * **The moon is staged, like the sun.** Its declination and elongation are the two
+ * free parameters a date gives you, and the previous pair put it at compass azimuth
+ * 173 deg and 51 deg altitude at the 21.5 night pose — behind the camera and near the
+ * zenith, so the review's night frame contained no moon at all, and the only
+ * directional light in it arrived from a source nobody could see.
+ *
+ * Solved instead for the frame: at 21.5 the sun's hour angle is 115.5 deg, so an
+ * elongation of 189.5 deg puts the moon at H = -74 deg, and a 20 deg declination at
+ * this latitude then places it at compass 81 deg / 24 deg altitude — which after
+ * `SITE_AZIMUTH` is bearing 23 deg, up and to the right of the night camera, clear of
+ * the Ochre Row roofline and three-quarters front to the street so its shadows fall
+ * back toward the lens. The elongation is also, not coincidentally, a full moon: a
+ * moon that rises around sunset *is* full, so the brightest, most photogenic phase is
+ * the astronomically correct one for a shot taken two hours after dusk.
+ */
+const MOON_DEC = 20 * DEG;
+const MOON_ELONGATION = 189.5 * DEG; // full moon, risen in the east after sunset
 const SOLAR_NOON = 12.75;
 
 /**
@@ -748,7 +767,8 @@ class Sky {
     /* ---------------------------------------------------------------- tuning */
     this.exposureScale = IRRADIANCE_SCALE; // physical radiance -> render units
     this.sunDiscScale = 1200.0;
-    this.moonDiscScale = 0.9;
+    /** Multiplied by `adaptLift` in `_pushUniforms`; ~8 in render units at full night. */
+    this.moonDiscScale = 0.34;
     this.groundAlbedo = new THREE.Color(0.11, 0.105, 0.096);
     /**
      * Fair-weather cumulus with plenty of open sky between the cells.
@@ -1461,7 +1481,16 @@ class Sky {
     const discFade = clamp01((this.sunDirection.y + 0.02) / 0.03);
     const disc = this.sunDiscScale * discFade * this.adaptLift;
     u.uSunDiscRadiance.value.set(disc, disc * 0.985, disc * 0.96);
-    const moonLit = this.moonDiscScale * (0.22 + 0.78 * night);
+    /**
+     * **The lunar disc rides `adaptLift` too.** It was the last term that did not, and
+     * it is the one that matters most for a night frame: the exposure curve lifts the
+     * sky, the ambient, the IBL and the moon's *light* by up to 26x while the disc
+     * itself stayed at its raw 0.9, so the brightest object in a night sky rendered
+     * dimmer than the skyglow around it and read as a grey sticker. A moon is a
+     * sunlit rock — it is the one thing in that frame that should clip.
+     * The base is retuned down by the same order the lift adds.
+     */
+    const moonLit = this.moonDiscScale * (0.22 + 0.78 * night) * this.adaptLift;
     u.uMoonDiscRadiance.value.set(moonLit * 0.92, moonLit * 0.95, moonLit);
     u.uMoonGlowColor.value.set(
       this.moonIntensity * 0.9,
@@ -1488,6 +1517,23 @@ class Sky {
     // left the sky neutral and gradientless everywhere the camera actually looks.
     const poll = this.lightPollution * nightLift * 0.42;
     u.uPollutionColor.value.set(poll * 1.0, poll * 0.52, poll * 0.2);
+    /**
+     * **What the night dome adds, published so it can also light something.**
+     *
+     * `sampleSky()` is the single-scattering integral and nothing else, so after dusk
+     * it returns essentially zero — while the dome the player is looking at is drawing
+     * airglow plus a whole city's sodium spill on top of it. Lighting projects
+     * `sampleSky` into its irradiance SH, so that glow was decorative: a sky that was
+     * visibly the brightest thing in frame and contributed not one photon to the street
+     * underneath it. This is the same two constants the shader uses, handed over as a
+     * radiance so the SH can carry them.
+     */
+    this._nightSky = this._nightSky || new THREE.Color();
+    this._nightSky.setRGB(
+      u.uNightSkyColor.value.x + u.uPollutionColor.value.x * 0.35,
+      u.uNightSkyColor.value.y + u.uPollutionColor.value.y * 0.35,
+      u.uNightSkyColor.value.z + u.uPollutionColor.value.z * 0.35
+    );
     u.uGroundLit.value.set(this.groundColor.r, this.groundColor.g, this.groundColor.b);
 
     // Cirrus sits at ~8 km, so it keeps direct sun long after the ground is dark.
@@ -1695,6 +1741,41 @@ class Sky {
     const renderer = this.ctx.renderer;
     if (!renderer || !this._cloudRT[0] || this.coverage <= 0.001) {
       this.uDome.uHasClouds.value = 0;
+      return;
+    }
+
+    /**
+     * **Do not re-march a cloud field that has not moved.**
+     *
+     * The march is 40 steps of Perlin-Worley with a 4-step cone shadow at every one of
+     * them, over a quarter-res buffer — by a distance the most expensive thing in the
+     * frame that is not the scene itself. It is also temporally accumulated at a 0.9
+     * history blend, so it converges in about ten frames and then re-derives the same
+     * answer forever. On a *moving* camera that is necessary: the reprojection needs a
+     * fresh sample every frame. On a still one it is pure waste, and the screenshot
+     * harness holds the camera still for 48 warm frames per pose.
+     *
+     * Wind is not a reason to re-march either. At 7.5 m/s against an 11.5 km base
+     * scale the field advances 0.001 % of a cell per frame; the cadence below lets it
+     * accumulate to something a texel can actually resolve before paying for it again.
+     */
+    const still =
+      this._lastCloudCam &&
+      this._lastCloudCam.p.distanceToSquared(cam.position) < 1e-6 &&
+      Math.abs(this._lastCloudCam.q.dot(cam.quaternion)) > 0.9999995 &&
+      this._lastCloudCam.fov === cam.fov;
+    if (!this._lastCloudCam) {
+      this._lastCloudCam = { p: cam.position.clone(), q: cam.quaternion.clone(), fov: cam.fov };
+    } else {
+      this._lastCloudCam.p.copy(cam.position);
+      this._lastCloudCam.q.copy(cam.quaternion);
+      this._lastCloudCam.fov = cam.fov;
+    }
+    const interval = this.headless ? 6 : 3;
+    this._cloudIdle = still ? (this._cloudIdle || 0) + 1 : 0;
+    if (this._cloudReset <= 0 && this._cloudIdle > 8 && this._cloudIdle % interval !== 0) {
+      // Keep publishing the last buffer: the dome still needs something to sample.
+      this.uDome.uHasClouds.value = this._cloudRT[this._cloudIndex] ? 1 : 0;
       return;
     }
 
@@ -2029,6 +2110,18 @@ export default function createSky(ctx) {
     },
     get ambientColor() {
       return sky.ambientColor;
+    },
+    /**
+     * Radiance floor the dome paints after dusk (airglow + light pollution) that
+     * `sampleSky()` knows nothing about. Consumers projecting the sky into an
+     * irradiance basis must add it, or the night sky lights nothing. See `_pushUniforms`.
+     */
+    get nightSkyColor() {
+      return sky._nightSky || null;
+    },
+    /** Current cloud cover, 0..1 — the CPU sky model does not include the deck. */
+    get cloudCoverage() {
+      return sky.coverage;
     },
     get envTexture() {
       return sky.envTexture;

@@ -310,6 +310,11 @@ export default function createWeaponSystem(ctx) {
     lights.fill = mk(0x93aecd, 0.95, [0.72, -0.18, 0.5]);
     lights.rim = mk(0xdfe8f6, 1.7, [0.34, 0.52, -0.86]);
     lights.bounce = mk(0x6a5e4c, 0.55, [0.1, -0.9, 0.2]);
+    // Daylight hues, kept so syncEnvironment can lerp away from them and back.
+    lights.key.userData.day = new THREE.Color(0xfff0dc);
+    lights.fill.userData.day = new THREE.Color(0x93aecd);
+    lights.rim.userData.day = new THREE.Color(0xdfe8f6);
+    lights.bounce.userData.day = new THREE.Color(0x6a5e4c);
 
     // Exactly one of them casts. Without it nothing in the viewmodel scene occludes
     // anything: the hands float clear of the receiver, the optic leaves no mark on the
@@ -380,10 +385,37 @@ export default function createWeaponSystem(ctx) {
     // Rim carries the silhouette; it is deliberately the last thing to fade at night.
     if (lights.rim) lights.rim.intensity = 1.45 * clamp(k, 0.78, 1.5);
     if (lights.bounce) lights.bounce.intensity = 0.38 * k;
+
+    /* Night warmth.
+     *
+     * The rig's fill and rim are daylight hues — a blue north-sky fill and a cool
+     * blue-white rim — because by day they stand in for skylight. At night the key
+     * collapses to its floor and those two become most of what is lighting the gun,
+     * so the whole weapon picked up a cold blue cast that belonged to no light source
+     * in the scene. What is actually out there after dark is sodium and tungsten
+     * practicals and a fire or two, so the rig rolls over to warm as the world darkens.
+     * The rim stays the coolest of the three (it is still standing in for skyglow) but
+     * lands amber rather than steel blue. */
+    const night = clamp(1 - lum / 0.34, 0, 1);
+    const warmTo = (l, hex, amt) => {
+      if (!l?.userData?.day) return;
+      l.color.copy(l.userData.day).lerp(_col.set(hex), amt * night);
+    };
+    warmTo(lights.fill, 0xffc48a, 0.82);
+    warmTo(lights.rim, 0xffcf9a, 0.7);
+    warmTo(lights.bounce, 0xff9c52, 0.55);
+    // The environment is a night sky: blue, and at this point the only blue left. Pull
+    // its hold down further than the daylight curve does so it tints rather than casts.
+    if (night > 0.01) scene.environmentIntensity *= 1 - 0.45 * night;
+
     const sc = ctx.lighting?.sunColor;
     // Only part-way to the sun's colour: steel and anodising are neutral, and a low warm
     // sun was pushing the entire weapon sepia until it read as one brown substance.
     if (sc?.isColor && lights.key) lights.key.color.copy(sc).lerp(_col.setRGB(1, 1, 1), 0.66);
+    // ...but after dark there is no sun to track, so put the key on a warm practical.
+    if (night > 0.01 && lights.key) {
+      lights.key.color.lerp(_col.set(0xffbe86), 0.72 * night);
+    }
   }
 
   /* ====================================================================== */
@@ -751,10 +783,6 @@ export default function createWeaponSystem(ctx) {
       // itself large: the dot has to stay an aiming point, not a splash of light.
       u.uIntensity.value = (3.3 + 2.2 * clamp01(anim?.adsBlend ?? 0)) * aperture;
     }
-    // Reticle bleed onto the front element.
-    for (const g of optic.glass || []) {
-      if (g?.uniforms?.uGlow) g.uniforms.uGlow.value = 0.06 + 0.09 * clamp01(anim?.adsBlend ?? 0);
-    }
   }
 
   function updateOpticUniforms() {
@@ -779,7 +807,18 @@ export default function createWeaponSystem(ctx) {
       if (sun?.isColor && u.uSunColor) u.uSunColor.value.copy(sun);
       if (sunDir && u.uSunDir) u.uSunDir.value.set(sunDir.x, Math.abs(sunDir.y), sunDir.z).normalize();
     };
-    for (const g of optic.glass || []) apply(g?.uniforms);
+    /* Emitter bleed into the coating stack. Deliberately *not* gated on the eye being
+     * on-axis the way the collimated dot is (updateReticle bails out entirely once the
+     * dot walks off the aperture, which is every hip-fire frame): the LED's own spill
+     * is visible from anywhere you can see the element, and it is most of what tells a
+     * viewer at hip that the tube is a live red dot rather than a pipe. */
+    // Strong off-axis, almost gone once the eye is behind the sight: at hip it is the
+    // "live optic" cue, but on the aiming axis it would be a pink filter over the target.
+    const glow = optic.kind === 'reflex' ? 0.095 * (1 - 0.72 * clamp01(anim?.adsBlend ?? 0)) : 0;
+    for (const g of optic.glass || []) {
+      apply(g?.uniforms);
+      if (g?.uniforms?.uGlow) g.uniforms.uGlow.value = glow;
+    }
     if (optic.imageMat) {
       const u = optic.imageMat.uniforms;
       apply(u);
@@ -1317,6 +1356,10 @@ export default function createWeaponSystem(ctx) {
             anim?.setChamberOpen(false);
             anim?.resetShotIndex();
           }
+          // The harness only warms a handful of frames after a pose is applied, which
+          // is less than the mount time — settle the aim transition now so an `ads`
+          // pose is captured aiming rather than half-way up.
+          anim?.snapAds?.(poseState.ads ? 1 : 0);
           if (poseState.inspect) anim?.inspect();
           if (poseState.attachments && cur) {
             cur.attachments = resolveLoadout(cur.def, poseState.attachments);

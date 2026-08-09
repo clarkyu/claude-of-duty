@@ -138,7 +138,18 @@ export const WEAPON_DEFS = {
 
     view: {
       scale: 0.82,
-      hip: { pos: [0.128, -0.098, -0.395], rot: [0.02, 0.052, 0.052] },
+      /* Hip framing.
+       *
+       * The buttstock is roughly half the eye distance of the receiver, so it wins the
+       * frame by a factor of four in area for free. Every term here is fighting that:
+       * the gun is held 5 cm further out (which costs the *near* end far more of its
+       * apparent size than the far end), dropped and pushed right so the butt sits in
+       * the bottom-right corner behind the ammo counter rather than across the middle
+       * of the picture, and pitched and yawed a little harder so the receiver flank and
+       * the handguard turn into the light and take the centre of frame. Together with
+       * the shorter, lower stock (see build.stock) that is what makes this read as a
+       * COD viewmodel rather than a rifle butt with a gun attached to it. */
+      hip: { pos: [0.142, -0.118, -0.448], rot: [0.055, 0.094, 0.078] },
       adsEyeRelief: 0.1,
       lowReady: { pos: [0.082, -0.152, -0.374], rot: [0.44, -0.06, 0.06] },
       sprint: { pos: [0.096, -0.126, -0.35], rot: [0.16, 0.5, 0.36] },
@@ -178,7 +189,10 @@ export const WEAPON_DEFS = {
         slotRows: [1, 2, 3, 4, 5, 6, 7],
         ventRows: [],
       },
-      stock: { style: 'ar_adjustable', z0: 0.004, len: 0.198, tubeR: 0.0168, cheek: true },
+      // Collapsed one notch further in than a real LOP: the butt is the closest part of
+      // the weapon to the camera, so every millimetre of it costs several times its
+      // share of the frame. See buildStock.
+      stock: { style: 'ar_adjustable', z0: 0.004, len: 0.172, tubeR: 0.0158, cheek: true },
       grip: { style: 'ar', z: -0.0435, y: -0.0325, angle: 25 * DEG, len: 0.115, w: 0.0335, d: 0.0455 },
       mag: {
         style: 'stanag',
@@ -287,7 +301,10 @@ export const WEAPON_DEFS = {
 
     view: {
       scale: 0.84,
-      hip: { pos: [0.121, -0.094, -0.366], rot: [0.022, 0.056, 0.055] },
+      // Same reframing as the rifle (see ar_wolverine.view.hip), scaled to the SMG's
+      // shorter reach: further out, lower and further right so the folding stock sits
+      // in the corner and the receiver takes the middle of the frame.
+      hip: { pos: [0.133, -0.11, -0.406], rot: [0.05, 0.092, 0.078] },
       adsEyeRelief: 0.094,
       lowReady: { pos: [0.08, -0.148, -0.346], rot: [0.46, -0.07, 0.07] },
       sprint: { pos: [0.092, -0.122, -0.326], rot: [0.17, 0.53, 0.39] },
@@ -427,7 +444,8 @@ export const WEAPON_DEFS = {
 
     view: {
       scale: 0.8,
-      hip: { pos: [0.134, -0.106, -0.364], rot: [0.018, 0.048, 0.048] },
+      // The DMR carries the longest stock of the three, so it needs the most push.
+      hip: { pos: [0.148, -0.124, -0.436], rot: [0.05, 0.09, 0.072] },
       adsEyeRelief: 0.118,
       lowReady: { pos: [0.088, -0.16, -0.338], rot: [0.42, -0.06, 0.055] },
       sprint: { pos: [0.1, -0.134, -0.318], rot: [0.15, 0.47, 0.34] },
@@ -467,7 +485,7 @@ export const WEAPON_DEFS = {
         slotRows: [1, 2, 3, 4, 5, 6, 7],
         ventRows: [],
       },
-      stock: { style: 'precision', z0: 0.006, len: 0.234, tubeR: 0.0178, cheek: true },
+      stock: { style: 'precision', z0: 0.006, len: 0.212, tubeR: 0.0172, cheek: true },
       grip: { style: 'ar', z: -0.0485, y: -0.0355, angle: 19 * DEG, len: 0.122, w: 0.0345, d: 0.047 },
       mag: {
         style: 'stanag',

@@ -12,10 +12,12 @@
  * an image-based environment:
  *
  *   • diffuse  — an L2 irradiance SH, projected on the CPU from `ctx.sky.sampleSky()`
- *                (the same scattering model the sky dome renders) plus a one-bounce
- *                ground term. Shadowed faces therefore pick up sky blue, up-facing
- *                faces pick up the zenith and down-facing faces pick up warm ground
- *                bounce — for free, and with no ringing.
+ *                (the same scattering model the sky dome renders) plus a **measured**
+ *                one-bounce term: a 16-bin horizon profile raycast against the
+ *                collision world tells the projection which bearings are sky and which
+ *                are masonry, and shades the masonry properly. Shadowed faces therefore
+ *                pick up warm facade bounce where a wall is standing and sky blue where
+ *                it is not — for free, and with no ringing. See `_gatherLocalEnvironment`.
  *   • specular — the sky's PMREM roughness chain on `scene.environment`, overridden
  *                locally by box-projected reflection probes (see ProbeSystem.js).
  *
@@ -47,6 +49,10 @@
  *   setShadowsEnabled(bool) / setContactShadows(bool) / setProbesEnabled(bool)
  *   setExposureCompensation(f)
  *   refreshProbes()
+ *   getVolumetricShadow()    -> {map, matrix, bias, cascade} | null  — a real cascade
+ *                               for render/passes/VolumetricPass.js to march against
+ *   getVolumetricLights(n)   -> [{pos, color, radius, dir, cosInner, cosOuter}]
+ *                               practicals worth scattering through, night only
  *   csm / probes / lights    the subsystems, for tools
  *   contactShadow            { texture, uniforms, render() } for the pipeline to consume
  *   stats                    { cascades, probes, activeLights, shadowLights }
@@ -72,6 +78,13 @@ const _v3 = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _color = new THREE.Color();
 const _mat4 = new THREE.Matrix4();
+/** Scratch for the local environment probe — see `_gatherLocalEnvironment`. */
+const _hzO = new THREE.Vector3();
+const _hzD = new THREE.Vector3();
+const _hzP = new THREE.Vector3();
+const _hzN = new THREE.Vector3();
+const _UP = new THREE.Vector3(0, 1, 0);
+const _DOWN = new THREE.Vector3(0, -1, 0);
 
 /**
  * Colour temperature -> linear sRGB, via the Planckian locus (Kim et al. cubic fit)
@@ -318,8 +331,17 @@ class ContactShadowPass {
     this.aoStrength = 0.72;
     this.aoPower = 1.1;
     this.aoNormalBias = 0.05;
-    /** How much of the AO is allowed to bite the indirect term in the material. */
-    this.aoIndirect = 0.7;
+    /**
+     * How much of the AO is allowed to bite the indirect term in the material.
+     *
+     * Trimmed from 0.70 once the IBL started carrying a *measured* horizon (see
+     * `_gatherLocalEnvironment`): the SH now already knows that two thirds of the sky
+     * over this street is masonry, so a screen-space term applying the same occlusion
+     * a second time is double-counting — and it does it hardest exactly where the
+     * review found the frame deadest, in the near foreground, which is the part of any
+     * FPS frame with the most nearby geometry to occlude against.
+     */
+    this.aoIndirect = 0.55;
 
     this.material = new THREE.ShaderMaterial({
       name: 'lighting:contactShadows',
@@ -837,6 +859,53 @@ const SH_THETA = 12;
  */
 const BOUNCE_ALBEDO = new THREE.Color(0.26, 0.215, 0.165);
 
+/**
+ * ── The local environment probe ─────────────────────────────────────────────────
+ *
+ * `BOUNCE_ALBEDO` and the analytic skyline below it are a *guess* at what surrounds
+ * the shading point. The guess was wrong in both directions at once: outdoors it left
+ * half of a street canyon's masonry reading as bright blue sky, and indoors it handed
+ * a market hall the full unoccluded irradiance of a clear morning — measured, from the
+ * interior camera, 10 of 12 compass bearings see no sky at all below 90 degrees, and
+ * the two that do only open up above 20. That is why the interior floor was a broad
+ * warm pool with no shafts: there was nothing for a shaft to be brighter *than*.
+ *
+ * So measure it. Once per pose (and whenever the camera moves a couple of metres) we
+ * fire a small fan of rays at the collision world and build a 16-bin horizon profile:
+ * for each compass bearing, the elevation at which sky first appears, and the radiance
+ * of whatever is below that elevation — computed as a real one-bounce, with the
+ * occluder's own sun visibility raycast rather than assumed. Directions that hit
+ * masonry get warm bounce, directions that see sky get sky, and the SH projection
+ * below carries the difference. ~150 rays, cached; see `_gatherLocalEnvironment`.
+ */
+const HZ_BINS = 16;
+/** sin(elevation) ladder the skyline search walks: 2, 5, 9, 14, 20, 27, 35, 46 deg. */
+const HZ_LADDER = [0.035, 0.087, 0.156, 0.242, 0.342, 0.454, 0.574, 0.719];
+/** Beyond this the occluder is far enough that aerial perspective makes it sky again. */
+const HZ_RANGE = 52;
+/** Softness of the skyline step, in sin(elevation) — the SH cannot resolve a hard edge. */
+const HZ_FEATHER = 0.11;
+/** A one-point probe is not the whole scene: never claim more than this much occlusion. */
+const HZ_FILL = 0.86;
+/** Diffuse albedo relative to BOUNCE_ALBEDO, by physics surface tag. */
+const BOUNCE_GAIN = {
+  concrete: 1.3,
+  plaster: 1.55,
+  ceramic: 1.4,
+  sand: 1.5,
+  snow: 2.6,
+  wood: 1.0,
+  fabric: 1.15,
+  dirt: 0.8,
+  metal: 0.75,
+  rubber: 0.45,
+  glass: 0.5,
+  grass: 0.55,
+  foliage: 0.5,
+  water: 0.35,
+  flesh: 0.9,
+};
+
 class Lighting {
   constructor(ctx) {
     this.ctx = ctx;
@@ -860,8 +929,16 @@ class Lighting {
     this.lights = new LightManager(ctx, this);
     this.contact = new ContactShadowPass(ctx);
 
-    /** Filmic exaggeration of the solar disc: the real 0.0047 rad is almost hard. */
-    this.softnessScale = 4.2;
+    /**
+     * Filmic exaggeration of the solar disc: the real 0.0047 rad is almost hard.
+     *
+     * 4.2 was too much. A 20 m shadow thrown by a 15 deg sun already separates blocker
+     * and receiver by tens of metres, and at 4.2x the disc that tip is metres wide —
+     * which is how the plaza ended up with soft light/shade *regions* rather than the
+     * legible shadow ladder the review asked for. 2.5 keeps the sharp contact point
+     * and a visibly opening penumbra without dissolving the far end of a bar.
+     */
+    this.softnessScale = 2.5;
     this.shadowsEnabled = ctx.settings?.get?.('shadows') !== false;
     this.probesEnabled = true;
     this.exposureCompensation = 1;
@@ -1102,7 +1179,17 @@ class Lighting {
     this.headless = !!s?.get?.('headless');
 
     let res = s?.get?.('shadowResolution') ?? 2048;
-    if (this.headless) res = Math.min(res, 1024);
+    /**
+     * Headless used to clamp every cascade to 1024, which at a 78 deg FOV put the
+     * mid cascade on 4.2 cm texels — wider than a railing (4 cm), a market frame post
+     * (8 cm) and a window mullion (6.4 cm), so none of them cast anything and the
+     * review saw broad light/shade regions instead of shadow bars. The tier's own 1536
+     * takes that to 2.8 cm, where all three register; the *last* cascade still drops to
+     * three quarters (see CSM._buildLights), so the extra fill is only paid on the two
+     * that carry legible detail, and check.mjs measures the frame at 3.3 s either way
+     * on the software rasteriser.
+     */
+    if (this.headless) res = Math.min(res, 1536);
     const cascades = clamp(s?.get?.('shadowCascades') ?? 4, 1, 4);
 
     let dirty = false;
@@ -1345,8 +1432,34 @@ class Lighting {
     this._applyStaging();
     this._gradeKey();
 
-    // Full daylight -> practicals off. See LightManager.update().
-    this.daylight = clamp01((this.sunDirection.y - 0.005) / 0.1) * clamp01(this.sunIntensity / 0.6);
+    /**
+     * **How much daylight is *here*, not how far the sun is above the horizon.**
+     *
+     * `daylight` gates every practical in the level (see LightManager.update), and it
+     * asked exactly one question: is the sun up? Any sun above ~6 degrees switched the
+     * whole rig off at 5 % — including the market stall lamps four metres in front of
+     * the hero camera, standing in a canyon whose floor the sun does not reach until it
+     * clears 27 degrees. That is why the signature frame's near foreground was cold and
+     * dead: the only light sources aimed at it were being told it was the middle of the
+     * day, and the review's brief for that foreground ("a local fill light motivated
+     * by" something in the scene) was already standing in the shot, switched off.
+     *
+     * The horizon probe already measures both halves of the real question — how much
+     * sky this spot can see, and how much of the ground around it the key actually
+     * reaches — so use them. In the open the term is ~1 and nothing changes; in a
+     * shaded canyon it lands near 0.7, which brings a 42 W stall lamp back to about a
+     * third of its rated output: a warm pool roughly twice the shadow ambient, which
+     * is what a market at golden hour actually looks like, and nowhere near the
+     * "brighter than the sun" failure that made the blanket dimmer necessary.
+     */
+    const hz = this._hz;
+    const localShade = hz
+      ? clamp01(0.3 + 0.7 * hz.openSky) * clamp01(0.45 + 0.55 * hz.groundLit)
+      : 1;
+    this.daylight =
+      clamp01((this.sunDirection.y - 0.005) / 0.1) *
+      clamp01(this.sunIntensity / 0.6) *
+      (0.45 + 0.55 * localShade);
 
     this.csm.setKeyLight(this.sunDirection, this.sunColor, this.sunIntensity);
 
@@ -1373,16 +1486,224 @@ class Lighting {
       const dOmega = (Math.PI / SH_THETA) * ((2 * Math.PI) / SH_PHI) * sinT;
       for (let ip = 0; ip < SH_PHI; ip++) {
         const phi = ((ip + 0.5) / SH_PHI) * Math.PI * 2;
+        const v = new THREE.Vector3(sinT * Math.cos(phi), cosT, sinT * Math.sin(phi));
+        // Which horizon bin this direction falls in, resolved once: the grid is fixed,
+        // so the bin and its interpolation weight never change.
+        const az = Math.atan2(v.x, -v.z) / (Math.PI * 2); // -0.5 .. 0.5 turns
+        const f = (az - Math.floor(az)) * HZ_BINS - 0.5;
+        const b0 = Math.floor(f);
         dirs.push({
-          v: new THREE.Vector3(sinT * Math.cos(phi), cosT, sinT * Math.sin(phi)),
+          v,
           w: dOmega,
           up: cosT,
+          bin: ((b0 % HZ_BINS) + HZ_BINS) % HZ_BINS,
+          binF: f - b0,
         });
       }
     }
     this._shDirs = dirs;
     this._shCache = dirs.map(() => new THREE.Color());
     return dirs;
+  }
+
+  /** Cache key for the local environment probe: where we stand, and where the sun is. */
+  _envKey() {
+    const cam = this.ctx.camera;
+    if (!cam) return '';
+    const p = cam.position;
+    const d = this.sunDirection;
+    return `${Math.round(p.x * 0.5)},${Math.round(p.y * 0.5)},${Math.round(p.z * 0.5)}|${Math.round(
+      d.x * 40
+    )},${Math.round(d.y * 40)},${Math.round(d.z * 40)}|${Math.round(this.sunIntensity * 8)}`;
+  }
+
+  /**
+   * **Measure the surroundings instead of assuming them.** See the HZ_* block above.
+   *
+   * Builds, from the camera, a 16-bin horizon profile plus the one-bounce radiance of
+   * whatever stands below each bin's skyline, and a measured ground bounce. Every
+   * bounce is shaded properly: the occluder's own N·L, its own sun visibility by
+   * raycast, and its own sky visibility by one vertical ray — so a wall inside a
+   * building bounces interior light, not an open field's.
+   *
+   * @param {number} eR sky irradiance on an unoccluded horizontal plane, per channel
+   * @returns {object|null} the cached profile, or null when there is no physics world
+   */
+  _gatherLocalEnvironment(eR, eG, eB) {
+    const ctx = this.ctx;
+    const phys = ctx.physics;
+    const cam = ctx.camera;
+    if (!phys?.raycast || !cam) return null;
+    const key = this._envKey();
+    if (this._hz && this._hzKey === key) return this._hz;
+
+    const hz =
+      this._hz ||
+      (this._hz = {
+        sky: new Float32Array(HZ_BINS),
+        r: new Float32Array(HZ_BINS),
+        g: new Float32Array(HZ_BINS),
+        b: new Float32Array(HZ_BINS),
+        ground: [0, 0, 0],
+        groundLit: 0,
+        openSky: 1,
+        rays: 0,
+      });
+
+    const MASK = 1 | 8; // WORLD | PROP
+    const sun = this.sunDirection;
+    const sunI = this.sunIntensity;
+    const sunC = this.sunColor;
+    const INV_PI = 1 / Math.PI;
+    let rays = 0;
+
+    /**
+     * One-bounce radiance leaving a surface the probe hit. Writes into `_color` and
+     * leaves the surface's sun visibility in `this._hzVis`.
+     */
+    const shade = (hit, checkRoof) => {
+      const n = _hzN;
+      if (hit.normal && hit.normal.lengthSq() > 1e-6) n.copy(hit.normal).normalize();
+      else n.copy(_UP);
+      const gain = BOUNCE_GAIN[hit.surface] ?? 1;
+      const nl = Math.max(n.dot(sun), 0);
+      let vis = 0;
+      if (nl > 0.001 && sunI > 1e-4) {
+        _hzP.copy(hit.point).addScaledVector(n, 0.06);
+        rays++;
+        vis = phys.raycast(_hzP, sun, 180, MASK) ? 0 : 1;
+      }
+      let openUp = 1;
+      if (checkRoof) {
+        _hzP.copy(hit.point).addScaledVector(n, 0.06);
+        rays++;
+        // Can this surface see the sky at all? A wall in a closed hall cannot, and
+        // handing it a field's worth of skylight is exactly how an interior ends up
+        // lit like an exterior. Only asked for where the bearing looks enclosed —
+        // outdoors the answer is always yes and the ray is wasted.
+        openUp = phys.raycast(_hzP, _UP, 40, MASK) ? 0.2 : 1;
+      }
+      const skyW = (0.5 + 0.5 * n.y) * openUp;
+      const e = sunI * nl * vis;
+      this._hzVis = vis;
+      _color.setRGB(
+        BOUNCE_ALBEDO.r * gain * (e * sunC.r + eR * skyW) * INV_PI,
+        BOUNCE_ALBEDO.g * gain * (e * sunC.g + eG * skyW) * INV_PI,
+        BOUNCE_ALBEDO.b * gain * (e * sunC.b + eB * skyW) * INV_PI
+      );
+    };
+
+    /* ── ground first: it doubles as the fallback bounce for open bearings ──── */
+    let gr = 0;
+    let gg = 0;
+    let gb = 0;
+    let gn = 0;
+    let glit = 0;
+    for (let k = 0; k < 16; k++) {
+      const az = (k / 16) * Math.PI * 2;
+      // Spread over the whole near field, not just the pocket the camera is standing
+      // in: 12 samples all inside one prop's shadow measured a sunlit fraction of 0.00
+      // on a plaza that raycasts at 0.30, and the ground bounce came out pure skylight.
+      const rad = 3 + (k % 4) * 4.5;
+      // Start just above the eye, not high above it: from a metre over the roof an
+      // interior probe measures the roof, not the floor it is standing on.
+      _hzP.set(cam.position.x + Math.sin(az) * rad, cam.position.y + 2.2, cam.position.z - Math.cos(az) * rad);
+      rays++;
+      const h = phys.raycast(_hzP, _DOWN, 30, MASK);
+      if (!h) continue;
+      shade(h, false);
+      gr += _color.r;
+      gg += _color.g;
+      gb += _color.b;
+      glit += this._hzVis;
+      gn++;
+    }
+    if (gn > 0) {
+      hz.ground[0] = gr / gn;
+      hz.ground[1] = gg / gn;
+      hz.ground[2] = gb / gn;
+      hz.groundLit = glit / gn;
+    } else {
+      hz.ground[0] = hz.ground[1] = hz.ground[2] = 0;
+      hz.groundLit = 0;
+    }
+
+    /* ── the horizon fan ─────────────────────────────────────────────────────── */
+    _hzO.copy(cam.position);
+    // One ray decides whether the *probe* is under a roof, and therefore whether the
+    // surfaces it hits need their own sky-visibility test. Outdoors the answer is
+    // always "yes, it sees sky" and the extra 64 rays buy nothing.
+    rays++;
+    const enclosed = !!phys.raycast(_hzO, _UP, 45, MASK);
+    let open = 0;
+    for (let b = 0; b < HZ_BINS; b++) {
+      const az = ((b + 0.5) / HZ_BINS) * Math.PI * 2;
+      const sa = Math.sin(az);
+      const ca = Math.cos(az);
+      let line = 0.82; // nothing opened up all the way to 46 deg: treat as roofed
+      /**
+       * **Shade the whole occluded column, not just its foot.**
+       *
+       * The first version sampled only the lowest hit — 2 degrees up, which on a
+       * street is the shadowed base of a wall or the side of a bench. At a 15 degree
+       * sun *nothing* down there is lit, so every one of the 16 bearings measured a
+       * bounce of 0.005 in luminance and the "warm facade opposite" the whole term
+       * exists to capture never appeared. The card is the upper storeys: an ochre
+       * plaster wall at N·L 0.39 under an 8.7 key leaves 0.38 of radiance, eleven times
+       * the zenith in red. So walk the rungs, shade every other one, and average by the
+       * cosine-weighted band each represents.
+       */
+      let br = 0;
+      let bg = 0;
+      let bb = 0;
+      let bw = 0;
+      let lr = 0;
+      let lg = 0;
+      let lb = 0;
+      let shaded = false;
+      for (let k = 0; k < HZ_LADDER.length; k++) {
+        const s = HZ_LADDER[k];
+        const c = Math.sqrt(Math.max(1 - s * s, 0));
+        _hzD.set(sa * c, s, -ca * c);
+        rays++;
+        const h = phys.raycast(_hzO, _hzD, HZ_RANGE, MASK);
+        if (!h) {
+          // Sky starts somewhere between this rung and the last one.
+          line = k === 0 ? 0 : (HZ_LADDER[k - 1] + s) * 0.5;
+          break;
+        }
+        if (k % 2 === 0 || !shaded) {
+          shade(h, enclosed);
+          lr = _color.r;
+          lg = _color.g;
+          lb = _color.b;
+          shaded = true;
+        }
+        // Cosine-weighted solid angle of the band this rung stands for: d(sin^2 e).
+        const s0 = k === 0 ? 0 : (HZ_LADDER[k - 1] + s) * 0.5;
+        const s1 = k + 1 < HZ_LADDER.length ? (s + HZ_LADDER[k + 1]) * 0.5 : 0.82;
+        const wgt = Math.max(s1 * s1 - s0 * s0, 1e-4);
+        br += lr * wgt;
+        bg += lg * wgt;
+        bb += lb * wgt;
+        bw += wgt;
+      }
+      if (bw > 0) {
+        hz.r[b] = br / bw;
+        hz.g[b] = bg / bw;
+        hz.b[b] = bb / bw;
+      } else {
+        hz.r[b] = hz.ground[0];
+        hz.g[b] = hz.ground[1];
+        hz.b[b] = hz.ground[2];
+      }
+      hz.sky[b] = line;
+      open += 1 - line * line;
+    }
+    hz.openSky = open / HZ_BINS;
+    hz.rays = rays;
+    this._hzKey = key;
+    return hz;
   }
 
   /**
@@ -1448,6 +1769,30 @@ class Lighting {
     }
 
     /**
+     * **The night floor.** `sampleSky()` is single scattering only, so after dusk it
+     * returns ~0 and this SH — the only diffuse ambient in the whole rig — went to
+     * black while the dome overhead was drawing airglow and a city's worth of sodium
+     * spill. A sky that is visibly the brightest thing in the frame has to light the
+     * street under it; Sky now publishes exactly the two terms its own shader adds.
+     * Weighted toward the horizon, because that is where a light-polluted sky glows.
+     */
+    const nsky = sky?.nightSkyColor;
+    if (nsky && nsky.r + nsky.g + nsky.b > 1e-6) {
+      for (let i = 0; i < dirs.length; i++) {
+        const d = dirs[i];
+        if (d.up <= 0) continue;
+        const w = 0.45 + 0.55 * (1 - d.up);
+        const c = this._shCache[i];
+        c.r += nsky.r * w;
+        c.g += nsky.g * w;
+        c.b += nsky.b * w;
+        eR += nsky.r * w * d.up * d.w;
+        eG += nsky.g * w * d.up * d.w;
+        eB += nsky.b * w * d.up * d.w;
+      }
+    }
+
+    /**
      * One bounce off the environment. Without it every downward-facing surface —
      * chins, undersides of ledges, the bottom of a rifle — goes flat black and the
      * scene reads as CG.
@@ -1471,6 +1816,14 @@ class Lighting {
      * hour, 1 at noon when the sun clears everything — and it is the difference
      * between ambient that follows the sun and ambient that replaces it.
      */
+    let hz = null;
+    try {
+      hz = this._gatherLocalEnvironment(eR, eG, eB);
+    } catch (err) {
+      this._warn('hzprobe', 'local environment probe failed, using the analytic skyline', err);
+      hz = null;
+    }
+
     const sunUp = Math.max(this.sunDirection.y, 0);
     const open = clamp01((sunUp - 0.06) / 0.5);
     // Floor at 0.3: the lower hemisphere is not only ground. Even when the street is
@@ -1483,9 +1836,11 @@ class Lighting {
     const aG = BOUNCE_ALBEDO.g;
     const aB = BOUNCE_ALBEDO.b;
     const sunE = this.sunIntensity * sunUp * litGround;
-    const gR = (aR * (sunE * this.sunColor.r + eR)) / Math.PI;
-    const gG = (aG * (sunE * this.sunColor.g + eG)) / Math.PI;
-    const gB = (aB * (sunE * this.sunColor.b + eB * 0.95)) / Math.PI;
+    // The probe measured the ground it is actually standing on, sunlit fraction and
+    // all; fall back to the elevation heuristic only when there is no physics world.
+    const gR = hz ? hz.ground[0] : (aR * (sunE * this.sunColor.r + eR)) / Math.PI;
+    const gG = hz ? hz.ground[1] : (aG * (sunE * this.sunColor.g + eG)) / Math.PI;
+    const gB = hz ? hz.ground[2] : (aB * (sunE * this.sunColor.b + eB * 0.95)) / Math.PI;
 
     /**
      * **The skyline.** Everything above is the sky an observer standing in a field
@@ -1517,22 +1872,45 @@ class Lighting {
       let r;
       let g;
       let b;
-      if (d.up > 0.06) {
-        const t = clamp01(d.up / SKYLINE_TOP);
-        const occ = SKYLINE_FILL * (1 - t) * (1 - t);
-        r = c.r + (fR - c.r) * occ;
-        g = c.g + (fG - c.g) * occ;
-        b = c.b + (fB - c.b) * occ;
-      } else if (d.up > -0.06) {
-        // Soft horizon blend so the SH does not have to resolve a hard step.
-        const t = (d.up + 0.06) / 0.12;
-        r = gR + (c.r - gR) * t;
-        g = gG + (c.g - gG) * t;
-        b = gB + (c.b - gB) * t;
-      } else {
+      if (d.up <= -0.06) {
         r = gR;
         g = gG;
         b = gB;
+      } else {
+        // 1. sky, or whatever masonry is standing in front of it in this bearing
+        let sr = c.r;
+        let sg = c.g;
+        let sb = c.b;
+        if (hz) {
+          const b0 = d.bin;
+          const b1 = (b0 + 1) % HZ_BINS;
+          const t = d.binF;
+          const line = hz.sky[b0] + (hz.sky[b1] - hz.sky[b0]) * t;
+          const occ = clamp01((line - d.up) / HZ_FEATHER + 0.5) * HZ_FILL;
+          if (occ > 0.001) {
+            sr += (hz.r[b0] + (hz.r[b1] - hz.r[b0]) * t - sr) * occ;
+            sg += (hz.g[b0] + (hz.g[b1] - hz.g[b0]) * t - sg) * occ;
+            sb += (hz.b[b0] + (hz.b[b1] - hz.b[b0]) * t - sb) * occ;
+          }
+        } else {
+          const t = clamp01(d.up / SKYLINE_TOP);
+          const occ = SKYLINE_FILL * (1 - t) * (1 - t);
+          sr += (fR - sr) * occ;
+          sg += (fG - sg) * occ;
+          sb += (fB - sb) * occ;
+        }
+        // 2. soft blend into the ground term across the horizon, so the SH never has
+        //    to resolve a hard step
+        if (d.up < 0.06) {
+          const t = (d.up + 0.06) / 0.12;
+          r = gR + (sr - gR) * t;
+          g = gG + (sg - gG) * t;
+          b = gB + (sb - gB) * t;
+        } else {
+          r = sr;
+          g = sg;
+          b = sb;
+        }
       }
       THREE.SphericalHarmonics3.getBasisAt(d.v, basis);
       for (let k = 0; k < 9; k++) {
@@ -1993,6 +2371,7 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
     const visit = (obj) => {
       const m = obj.material;
       if (!m) return;
+      if (obj.isMesh) this._suppressGlazingShadow(obj);
       if (Array.isArray(m)) {
         for (const mm of m) this._patch(mm);
       } else {
@@ -2027,6 +2406,15 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
     // the environment settles to the new sun, then the flag is ignored until the sun
     // actually moves. Interactive keeps the timer, where the cost is affordable and
     // drifting cloud light genuinely should feed back into the IBL.
+    // The IBL is now a *local* probe (see `_gatherLocalEnvironment`), so walking from
+    // the street into the market hall changes it as much as the sun moving does. Check
+    // that on a slow cadence — the key is quantised to 2 m and ~1.5 deg of sun, so a
+    // stationary camera never re-gathers, and the budget below still bounds headless.
+    if (!this._envDirty && this._envTimer > 0.5 && this._hzKey && this._hzKey !== this._envKey()) {
+      this._envDirty = true;
+      if (this.headless) this._envBudget = Math.max(this._envBudget, 1);
+    }
+
     const budgeted = this.headless && this._envBudget <= 0;
     if (this._envDirty && !budgeted && this._envTimer > (this.headless ? 0.12 : 0.4)) {
       this._envTimer = 0;
@@ -2130,6 +2518,136 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
     this._probeBuildPending = true;
   }
 
+  /**
+   * **The volumetric pass asked for this and nobody ever answered.**
+   *
+   * `render/passes/VolumetricPass.js` documents an optional
+   * `ctx.lighting.getVolumetricShadow()`; without it the pass falls back to a
+   * screen-space light-shaft mask that treats "the sky is visible in this pixel" as
+   * the only occlusion signal. That mask is structurally incapable of the two things
+   * this scene most needs from it: a shaft through a *window* (the sky behind the
+   * aperture is a handful of pixels, and the mask blurs radially away from the sun's
+   * screen position, which for an interior is off-screen entirely), and any shaft at
+   * all when the sun is not in frame. Handing over a real cascade makes each march
+   * step a 3D shadow lookup, which is the correct answer and the reason a window shaft
+   * has an edge.
+   *
+   * The cascade we hand over is the first one wide enough (~45 m of ortho) to cover
+   * the part of the ray the eye reads shafts in. Cascade 0 is a few metres across and
+   * would leave the rest of the march unshadowed; the last cascade's texels are far
+   * too coarse to resolve a 1.2 m aperture.
+   *
+   * @returns {{map:THREE.Texture, matrix:THREE.Matrix4, bias:number, cascade:number}|null}
+   */
+  getVolumetricShadow() {
+    if (this.broken || !this.shadowsEnabled || !this.csm.enabled) return null;
+    const params = this.csm.uniforms.uCsmParams.value;
+    let pick = 0;
+    for (let i = 0; i < this.csm.count; i++) {
+      pick = i;
+      if ((params[i]?.w ?? 0) >= 30) break; // uCsmParams.w is the ortho size, in metres
+    }
+    const light = this.csm.lights[pick];
+    const shadow = light?.shadow;
+    const map = shadow?.map?.depthTexture;
+    // Only once three has actually allocated it, and only in a mode that can be read
+    // back as plain depth — a comparison sampler is undefined behaviour here.
+    if (!map || map.compareFunction || !map.image || !(map.image.width > 0)) return null;
+    return {
+      map,
+      matrix: shadow.matrix,
+      // The march samples *air*, so it needs more bias than a surface does: a step
+      // that lands a few centimetres inside a wall must not paint a shadow in the room.
+      bias: Math.abs(shadow.bias || 0) * 2 + 0.0014,
+      cascade: pick,
+    };
+  }
+
+  /**
+   * The strongest practicals near the camera, for the volumetric pass to scatter
+   * through. Only published once the sun has stopped being the light in the room —
+   * a lamp cone in full daylight is a lens flare, not physics — and only for lights
+   * that are actually on this frame (`_mod` carries flicker, pulse and the daylight
+   * dimmer). Sorted by the same screen-space importance the shadow slots use.
+   *
+   * @param {number} max
+   * @returns {Array<{pos:THREE.Vector3,color:THREE.Vector3,radius:number,dir:THREE.Vector3,cosInner:number,cosOuter:number}>}
+   */
+  getVolumetricLights(max = 3) {
+    const out = this._volLights || (this._volLights = []);
+    out.length = 0;
+    if (this.broken || !this.lights) return out;
+    // 1 at night, 0 in full sun. Cross-fade so dusk does not pop.
+    const gate = clamp01(1 - this.daylight * 1.4);
+    if (gate <= 0.02) return out;
+
+    const cam = this.ctx.camera;
+    const pool = this._volPool || (this._volPool = []);
+    const cand = this.lights.requests
+      .filter((r) => r.enabled && (r._mod ?? 0) > 0.02 && r.intensity > 0.01)
+      .sort((a, b) => (b._score ?? 0) - (a._score ?? 0));
+
+    for (let i = 0; i < cand.length && out.length < max; i++) {
+      const r = cand[i];
+      // A lamp 60 m away contributes nothing but cost.
+      if (cam && r.position.distanceToSquared(cam.position) > 3600) continue;
+      const slot =
+        pool[out.length] ||
+        (pool[out.length] = {
+          pos: new THREE.Vector3(),
+          color: new THREE.Vector3(),
+          dir: new THREE.Vector3(0, -1, 0),
+          radius: 1,
+          cosInner: 1,
+          cosOuter: -1,
+        });
+      slot.pos.copy(r.position);
+      // Same 0.15 coupling the key gets, so a lamp and the sun scatter on one scale.
+      const k = r.intensity * r._mod * this.localLightScale * gate * 0.15;
+      slot.color.set(r.color.r * k, r.color.g * k, r.color.b * k);
+      slot.radius = Math.max(r.radius, 0.5);
+      if (r.type === 'spot') {
+        slot.dir.copy(r.target).sub(r.position);
+        if (slot.dir.lengthSq() < 1e-6) slot.dir.set(0, -1, 0);
+        slot.dir.normalize();
+        const ang = clamp(r.angle, 0.02, Math.PI / 2 - 0.01);
+        slot.cosOuter = Math.cos(ang);
+        slot.cosInner = Math.cos(ang * (1 - clamp01(r.penumbra) * 0.85));
+      } else {
+        slot.dir.set(0, -1, 0);
+        slot.cosOuter = -1;
+        slot.cosInner = 1;
+      }
+      out.push(slot);
+    }
+    return out;
+  }
+
+  /**
+   * **Glazing is not a shadow caster.** A window pane transmits ~90 % of what hits it;
+   * three renders every `castShadow` mesh into the depth map regardless of how
+   * transparent its material is, so the market hall's 18 glass meshes were filling in
+   * every aperture they sat in. That is a complete explanation for "the interior floor
+   * gets a broad warm pool instead of projected window trapezoids": the trapezoids were
+   * being deleted in the shadow pass, one pane at a time. Cheaper and more correct than
+   * an alpha-tested depth material, and it re-applies on every scan so a later
+   * `props:ready` that turns casting back on does not undo it.
+   */
+  _suppressGlazingShadow(obj) {
+    if (!obj.castShadow) return;
+    const m = obj.material;
+    const mats = Array.isArray(m) ? m : [m];
+    let glazed = false;
+    for (const mm of mats) {
+      if (!mm) continue;
+      if ((mm.transmission ?? 0) > 0.15) glazed = true;
+      else if (/glass|glaz|window|water|puddle/i.test(mm.name || '')) glazed = true;
+      else if (mm.transparent && (mm.opacity ?? 1) < 0.6) glazed = true;
+      if (glazed) break;
+    }
+    if (glazed) obj.castShadow = false;
+  }
+
   get stats() {
     return {
       cascades: this.csm.count,
@@ -2142,6 +2660,8 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
       patchedMaterials: this._materials.size,
       contact: this.contact.enabled && this.contact.valid,
       sh: this._shValid,
+      openSky: this._hz ? +this._hz.openSky.toFixed(3) : null,
+      groundLit: this._hz ? +this._hz.groundLit.toFixed(3) : null,
       sunIntensity: this.sunIntensity,
       timeOfDay: this.timeOfDay,
     };
@@ -2215,6 +2735,22 @@ export default function createLighting(ctx) {
     setProbesEnabled: (v) => lighting.setProbesEnabled(v),
     setExposureCompensation: (v) => lighting.setExposureCompensation(v),
     refreshProbes: (n) => lighting.refreshProbes(n),
+    /** See Lighting.getVolumetricShadow — consumed by render/passes/VolumetricPass.js. */
+    getVolumetricShadow: () => {
+      try {
+        return lighting.getVolumetricShadow();
+      } catch {
+        return null;
+      }
+    },
+    /** See Lighting.getVolumetricLights — practicals for the volumetric march. */
+    getVolumetricLights: (n) => {
+      try {
+        return lighting.getVolumetricLights(n);
+      } catch {
+        return [];
+      }
+    },
     get sun() {
       return lighting.csm.lights[0] || null;
     },

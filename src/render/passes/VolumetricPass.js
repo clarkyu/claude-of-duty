@@ -61,6 +61,12 @@ uniform float uShadowBias;
 uniform float uHasShadow;
 uniform float uHistoryBlend;
 uniform vec3 uCameraPos;
+#if VOL_LIGHTS > 0
+uniform float uVolLightCount;
+uniform vec4 uVolLightPos[ VOL_LIGHTS ];   // xyz position, w radius^2 (0 = slot unused)
+uniform vec4 uVolLightCol[ VOL_LIGHTS ];   // rgb radiance scale, w cos(inner cone)
+uniform vec4 uVolLightDir[ VOL_LIGHTS ];   // xyz spot axis, w cos(outer cone), -1 = omni
+#endif
 varying vec2 vUv;
 
 ${GLSL_LIB}
@@ -102,6 +108,10 @@ void main() {
 
   vec3 camWorld = uCameraPos;
   mat3 invViewRot = mat3( uInvView );
+#if VOL_LIGHTS > 0
+  // The view ray in world space, for the local lights' phase term. Constant per pixel.
+  vec3 rayW = normalize( invViewRot * dirVS );
+#endif
 
   for ( int i = 0; i < STEPS; i ++ ) {
     float t = ( float( i ) + dither ) * stepLen;
@@ -122,6 +132,39 @@ void main() {
     // makes an interior read as if it were full of smoke.
     vec3 inscatter = uSunColor * ( phase * vis ) +
                      uFogColor * ( uAmbientScatter * mix( 0.45, 1.0, vis ) );
+
+#if VOL_LIGHTS > 0
+    /**
+     * Local practicals scatter too, and at night they are the *only* thing that does:
+     * the key is a moon two orders of magnitude down and the sun term above is zero,
+     * so without this the dusty air a sodium lamp is standing in stays perfectly
+     * clear and the lamp reads as a sprite pasted on the frame. Same Henyey-Greenstein
+     * lobe as the sun, so a cone brightens as you look up into it. Unshadowed on
+     * purpose — a shadowed cone costs a second map per light and buys almost nothing
+     * at the scale a street lamp's shaft is read at.
+     *
+     * uVolLightCount is a uniform branch, so in daylight (when Lighting publishes
+     * nothing) this whole block is skipped for the entire draw.
+     */
+    if ( uVolLightCount > 0.5 ) {
+      for ( int li = 0; li < VOL_LIGHTS; li ++ ) {
+        vec4 lp = uVolLightPos[ li ];
+        if ( lp.w <= 0.0 ) continue;
+        vec3 toL = lp.xyz - pW;
+        float dd = dot( toL, toL );
+        if ( dd > lp.w ) continue;
+        vec3 lv = toL * inversesqrt( max( dd, 1e-6 ) );
+        float win = 1.0 - dd / lp.w;
+        float att = ( win * win ) / max( dd, 0.36 );
+        vec4 ld = uVolLightDir[ li ];
+        float cone = ld.w > -0.999 ? smoothstep( ld.w, uVolLightCol[ li ].w, dot( -lv, ld.xyz ) ) : 1.0;
+        if ( cone <= 0.0 ) continue;
+        inscatter += uVolLightCol[ li ].rgb *
+          ( att * cone * henyeyGreenstein( dot( rayW, lv ), uAnisotropy ) );
+      }
+    }
+#endif
+
     // Energy-conserving integration of the analytic slab.
     float a = exp( -d );
     scatter += transmittance * ( 1.0 - a ) * inscatter;
@@ -253,9 +296,21 @@ export default class VolumetricPass extends Pass {
       uHasShadow: { value: 0.0 },
       uHistoryBlend: { value: 0.9 },
       uCameraPos: { value: new THREE.Vector3() },
+      uVolLightCount: { value: 0 },
+      uVolLightPos: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
+      uVolLightCol: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
+      uVolLightDir: {
+        value: [
+          new THREE.Vector4(0, -1, 0, -1),
+          new THREE.Vector4(0, -1, 0, -1),
+          new THREE.Vector4(0, -1, 0, -1),
+        ],
+      },
     };
     this.material = this.own(
-      postMaterial('volumetrics', MARCH_FRAG, this.uniforms, { defines: { STEPS: 32 } })
+      postMaterial('volumetrics', MARCH_FRAG, this.uniforms, {
+        defines: { STEPS: 32, VOL_LIGHTS: 3 },
+      })
     );
 
     this.shaftUniforms = {
@@ -333,13 +388,54 @@ export default class VolumetricPass extends Pass {
 
     const col = this.uniforms.uSunColor.value;
     if (sun?.color) {
-      const inten = Math.min(sun.intensity ?? 3, 20) * 0.055;
+      /**
+       * The march multiplies this by the normalised HG phase and by the scattered
+       * fraction of each slab, so the physically correct value here is the key's
+       * irradiance itself. 0.055 was a dampener applied on top of that — an 18x
+       * discount — and it is why a "volumetric" pass produced nothing legible: a 6 m
+       * window shaft in 0.0022/m air came out at 3e-4 of linear radiance against a
+       * floor sitting near 0.2, i.e. four decimal places below visible. 0.15 is still
+       * well under the physical figure (the density is authored per weather preset and
+       * would blow out looking straight into the sun at the honest value) but it puts
+       * a shaft and a lamp cone into the range the eye can actually find.
+       */
+      const inten = Math.min(sun.intensity ?? 3, 20) * 0.15;
       col.set(sun.color.r * inten, sun.color.g * inten, sun.color.b * inten);
     } else {
-      col.set(0.155, 0.135, 0.108);
+      col.set(0.42, 0.37, 0.29);
     }
 
     this._syncFogColour();
+    this._syncShadow();
+    this._syncLocalLights();
+  }
+
+  /** Pull up to three practicals from the lighting module for in-scattering. */
+  _syncLocalLights() {
+    const u = this.uniforms;
+    const max = this.material.defines.VOL_LIGHTS | 0;
+    let list = null;
+    try {
+      list = this.ctx.lighting?.getVolumetricLights?.(max) || null;
+    } catch {
+      list = null;
+    }
+    let n = 0;
+    for (let i = 0; i < max; i++) {
+      const l = list && list[i];
+      const p = u.uVolLightPos.value[i];
+      const c = u.uVolLightCol.value[i];
+      const d = u.uVolLightDir.value[i];
+      if (!l) {
+        p.set(0, 0, 0, 0);
+        continue;
+      }
+      p.set(l.pos.x, l.pos.y, l.pos.z, Math.max(l.radius * l.radius, 0.04));
+      c.set(l.color.x, l.color.y, l.color.z, l.cosInner ?? 1);
+      d.set(l.dir.x, l.dir.y, l.dir.z, l.cosOuter ?? -1);
+      n++;
+    }
+    u.uVolLightCount.value = n;
   }
 
   /**
@@ -377,7 +473,19 @@ export default class VolumetricPass extends Pass {
       u.set(hue.x * k, hue.y * k, hue.z * k);
     }
     this._fogWritten.copy(u);
+  }
 
+  /**
+   * Adopt the lighting module's cascade, if it publishes one.
+   *
+   * **This used to live at the tail of `_syncFogColour`, where `L` is not in scope.**
+   * The `L?.getVolumetricShadow?.()` therefore threw a ReferenceError on every frame,
+   * the surrounding `catch` swallowed it, and `uHasShadow` was hard-wired to 0 — so
+   * the pass could only ever run its screen-space fallback no matter what any other
+   * module published. Same code, correct scope.
+   */
+  _syncShadow() {
+    const L = this.ctx.lighting;
     // Shadow map — only ever the one the lighting module hands us on purpose.
     let shadow = null;
     try {

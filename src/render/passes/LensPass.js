@@ -195,7 +195,15 @@ export default class LensPass extends Pass {
     this.settings = {
       aberration: 0.0016,   // fraction of the frame at the corners
       distortion: 0.0,      // Brown-Conrady k1; off by default
-      vignette: 0.55,
+      /**
+       * 0.55 multiplied the bottom third of the frame by 0.67 — and the bottom third
+       * of an FPS frame is the ground the player is standing on, which on this map is
+       * also the part the review measured as dead. A lens that eats a third of the
+       * exposure exactly where the near foreground lives is fighting the lighting.
+       * 0.44 keeps the cos^4 falloff clearly present at the corners (0.75 at the
+       * bottom edge, 0.70 in the corners) without taxing the foreground for it.
+       */
+      vignette: 0.44,
       vignetteRoundness: 0.65,
       // Display-space amplitudes now (see the grain block in the shader): 0.010 is
       // ±2.5/255, which reads as a sensor at 1:1 and disappears at viewing distance,
