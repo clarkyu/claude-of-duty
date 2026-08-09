@@ -4027,7 +4027,7 @@ function buildHand(mats, side, o = {}) {
   const wrap = o.wrap || null;
   const curlFor = (f, i) =>
     wrap
-      ? wrapCurls(wrap.R, f.len, (wrap.tighten ?? 1) * (1 - 0.02 * i), wrap.bend ?? 0)
+      ? wrapCurls(wrap.R, f.len, (wrap.tighten ?? 1) * (1 - 0.02 * i), wrap.bend ?? 0, wrap.roll ?? 0)
       : [
           (o.curl ?? [1.05, 1.15, 0.75])[0] * (1 + 0.03 * i),
           (o.curl ?? [1.05, 1.15, 0.75])[1] * (1 + 0.02 * i),
@@ -4037,6 +4037,33 @@ function buildHand(mats, side, o = {}) {
 
   const indexJoints = makeFinger(FINGERS[0], o.indexCurl ?? curlFor(FINGERS[0], 0), holder, true);
   for (let i = 1; i < 4; i++) makeFinger(FINGERS[i], curlFor(FINGERS[i], i), holder, false);
+
+  /* Interdigital webbing.
+   *
+   * Four capsules side by side with 2 mm of daylight between them are four sausages,
+   * and on the firing hand — where the only part of the hand the camera can see is the
+   * three fingertips that come round the front strap — they read as loose beads
+   * floating on the grip rather than as a hand holding it. Real fingers are joined to
+   * the second knuckle by web and by the intrinsic muscles between the metacarpals, and
+   * a slab bridging each adjacent pair over the first phalanx is enough to close them
+   * into one mass. Placed on the proximal segment only: past the PIP joint the fingers
+   * genuinely do separate. */
+  for (let k = 0; k < 3; k++) {
+    const a = FINGERS[k];
+    const c = FINGERS[k + 1];
+    const midX = (a.x + c.x) * 0.5 * s;
+    const gap = Math.abs(c.x - a.x);
+    const curl = (o.webCurl ?? curlFor(a, k))[0];
+    const w = new THREE.Group();
+    w.position.set(midX, distL - 0.003, 0.001);
+    w.rotation.x = -curl;
+    holder.add(w);
+    const wm = worldRelativeTo(w, root);
+    const len = Math.min(a.len[0], c.len[0]) * 0.82;
+    const webG = boxG(gap * 0.92, len, a.r[0] * 1.5, a.r[0] * 0.42, 1);
+    sink.pair(webG, 'glove', 'glove', new THREE.Matrix4().multiplyMatrices(wm, mTrans(0, len * 0.46, 0)));
+    holder.remove(w);
+  }
 
   // Thumb: two phalanges, rotated out of the palm plane.
   {
@@ -4087,41 +4114,58 @@ function worldRelativeTo(obj, ancestor) {
   return m;
 }
 
-/** Forearm in a rolled sleeve, pointing back along -Y from the wrist. */
+/**
+ * Forearm in a combat-shirt sleeve, pointing back along −Y from the wrist.
+ *
+ * Three things were wrong with the tube this replaces and all three were called out:
+ * it was untextured (a smooth olive cylinder with two flat tape bands on it), it was
+ * *brighter than the receiver*, and at 180 mm it stopped in mid-air with the floor
+ * visible underneath — a limb that ends nowhere reads worse than no limb at all.
+ *
+ * So: 300 mm long, which puts the far end outside the frustum in every shipping pose
+ * rather than a handspan inside it; an elliptical section that flattens toward the
+ * elbow the way a forearm does; a seam down each side, a rolled cuff, a wrist strap, a
+ * sleeve pocket with a flap, and a hook-and-loop patch panel. The sleeve shade is two
+ * values now, with the panels on the darker one, so the silhouette breaks up instead of
+ * reading as one extruded colour.
+ */
 function buildForearm(mats, side) {
   const g = new THREE.Group();
   const sink = new Sink();
   const s = side === 'left' ? -1 : 1;
+  const lay = mCompose([0, 0, 0], new THREE.Euler(-Math.PI * 0.5, 0, 0), [1, 0.86, 1]);
+  const layM = () => lay.clone();
   sink.pair(
     latheG(
       [
         [0.0262, 0.002, 'hard'],
         [0.0288, -0.024],
         [0.0352, -0.072],
-        [0.0404, -0.14],
-        [0.0396, -0.18, 'hard'],
+        [0.0412, -0.14],
+        [0.0448, -0.215],
+        [0.0462, -0.30, 'hard'],
       ],
-      16,
+      20,
       { capEnd: true }
     ),
     'sleeve',
     'sleeve',
-    mCompose([0, 0, 0], new THREE.Euler(-Math.PI * 0.5, 0, 0), [1, 0.86, 1])
+    layM()
   );
   // Rolled cuff at the wrist.
   sink.pair(
     latheG(
       [
-          [0.0272, 0.004, 'hard'],
+        [0.0272, 0.004, 'hard'],
         [0.0298, -0.008, 'hard edge'],
         [0.0304, -0.03],
         [0.0288, -0.04, 'hard edge'],
       ],
-      16
+      20
     ),
-    'sleeve',
-    'sleeve',
-    mCompose([0, 0, 0], new THREE.Euler(-Math.PI * 0.5, 0, 0), [1, 0.86, 1])
+    'sleeveDark',
+    'sleeveDark',
+    layM()
   );
   // Cuff strap: a ring around the sleeve, not a slab stuck to one side.
   const strapRing = latheG(
@@ -4131,15 +4175,82 @@ function buildForearm(mats, side) {
       [0.0345, -0.062],
       [0.0322, -0.066, 'hard edge'],
     ],
-    14
+    18
+  );
+  sink.pair(strapRing, 'glovePad', 'glovePad', layM());
+  // Hook-and-loop tab on the strap, and its stitch line.
+  sink.pair(
+    boxG(0.019, 0.0125, 0.0022, 0.0008, 1),
+    'sleeveDark',
+    'sleeveDark',
+    mCompose([-s * 0.0322, 0.0, -0.056], new THREE.Euler(0, s * Math.PI * 0.5, 0))
+  );
+
+  /* Seams. A flat-felled seam runs the length of a sleeve on both sides and it is the
+   * single cheapest thing that stops a tube reading as a tube: it is a hard value line
+   * that follows the silhouette and turns with it. */
+  for (const sx of [1, -1]) {
+    const seam = latheG(
+      [
+        [0.0006, -0.03, 'hard'],
+        [0.0006, -0.30, 'hard'],
+      ],
+      6,
+      {}
+    );
+    void seam;
+    const bar = boxG(0.0026, 0.0016, 0.272, 0.0006, 1);
+    sink.pair(bar, 'sleeveDark', 'sleeveDark', mTrans(sx * 0.0392, -0.006, -0.166));
+  }
+  // Elbow-side reinforcement panel, offset onto the underside.
+  sink.pair(
+    boxG(0.052, 0.0032, 0.086, 0.0055, 2),
+    'sleeveDark',
+    'sleeveDark',
+    mCompose([0, -0.0405, -0.238], new THREE.Euler(0.06, 0, 0))
+  );
+  // Sleeve pocket with a flap and two press studs, on the outboard face.
+  sink.pair(
+    boxG(0.0034, 0.052, 0.062, 0.0035, 2),
+    'sleeveDark',
+    'sleeveDark',
+    mCompose([-s * 0.0388, -0.006, -0.135], new THREE.Euler(0, s * Math.PI * 0.5, 0))
   );
   sink.pair(
-    strapRing,
+    boxG(0.0032, 0.054, 0.019, 0.0028, 2),
     'glovePad',
     'glovePad',
-    mCompose([0, 0, 0], new THREE.Euler(-Math.PI * 0.5, 0, 0), [1, 0.86, 1])
+    mCompose([-s * 0.0402, -0.006, -0.111], new THREE.Euler(0, s * Math.PI * 0.5, 0))
   );
-  void s;
+  for (const dz of [-0.019, 0.019]) {
+    const stud = latheG(
+      [
+        [0.0024, 0, 'hard'],
+        [0.0024, 0.0014],
+        [0.0017, 0.0019, 'hard edge'],
+      ],
+      8,
+      { capEnd: true }
+    );
+    sink.pair(stud, 'steelBright', 'steelBright', mCompose(
+      [-s * 0.0418, -0.006 + dz * 0.0, -0.104 + dz],
+      new THREE.Euler(0, -s * Math.PI * 0.5, 0)
+    ));
+  }
+  // Fabric wrinkles: shallow rings that break the cylinder's shading gradient.
+  for (let i = 0; i < 6; i++) {
+    const z = -0.082 - i * 0.036;
+    const r = 0.0352 + (Math.abs(z) - 0.072) * 0.048;
+    const wr = latheG(
+      [
+        [r * 0.995, z + 0.006, 'hard'],
+        [r * 1.022, z, 'hard edge'],
+        [r * 0.995, z - 0.006, 'hard'],
+      ],
+      18
+    );
+    sink.pair(wr, i % 2 ? 'sleeveDark' : 'sleeve', i % 2 ? 'sleeveDark' : 'sleeve', layM());
+  }
   for (const m of sink.meshes(mats, `arm_${side}`)) g.add(m);
   return g;
 }
@@ -4159,16 +4270,39 @@ const FINGER_R = 0.0098;
  *
  * @param {number} R radius of the circle the finger *centrelines* follow
  */
-function wrapCurls(R, lens, tighten = 1.0, bend = 0) {
+function wrapCurls(R, lens, tighten = 1.0, bend = 0, roll = 0) {
   const d = 2 * Math.max(0.012, R);
   return [
     // The metacarpal arch (`palmBend`) has already turned the knuckle block, so it
     // pays for part of the first chord. Charging the full half-arc again on top of it
     // is what drove the fingertips straight through the middle of the handguard.
-    clamp((lens[0] / d) * tighten - bend, 0.05, 1.45),
+    // `roll` is the wrist swing seatHand applied about the contact point: it turns the
+    // knuckle block off the surface tangent, and the metacarpophalangeal joint has to
+    // give it straight back or the whole finger row drives into the tube. Real MCP
+    // joints hyperextend about 25°, which is exactly the range this needs.
+    clamp((lens[0] / d) * tighten - bend - roll, -0.42, 1.45),
     clamp(((lens[0] + lens[1]) / d) * tighten, 0.12, 1.55),
     clamp(((lens[1] + lens[2]) / d) * tighten, 0.1, 1.4),
   ];
+}
+
+/**
+ * A band of a cylindrical shell — an annular sector extruded along the cylinder axis.
+ * The support hand's palm, which is the one part of a hand that is genuinely in contact
+ * with a handguard along its whole length and the one part this model never had.
+ */
+function arcShellG(rIn, rOut, phi0, phi1, zA, zB, cham = 0.0022) {
+  const n = Math.max(4, Math.round((Math.abs(phi1 - phi0) / TAU) * 44));
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const a = phi0 + ((phi1 - phi0) * i) / n;
+    pts.push([Math.cos(a) * rOut, Math.sin(a) * rOut]);
+  }
+  for (let i = n; i >= 0; i--) {
+    const a = phi0 + ((phi1 - phi0) * i) / n;
+    pts.push([Math.cos(a) * rIn, Math.sin(a) * rIn]);
+  }
+  return extrudeG(chamferPoly(pts, cham, 1), { axis: 'z', from: zA, to: zB, capA: true, capB: true });
 }
 
 /**
@@ -4293,13 +4427,16 @@ export function buildArms(ctx, mats, def) {
    * under the tube and up the far side.
    */
   const hgR = b.handguard.r;
-  /* Clock angle of the palm on the handguard. The wrist ends up one palm-length back
-   * along the finger-travel direction, so this single number decides where the whole
-   * forearm comes from: at 215° the wrist landed 47 mm *above* the bore and the cuff
-   * sat on top of the handguard like a drum. Underneath and just left of bottom puts
-   * the wrist below and to the left, where a support arm actually is, and sends the
-   * fingers up the near side where they can be seen making contact. */
+  /* Clock angle of the knuckle row on the handguard, and how far the wrist is rolled
+   * off the tangent from there. Between them these decide where the whole support arm
+   * comes from. At 215° with no roll the wrist landed 47 mm *above* the bore and the
+   * cuff sat on the handguard like a drum; at 268° with no roll it landed 84 mm to the
+   * left and only 48 mm down, which is a hand lying almost horizontally in clear air
+   * beside the gun with daylight between it and the tube. 268° with 20° of wrist roll
+   * puts the knuckles under the tube and drops the wrist to 83 mm below the bore, so
+   * the forearm leaves the hand downward the way a support arm actually does. */
   const phi = 268 * (Math.PI / 180);
+  const lRoll = 0.34;
   const uL = [Math.cos(phi), Math.sin(phi), 0];
   const tL = [-Math.sin(phi), Math.cos(phi), 0];
   const lRig = new THREE.Group();
@@ -4309,28 +4446,96 @@ export function buildArms(ctx, mats, def) {
     // Under 1.0 on purpose: the middle and ring fingers are the longest, so at a full
     // wrap they carry 165° of arc and their tips come over the top of the handguard
     // into the sight picture. This stops the row on the far flank.
-    wrap: { R: hgR + FINGER_R, tighten: 0.84, bend: lBend },
-    // Thumb forward: rolled 90° out of the finger plane so it runs down the side of
-    // the handguard toward the muzzle instead of curling into it. That is the shape a
-    // thumb-forward support grip actually makes, and it reads at a glance.
-    thumb: [0.14, 0.18, 0.1],
+    wrap: { R: hgR + FINGER_R, tighten: 0.9, bend: lBend, roll: lRoll },
+    // The support thumb is built separately below, hugging the tube — see palm shell.
+    thumb: [0.1, 0.14, 0.08],
     thumbYaw: 0.1,
     thumbRoll: 1.5,
-    // Forward along the tube and tucked *up* against it. Sitting it out on the far
-    // side of the wrist left it hanging in mid-air beside the handguard.
     thumbBase: [0.03, 0.02, -0.011],
-    squash: 0.24,
+    squash: 0.26,
     palmBend: lBend,
   });
   const lHand = new THREE.Group();
   lHand.add(left.root);
   const hz = b.handguard.z0 * 0.5 + b.handguard.z1 * 0.5;
-  seatHand(lHand, left, [0, 0, hz], uL, tL, hgR + FINGER_R, 0.006);
+  // Bedded 3 mm into the nominal contact radius. Gloves compress; a finger row solved
+  // to exactly one radius off reads as hovering because it *is* hovering.
+  seatHand(lHand, left, [0, 0, hz], uL, tL, hgR + FINGER_R - 0.003, 0.006, -lRoll);
   lRig.add(lHand);
+
+  /* The palm itself, as a shell wrapped on the tube.
+   *
+   * The finger solve puts the knuckle row on the handguard and the analytic seat puts
+   * the wrist where the forearm needs it, and between those two there was nothing at
+   * all: the palm block is a flat slab tangent to a 24 mm cylinder, so it touches along
+   * one line and everywhere else there is a wedge of daylight — which is what the
+   * review saw gravel through. A hand does not do that. The thenar and hypothenar
+   * eminences and the whole metacarpal arch are in contact along the full width of the
+   * grip, which is what a support hand is *for*.
+   *
+   * So the contact is modelled as what it physically is: a band of glove wrapped on the
+   * tube from the near flank round to the knuckles, with the tendon ridges on its back
+   * and a thumb running forward along the top of it. It lives in weapon space rather
+   * than hand space because that is the frame in which it is guaranteed to stay in
+   * contact. */
+  {
+    const ps = new Sink();
+    const zA = hz - 0.040;
+    const zB2 = hz + 0.032;
+    const p0 = 172 * (Math.PI / 180);
+    const p1 = 286 * (Math.PI / 180);
+    ps.pair(arcShellG(hgR + 0.0006, hgR + 0.0125, p0, p1, zA, zB2, 0.0032), 'glove', 'glove');
+    // Metacarpal tendons on the back of the shell: the valleys between them are what
+    // the cavity bake fills, and the valleys are the part that reads as a hand.
+    for (let k = 0; k < 4; k++) {
+      const a = p0 + 0.1 + ((p1 - p0 - 0.2) * (k + 0.5)) / 4;
+      const rd = boxG(0.0092, 0.0035, (zB2 - zA) * 0.72, 0.0014, 1);
+      ps.pair(rd, 'glove', 'glove', mCompose(
+        [Math.cos(a) * (hgR + 0.0135), Math.sin(a) * (hgR + 0.0135), (zA + zB2) * 0.5 - 0.002],
+        new THREE.Euler(0, 0, a + Math.PI * 0.5)
+      ));
+    }
+    // Hypothenar roll at the near-flank end, so the shell tapers into the wrist rather
+    // than stopping in a machined edge.
+    ps.pair(
+      arcShellG(hgR + 0.0006, hgR + 0.017, p0, p0 + 0.42, hz - 0.024, hz + 0.020, 0.004),
+      'glove',
+      'glove'
+    );
+    /* C-clamp thumb: up on the near-upper flank, running forward along the tube toward
+     * the muzzle. This is the one part of the support hand the camera has a clean view
+     * of in every hip pose, and there was nothing there at all. */
+    const tPhi = 148 * (Math.PI / 180);
+    const tR = hgR + 0.0125;
+    let tz = hz + 0.014;
+    for (let i = 0; i < 3; i++) {
+      const rr = 0.0125 - i * 0.0016;
+      const ln = 0.026 - i * 0.004;
+      const a = tPhi - i * 0.11;
+      const seg = capsuleY(rr, ln + rr * 1.4, 9, 2);
+      ps.pair(seg, 'glove', 'glove', mCompose(
+        [Math.cos(a) * (tR + i * 0.0004), Math.sin(a) * (tR + i * 0.0004), tz - ln * 0.5],
+        new THREE.Euler(Math.PI * 0.5, 0, 0)
+      ));
+      tz -= ln;
+    }
+    // Thumbnail-side pad and the web between thumb and shell.
+    ps.pair(
+      arcShellG(hgR + 0.0008, hgR + 0.0138, tPhi - 0.30, p0 + 0.06, hz - 0.004, hz + 0.020, 0.003),
+      'glove',
+      'glove'
+    );
+    for (const m of ps.meshes(mats, 'palm_left')) lRig.add(m);
+  }
+
   const lArm = buildForearm(mats, 'left');
-  const lDir = [-0.34, -0.9, 0.27];
+  /* Aim the sleeve along the wrist rather than along a hard-coded vector: with the
+   * wrist rolled, a fixed direction puts the cuff through the side of the hand. */
+  const wristDir = new THREE.Vector3(0, -1, 0).applyQuaternion(lHand.quaternion);
+  const lDirV = wristDir.multiplyScalar(0.55).add(new THREE.Vector3(-0.28, -0.72, 0.16)).normalize();
+  const lDir = [lDirV.x, lDirV.y, lDirV.z];
   lArm.position.set(
-    lHand.position.x + lDir[0] * 0.012 - 0.006,
+    lHand.position.x + lDir[0] * 0.012 - 0.004,
     lHand.position.y + lDir[1] * 0.012 - 0.004,
     lHand.position.z + lDir[2] * 0.012
   );
