@@ -1675,9 +1675,12 @@ Surf mSurface(SurfIn c){
       abs(n01(tFbm(c.uv, vec2(150.0), 3, uSeed + t.rnd.x * 37.0)) - 0.5));
   craze *= smoothstep(0.40, 0.85, t.rnd.z) * c.h.z;
   col = mix(col, col * 0.80, craze * 0.5);
-  // Grime creeps out of the grout onto the first few millimetres of the tile.
-  float creep = (1.0 - t.edge) * c.h.z;
-  col = mix(col, vec3(0.245, 0.230, 0.205), creep * 0.45);
+  // Grime creeps out of the grout onto the first few millimetres of the tile. Squared
+  // and at half strength: at 0.45 over the full edge feather it took the tile edge
+  // DARKER than the grout, which turned a crisp 1 px joint into a soft dark band and
+  // measurably cost the floor its near-field micro detail.
+  float creep = (1.0 - t.edge) * (1.0 - t.edge) * c.h.z;
+  col = mix(col, vec3(0.290, 0.275, 0.248), creep * 0.24);
   float grime = sat(c.cav * 2.4);
   col = mix(col, vec3(0.180, 0.170, 0.150), grime * 0.6);
   float scuff = scratches(c.uv, 0.5, uSeed + 33.0);
@@ -1686,7 +1689,7 @@ Surf mSurface(SurfIn c){
   float haze = smoothstep(0.55, 0.95, n01(tFbm(c.uv, vec2(3.0), OCT(4), uSeed + 45.0)));
   s.albedo = col;
   s.rough = mix(0.10, 0.88, joint) + scuff * 0.22 + grime * 0.15 + haze * 0.08 + c.h.w * 0.5
-          + craze * 0.18 + creep * 0.25;
+          + craze * 0.18 + creep * 0.16;
   s.ao = 1.0 - joint * 0.45 - grime * 0.2 - craze * 0.1;
   return s;
 }`,
