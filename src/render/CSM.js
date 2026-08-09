@@ -174,7 +174,10 @@ export class CascadedShadowMaps {
    */
   _mapSizeFor(i, res) {
     if (i < Math.max(2, this.count - 1)) return res;
-    return Math.max(512, Math.min(768, Math.round(res * 0.75)));
+    // Half, not three quarters: at 200 m+ of ortho the last cascade resolves nothing
+    // legible at any resolution, and halving it is what pays for the near cascades
+    // going up. 1536/1536/768 costs the same fill as the old 1024/1024/768 x 2.
+    return Math.max(512, Math.round(res * 0.5));
   }
 
   _buildLights() {
