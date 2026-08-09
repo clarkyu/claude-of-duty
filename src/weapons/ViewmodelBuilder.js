@@ -1155,47 +1155,59 @@ const G = {
  * darkens and roughens the surface.
  */
 /**
- * A note on the *edge* materials, which is where this model earns or loses its "used
- * weapon" read.
+ * A note on the *edge* materials, which is where this model earned and then lost its
+ * "used weapon" read twice in a row.
  *
- * A chamfer keyed as near-pure metal (`metalness ~1`) has no diffuse term at all: the
- * only thing it can show is a reflection. On a viewmodel whose environment weight is
- * deliberately clamped down to stop the gun mirroring the sky (see VIEWMODEL_ENV_SCALE
- * and WeaponSystem.syncEnvironment) that leaves a 1 mm strip lit by nothing but a
- * narrow specular lobe — it flares white for the two frames the highlight crosses it
- * and is invisible the rest of the time. That is exactly the "slight brightening"
- * failure: the wear is *there*, it just cannot be seen.
+ * Attempt one keyed chamfers as near-pure metal. A metal chamfer has no diffuse term,
+ * so on a viewmodel whose environment weight is clamped it flared for the two frames a
+ * highlight crossed it and was invisible the rest of the time.
  *
- * Real rub-through is bare 7075/4140 that has been burnished by a hand, not a mirror:
- * a high-value, low-saturation surface with a broad sheen. Authoring it as a bright
- * *dielectric-dominant* substance (low metalness, high albedo, mid-low roughness) makes
- * it read at every angle and in every light — dark room, blown-out sky, night — because
- * the value break against the near-black anodising is carried by albedo, not by luck.
+ * Attempt two overcorrected: bright *dielectric* rub-through, 0x99a1ab against a
+ * 0x191c21 body — a 6:1 albedo step — applied by `sink.pair(main, edge, …)` to the
+ * chamfer of **every primitive in the model**. Every bevel, every M-LOK lip, every rail
+ * tooth, every knurl. The bodies were dark and correct and every millimetre-wide feature
+ * on them was six times brighter, which is not edge wear, it is salt crust: measured at
+ * 2.93× scene p99 against 0.52× scene p50, a 5.7:1 internal contrast on an object that
+ * should sit around 3:1.
+ *
+ * What is authored here instead:
+ *
+ *  - **The default chamfer is a machined bevel, not rub-through.** A cut face on an
+ *    anodised part is still anodised: it is a slightly lighter, slightly smoother
+ *    version of the flank it came off, about 1.6:1, and that is all. This is the shade
+ *    almost every `sink.pair` in the file gets, and at 1.6:1 a thousand of them read as
+ *    machining rather than as confetti.
+ *  - **Rub-through is a sparse mask, capped at ~2:1.** `wearBright` is reserved for the
+ *    handful of places a hand, a magazine or a case actually scrubs, and even there the
+ *    step is two stops, not six. Anodising that has genuinely worn to bare aluminium is
+ *    a *matte* grey — burnished by a palm, oxidised within the hour — not a mirror, so
+ *    it is also rougher than it used to be, which stops it collecting tight speculars.
+ *  - **Every edge family is defined as a ratio against its own body**, listed after the
+ *    hex, so the next person changing one can see immediately what they are doing to the
+ *    internal contrast of the weapon.
+ *
+ * The detail normal stays dialled right down on the edge materials: a chamfer strip is
+ * under a millimetre wide, so a 4 mm-feature normal across it is pure sub-pixel noise.
  */
 const MATSPEC = {
   /* ── anodised aluminium: receiver, handguard, rails, optic bodies ──────── */
   anodised: { base: 'brushed_aluminium', color: 0x191c21, rough: [0.54, 0.74], metal: [0.0, 0.14], uv: 62, det: 0.006, nrm: 0.9, env: 0.42, grime: 0.9 },
-  /* Every chamfer on the gun. Anodising is 40 µm thick and it is gone off a corner
-   * within a magazine or two of handling, so this is the single most common surface on
-   * a used rifle and it has to read as bright bare aluminium, not as a grey line. */
-  /* The detail normal is dialled right down on the edge materials. A chamfer strip is
-   * under a millimetre wide, so a 4 mm-feature normal map across it is pure sub-pixel
-   * noise: on the rail, where there are four strips per tooth and a tooth is ten pixels,
-   * it turned a serrated rail into a band of white sparkle. The value break these
-   * materials exist for comes from albedo and needs no help from the normal. */
-  anodisedEdge: { base: 'brushed_aluminium', color: 0x99a1ab, rough: [0.3, 0.5], metal: [0.14, 0.4], uv: 78, det: 0.004, nrm: 0.26, env: 0.34, grime: 0.5 },
+  /* The default chamfer: a machined bevel in the same anodising, 1.6:1 on the flank.
+   * NOT rub-through — see the note above. */
+  anodisedEdge: { base: 'brushed_aluminium', color: 0x282c32, rough: [0.46, 0.66], metal: [0.04, 0.18], uv: 78, det: 0.004, nrm: 0.26, env: 0.3, grime: 0.7 },
   /* Optic bodies are their own substance. A sight housing is a smooth turned cylinder
    * lying along the bore, so unlike the flat-sided receiver it always presents a broad
    * band to the key light at a grazing angle, and it sits proud of everything so the
-   * cavity bake never touches it. On the receiver's own values it came out 2.4× the
-   * brightness of the gun it is bolted to — a white tube floating over a black rifle.
-   * Real optic housings are also genuinely matte: bead-blasted before anodising. */
-  opticBody: { base: 'brushed_aluminium', color: 0x141619, rough: [0.7, 0.92], metal: [0.0, 0.1], uv: 70, det: 0.005, nrm: 0.85, env: 0.16, grime: 0.95 },
-  /* ...and so are its chamfers. Nearly half the triangles in a sight are bevels, ribs
-   * and knurling, so putting them on the receiver's rub-through shade turned the whole
-   * housing into a white tube. A sight is a sealed unit nobody handles once it is
-   * zeroed: its edges are machined, not burnished. */
-  opticEdge: { base: 'brushed_aluminium', color: 0x4e545c, rough: [0.44, 0.64], metal: [0.1, 0.3], uv: 78, det: 0.004, nrm: 0.3, env: 0.22, grime: 0.8 },
+   * cavity bake never touches it. On the receiver's own values it measured 97 against
+   * the receiver's 59 — a white pill floating over a black rifle. Real optic housings
+   * are bead-blasted before anodising and they are among the *darkest* things on a
+   * weapon, so this is darker than the receiver and its environment weight is halved
+   * again on top of that. */
+  opticBody: { base: 'brushed_aluminium', color: 0x0e1013, rough: [0.74, 0.94], metal: [0.0, 0.08], uv: 70, det: 0.005, nrm: 0.85, env: 0.09, grime: 0.95 },
+  /* ...and so are its chamfers, of which a sight is nearly half made. 1.7:1 on the
+   * housing. A sight is a sealed unit nobody handles once it is zeroed: its edges are
+   * machined, not burnished. */
+  opticEdge: { base: 'brushed_aluminium', color: 0x191c20, rough: [0.62, 0.82], metal: [0.02, 0.14], uv: 78, det: 0.004, nrm: 0.3, env: 0.12, grime: 0.85 },
   /* ── manganese phosphate: barrel, gas block, controls, small steel ─────── */
   /* Phosphate is a porous conversion coating — it is measurably rougher than hard
    * anodising and it has to *look* it, or the barrel and the receiver read as one
@@ -1203,30 +1215,57 @@ const MATSPEC = {
    * roughness range: anodising 0.54-0.74, phosphate 0.68-0.9, polymer 0.74-0.94,
    * rubber 0.9-1.0. */
   phosphate: { base: 'painted_steel_chipped', color: 0x111214, rough: [0.68, 0.9], metal: [0.0, 0.14], uv: 66, det: 0.006, nrm: 1.05, env: 0.28, grime: 1.05 },
-  phosphateEdge: { base: 'brushed_aluminium', color: 0xa3aab4, rough: [0.28, 0.48], metal: [0.16, 0.44], uv: 78, det: 0.004, nrm: 0.28, env: 0.36, grime: 0.5 },
-  /* ── bare steel worn through the finish at handling points ─────────────── */
-  /* The brightest thing on the weapon. Reserved for surfaces a hand, a magazine or a
-   * case actually scrubs: charging handle, selector, mag catch, bolt catch, trigger
-   * shoe, magwell flare, port surround, rail tooth tips, receiver corners. */
-  wearBright: { base: 'brushed_aluminium', color: 0xc9cfd8, rough: [0.22, 0.38], metal: [0.2, 0.46], uv: 86, det: 0.003, nrm: 0.24, env: 0.4, grime: 0.3 },
-  steelBright: { base: 'brushed_aluminium', color: 0xa2a9b2, rough: [0.22, 0.4], metal: [0.4, 0.7], uv: 82, det: 0.004, nrm: 0.5, env: 0.44, grime: 0.75 },
+  /* 1.9:1 on phosphate. Same job as anodisedEdge, one family down in value. */
+  phosphateEdge: { base: 'brushed_aluminium', color: 0x212429, rough: [0.5, 0.7], metal: [0.06, 0.22], uv: 78, det: 0.004, nrm: 0.28, env: 0.26, grime: 0.7 },
+  /* ── bare aluminium worn through the finish at handling points ─────────── */
+  /* 2.1:1 on the receiver, and SPARSE: charging handle, selector, mag catch, bolt
+   * catch, trigger shoe, magwell flare, port surround, takedown pins. Everything that
+   * is merely a cut edge takes `anodisedEdge`. Worn anodising is matte grey aluminium
+   * oxide, so this is a *rougher* surface than the coating it wore off, not a polished
+   * one — a glossy wear shade is what turned the rail teeth into white noise. */
+  wearBright: { base: 'brushed_aluminium', color: 0x363a41, rough: [0.4, 0.58], metal: [0.1, 0.28], uv: 86, det: 0.003, nrm: 0.24, env: 0.28, grime: 0.5 },
+  /* 2.4:1, and only ever on hardware you could count: cross-bolts, ring screws, pins.
+   * It keeps a real metal fraction because a screw head genuinely is bare steel, but
+   * the environment weight is low enough that it cannot mirror the sky. */
+  steelBright: { base: 'brushed_aluminium', color: 0x3f434a, rough: [0.34, 0.5], metal: [0.25, 0.5], uv: 82, det: 0.004, nrm: 0.5, env: 0.26, grime: 0.8 },
   /* parkerised steel — dark, matte, and emphatically not a mirror */
   steelDark: { base: 'galvanised_metal', color: 0x0f1012, rough: [0.5, 0.78], metal: [0.0, 0.2], uv: 64, det: 0.005, nrm: 0.8, env: 0.22, grime: 1.1 },
   /* ── the inside of anything: bores, slots, recesses, the ejection port ─── */
   bore: { base: 'rusted_steel', color: 0x040405, rough: [0.7, 0.98], metal: [0.0, 0.12], env: 0.07, uv: 52, det: 0.006, nrm: 0.8, grime: 1.3 },
   /* ── moulded polymer: stock, grip, magazine ────────────────────────────── */
   polymer: { base: 'rubber_tyre', color: 0x2b3021, rough: [0.74, 0.94], metal: [0.0, 0.03], uv: 96, det: 0.0032, nrm: 1.2, env: 0.2, grime: 0.9 },
-  /* Polymer does not polish, it *scuffs*: the pigment goes chalky and lighter grey-green
-   * along every moulded edge. Same job as anodisedEdge, different substance. */
-  polymerEdge: { base: 'rubber_tyre', color: 0x69725a, rough: [0.5, 0.76], metal: [0.0, 0.04], uv: 104, det: 0.0028, nrm: 0.8, env: 0.28, grime: 0.6 },
+  /* Polymer does not polish, it *scuffs*: the pigment goes chalky along a moulded edge.
+   * 1.6:1 on the body — it used to be 2.4:1 and glossy, which is what put the hard
+   * clipped specular on the top edge of the stock. */
+  polymerEdge: { base: 'rubber_tyre', color: 0x444c3a, rough: [0.64, 0.86], metal: [0.0, 0.04], uv: 104, det: 0.0028, nrm: 0.8, env: 0.2, grime: 0.7 },
   rubber: { base: 'rubber_tyre', color: 0x0b0c0e, rough: [0.88, 1.0], metal: [0.0, 0.02], uv: 44, det: 0.0068, nrm: 1.6, env: 0.12, grime: 1.0 },
+  /* Ejected cases only: they are in frame for four frames at a time and they are
+   * genuinely polished brass. */
   brass: { base: 'brushed_aluminium', color: 0x8f7130, rough: [0.26, 0.5], metal: [0.9, 1.0], uv: 96, det: 0.003, nrm: 0.5, env: 0.8, grime: 0.6 },
-  /* ── hands ─────────────────────────────────────────────────────────────── */
-  glove: { base: 'fabric_webbing', color: 0x1e222a, rough: [0.78, 1.0], metal: [0.0, 0.03], uv: 62, det: 0.0034, nrm: 1.3, env: 0.26, grime: 0.85 },
-  glovePad: { base: 'rubber_tyre', color: 0x121317, rough: [0.62, 0.9], metal: [0.0, 0.03], uv: 124, det: 0.0022, nrm: 1.4, env: 0.2, grime: 0.9 },
-  sleeve: { base: 'fabric_uniform', color: 0x272c22, rough: [0.78, 1.0], metal: [0.0, 0.02], uv: 34, det: 0.0058, nrm: 1.25, env: 0.22, grime: 1.0 },
-  skin: { base: 'skin', color: 0x8a6349, rough: [0.42, 0.72], metal: [0.0, 0.02], uv: 52, det: 0.004, nrm: 0.85, env: 0.3, grime: 0.7 },
+  /* A *loaded* round is a different problem: the top of the stack sits in the magwell
+   * for the whole match, and on the ejected-case shade it read as an orange bulb glowing
+   * inside the gun. Lacquered military brass is dull, dark and half-shadowed by the feed
+   * lips. */
+  cartridge: { base: 'brushed_aluminium', color: 0x4a3a1c, rough: [0.5, 0.74], metal: [0.35, 0.6], uv: 96, det: 0.003, nrm: 0.5, env: 0.16, grime: 1.1 },
+  /* ── hands ─────────────────────────────────────────────────────────────────
+   * A viewmodel's value hierarchy runs gun < glove < sleeve only in a game where the
+   * player is wearing white gloves. Measured, these came out at 79 against a 59
+   * receiver and a 32 stock: the hands were the brightest thing on screen and the eye
+   * went to them instead of to the weapon. Nomex assault gloves are near-black, and the
+   * fabric recipes carry a heavy sheen term (0.85 on the uniform) that is authored for a
+   * sunlit canvas awning and has to be pulled right down for a 9 cm object 40 cm from
+   * the lens — see `makeWeaponMaterials`. */
+  glove: { base: 'fabric_webbing', color: 0x14171c, rough: [0.82, 1.0], metal: [0.0, 0.03], uv: 62, det: 0.0034, nrm: 1.3, env: 0.18, grime: 0.95 },
+  glovePad: { base: 'rubber_tyre', color: 0x0d0e11, rough: [0.66, 0.92], metal: [0.0, 0.03], uv: 124, det: 0.0022, nrm: 1.4, env: 0.14, grime: 1.0 },
+  sleeve: { base: 'fabric_uniform', color: 0x1a1e17, rough: [0.82, 1.0], metal: [0.0, 0.02], uv: 46, det: 0.0042, nrm: 1.35, env: 0.15, grime: 1.1 },
+  /* Second sleeve shade for the pattern breakup — see buildForearm. */
+  sleeveDark: { base: 'fabric_uniform', color: 0x111410, rough: [0.84, 1.0], metal: [0.0, 0.02], uv: 52, det: 0.0036, nrm: 1.35, env: 0.13, grime: 1.15 },
+  skin: { base: 'skin', color: 0x6d4d38, rough: [0.46, 0.76], metal: [0.0, 0.02], uv: 52, det: 0.004, nrm: 0.85, env: 0.22, grime: 0.8 },
 };
+
+/** Materials whose base recipe carries a fabric sheen lobe fitted to metre-scale cloth.
+ *  On a hand 40 cm from the lens that lobe is most of the glove's rendered value. */
+const SHEEN_TAME = { glove: 0.16, sleeve: 0.2, sleeveDark: 0.2, glovePad: 0.1 };
 
 /** Global scale on every weapon material's environment weight; see MATSPEC.env. */
 export const VIEWMODEL_ENV_SCALE = 0.55;
@@ -1270,6 +1309,17 @@ export function makeWeaponMaterials(ctx) {
     mat.name = `weapon:${key}`;
     mat.userData.noLightingPatch = true;
     mat.userData.envWeight = (s.env ?? 0.5) * VIEWMODEL_ENV_SCALE;
+    /* Fabric sheen. `fabric_uniform` ships a 0.85 sheen lobe with a pale 0x7d8464
+     * sheenColor, which is right for a sun-lit canvas awning across a courtyard and
+     * catastrophic on a forearm that fills an eighth of the frame: the lobe fires at
+     * every grazing angle, which on a cylinder is most of its silhouette, and it turned
+     * the sleeve into a glowing olive tube brighter than the receiver. Tamed, not
+     * removed — cloth without any sheen reads as painted plastic. */
+    const tame = SHEEN_TAME[key];
+    if (tame !== undefined && typeof mat.sheen === 'number') {
+      mat.sheen = mat.sheen * tame;
+      if (mat.sheenColor?.isColor) mat.sheenColor.multiplyScalar(0.45);
+    }
     // Per-part roughness/metalness windows and a centimetre-scale detail normal.
     try {
       const u = lib?.uniformsOf?.(mat);
@@ -1288,6 +1338,14 @@ export function makeWeaponMaterials(ctx) {
     }
     out[key] = mat;
   }
+  /* Every interior surface in the model — bores, slots, recesses, the ejection port,
+   * the inside of the optic tube — is a cylinder or a box seen *from inside*, which on
+   * a front-facing material is exactly the set of triangles the rasteriser throws away.
+   * So none of them were drawing anything, and where a tube was supposed to show a
+   * matte-black wall behind a semi-transparent element the camera was actually looking
+   * straight through the weapon at the scene. Two sides everywhere: it is the cheapest
+   * material in the bag and there are a few thousand triangles of it. */
+  if (out.bore) out.bore.side = THREE.DoubleSide;
   out._optics = makeOpticMaterials(ctx);
   return out;
 }
@@ -1384,14 +1442,29 @@ void main() {
   );
   float coatAmt = uCoat * ( 0.07 + 0.85 * pres + 0.55 * graze );
 
+  /* The coating residual is a REFLECTION, and it was being added as a constant.
+   *
+   * uTintEdge is a fixed colour, coatAmt runs to about 1.2 at hip angles, and the term
+   * went straight into the sum with no environment factor at all — so the element put
+   * out the same pastel lilac whether it was noon or midnight. Measured across a 4.2×
+   * swing in ambient the lens moved 22 %: 111 under a 127 sky, 105 under a 57 night sky,
+   * 127 in a room with an ambient of 30. That is not glass, that is an LED.
+   *
+   * A residual reflection cannot be brighter than what it is reflecting, so the whole
+   * coating term now scales with the luminance of the environment the element faces.
+   * The small floor is the residual of the *emitter and rim spill* inside the tube,
+   * which genuinely is self-lit — but it is a floor of a few percent, not of 100 %. */
+  float envLum = dot( env, vec3( 0.2126, 0.7152, 0.0722 ) );
+  float coatLit = 0.04 + 2.1 * envLum;
+
   // Bevel + the haze of decades of lens tissue: brighter right at the field stop.
   float rim = smoothstep( 0.70, 1.0, r );
   // Wipe marks. Cheap, low-contrast, and it stops the element reading as a solid.
   float wipe = sin( vLocal.x * 640.0 + vLocal.y * 210.0 ) * sin( vLocal.y * 430.0 );
   float smudge = 0.020 + 0.030 * wipe * wipe;
 
-  vec3 col = env * ( uBase + smudge + 0.09 * pres + 0.85 * f4 )
-           + coat * coatAmt
+  vec3 col = env * ( uBase + smudge + 0.09 * pres + 0.55 * f4 )
+           + coat * coatAmt * coatLit
            + uSunColor * ( glint + sheen * ( 0.2 + 0.8 * pres ) )
            + env * rim * 0.4;
   /* The emitter sits low in the tube and throws a little red into the coating stack;
@@ -1420,6 +1493,7 @@ uniform float uSize;      // dot radius in local units
 uniform float uRing;      // 0 = plain dot, >0 = horseshoe ring radius
 uniform float uIntensity;
 uniform float uJitter;
+uniform float uClip;      // ceiling on emitted radiance — see below
 void main() {
   vec2 p = vLocal / max( 1e-5, uSize );
   float d = length( p );
@@ -1436,7 +1510,17 @@ void main() {
   }
   a *= uIntensity * ( 0.93 + 0.07 * uJitter );
   if ( a < 0.002 ) discard;
-  gl_FragColor = vec4( uColor * a, a );
+  /* The emitted radiance is capped, the *alpha* is not.
+   *
+   * Additively blending uColor * a with a running to 15 does not make a brighter red
+   * dot, it makes a white one: ACES desaturates hard above about 4, so the core clipped
+   * out at (216,201,198) — a white pip with a red halo, which is what a blown-out
+   * tungsten bulb looks like, not a 650 nm LED. A real emitter is monochromatic; the
+   * core is *saturated* and the apparent size grows with brightness rather than the hue
+   * washing out. Clipping the radiance and letting the skirt carry the intensity keeps
+   * the dot red at every setting, and the bloom pass still sees a >1 pixel. */
+  vec3 emit = uColor * min( a, uClip );
+  gl_FragColor = vec4( emit, min( a, 1.0 ) );
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -1626,6 +1710,7 @@ function makeOpticMaterials(ctx) {
       uRing: { value: 0.0 },
       uIntensity: { value: 6.5 },
       uJitter: { value: 0.0 },
+      uClip: { value: 2.6 },
     },
   });
   const scope = new THREE.ShaderMaterial({
@@ -1882,9 +1967,16 @@ function buildUpper(sink, b) {
   const cut = upperSection(b, true);
 
   sink.pair(extrudeG(full, { axis: 'z', from: R.z0, to: P.z0 }), 'anodised', 'anodisedEdge');
-  // The ejection port surround is scrubbed bright by sixty rounds a minute of hot
-  // brass; on a used weapon it is the most obviously worn edge on the upper.
-  sink.pair(extrudeG(cut, { axis: 'z', from: P.z0, to: P.z1 }), 'anodised', 'wearBright');
+  /* The ejection port surround is scrubbed by hot brass, but this call chamfers the
+   * *entire* receiver section, not just the port lip — on the rub-through shade it drew
+   * a bright outline all the way round the upper. The section gets the ordinary bevel
+   * and the wear goes on the port lip itself, below. */
+  sink.pair(extrudeG(cut, { axis: 'z', from: P.z0, to: P.z1 }), 'anodised', 'anodisedEdge');
+  // The lip the cases actually drag across, as its own strip.
+  for (const py of [P.y0, P.y1]) {
+    const lip = boxG(0.0022, 0.0016, P.z1 - P.z0 - 0.004, 0.0005, 1);
+    sink.pair(lip, 'wearBright', 'wearBright', mTrans(R.halfW - 0.0011, py, (P.z0 + P.z1) * 0.5));
+  }
   sink.pair(extrudeG(full, { axis: 'z', from: P.z1, to: R.z1 }), 'anodised', 'anodisedEdge');
   // Fore and aft walls of the port, so the cutout reads as a box and not a stripe.
   for (const [zw, sgn] of [[P.z0, 1], [P.z1, -1]]) {
@@ -2115,7 +2207,7 @@ function buildHandguard(sink, b) {
       { capEnd: true }
     ),
     'anodised',
-    'wearBright'
+    'anodisedEdge'
   );
   // Muzzle-end cap ring. The front of a handguard is what a weapon gets set down on.
   sink.pair(
@@ -2129,7 +2221,7 @@ function buildHandguard(sink, b) {
       { capStart: true }
     ),
     'anodised',
-    'wearBright'
+    'anodisedEdge'
   );
 
   const half = Math.PI / facets;
@@ -2284,8 +2376,10 @@ function buildLower(sink, b) {
     0.0022,
     2
   );
-  // The lower's bottom corners ride against plate carriers and truck seats all day.
-  sink.pair(extrudeG(spine, { axis: 'z', from: L.z0, to: L.z1 }), 'anodised', 'wearBright');
+  // The lower's bottom corners ride against plate carriers and truck seats all day —
+  // but this is the chamfer of the whole spine, so it takes the machined bevel; the
+  // discrete handling points (mag catch, bolt catch, magwell flare) carry the wear.
+  sink.pair(extrudeG(spine, { axis: 'z', from: L.z0, to: L.z1 }), 'anodised', 'anodisedEdge');
 
   // Magwell: a genuine tube — outer loop with an inner loop, so you can see down it.
   // Section is (lateral, fore-aft): a magazine is narrow across and deep front-to-back.
@@ -2356,7 +2450,7 @@ function buildLower(sink, b) {
   path[path.length - 1][1] = yTop - 0.004;
   // The trigger guard is a handle in all but name — the support hand's knuckles, the
   // firing hand's second finger and every rack in the armoury have been across it.
-  sink.pair(sweepG(tgSec, path, { up: [1, 0, 0] }), 'anodised', 'wearBright');
+  sink.pair(sweepG(tgSec, path, { up: [1, 0, 0] }), 'anodised', 'anodisedEdge');
 
   // Magazine release, bolt-catch fence, safety detent bumps.
   const relBoss = latheG(
@@ -3047,7 +3141,10 @@ function buildMagazine(group, followerNode, b, mats) {
     12,
     { capStart: true }
   );
-  fs.pair(rnd, 'brass', 'brass', mTrans(0, 0.0062, 0));
+  /* The top of the stack. On the ejected-case brass it was an orange bulb glowing in
+   * the magwell in every pose; a loaded round is lacquered, dull and mostly in shadow
+   * under the feed lips, so it sits 1.4 mm lower and takes the `cartridge` shade. */
+  fs.pair(rnd, 'cartridge', 'cartridge', mTrans(0, 0.0048, 0));
   for (const m of fs.meshes(mats, 'follower')) followerNode.add(m);
   followerNode.position.set(0, M.yTop - 0.006, M.z);
 }
@@ -3099,76 +3196,139 @@ export function buildRedDot(ctx, mats, o = {}) {
     { capStart: true, capEnd: true }
   );
   sink.pair(bolt, 'steelBright', 'steelBright', mCompose([0, mountH * 0.5, 0], new THREE.Euler(0, Math.PI * 0.5, 0)));
+  /* Mount hardware. Two cap screws through the clamp into the base, with a real slot
+   * across each head. At 8× the mount was a smooth block: no fasteners anywhere, which
+   * is the single fastest way for a machined part to read as a toy. */
+  for (const sz of [zF + 0.019, zB - 0.019]) {
+    const head = latheG(
+      [
+        [0.0036, 0, 'hard'],
+        [0.0036, 0.0022],
+        [0.0029, 0.0027, 'hard edge'],
+      ],
+      12,
+      { capEnd: true }
+    );
+    sink.pair(head, 'steelBright', 'steelBright', mCompose([0.0142, mountH * 0.62, sz], new THREE.Euler(0, Math.PI * 0.5, 0)));
+    const slot = plainBoxG(0.0009, 0.0056, 0.0012);
+    sink.pair(slot, 'bore', 'bore', mCompose([0.0158, mountH * 0.62, sz], new THREE.Euler(0, Math.PI * 0.5, 0.5)));
+  }
 
-  // Tube body with a hood over the objective.
+  /* Tube body.
+   *
+   * Two changes over the smooth pill it used to be: a *bell* at the objective — a real
+   * reflex housing flares over the front element to shade it and to carry the hood —
+   * and 40 radial segments instead of 22. At 22 the objective silhouette was a
+   * countable polygon at any sensible zoom; the tube is the roundest thing on the
+   * weapon and it has to survive being looked at.
+   */
+  const RAD = 40;
+  const bellR = tubeR * 1.1;
   const tube = latheG(
     [
-      [tubeR, zF, 'hard'],
-      [tubeR, zF + 0.008],
-      [tubeR * 0.94, zF + 0.011, 'hard edge'],
-      [tubeR * 0.94, zB - 0.012],
-      [tubeR, zB - 0.009, 'hard edge'],
+      [bellR, zF, 'hard'],
+      [bellR, zF + 0.0055],
+      [bellR * 0.965, zF + 0.0075, 'hard edge'],
+      [tubeR * 0.99, zF + 0.016],
+      [tubeR * 0.94, zF + 0.021, 'hard edge'],
+      [tubeR * 0.94, zB - 0.016],
+      [tubeR, zB - 0.012, 'hard edge'],
       [tubeR, zB, 'hard'],
     ],
-    22
+    RAD
   );
   sink.pair(tube, 'opticBody', 'opticEdge', mTrans(0, axisY, 0));
-  // Interior — matte black so the reticle has something to sit against.
+  /* Interior. `bore` is double-sided (see makeWeaponMaterials) so this is now an
+   * actually opaque near-black wall rather than a set of culled back faces the camera
+   * looked straight through — which is what left the element with nothing dark behind
+   * it and made it read as a self-lit bubble. Three baffle rings, because a smooth
+   * black cone still reads as a hole. */
   const bore = latheG(
     [
-      [glassR + 0.0012, zF + 0.001, 'hard'],
-      [glassR + 0.0012, zB - 0.001, 'hard'],
+      [glassR + 0.0016, zF + 0.0018, 'hard'],
+      [glassR + 0.0016, zB - 0.0018, 'hard'],
     ],
-    22
+    RAD
   );
   sink.pair(bore, 'bore', 'bore', mTrans(0, axisY, 0));
+  for (let i = 0; i < 3; i++) {
+    const bz = zF + 0.018 + i * 0.017;
+    if (bz > zB - 0.016) break;
+    const baffle = discG(glassR + 0.0016, bz, 1, RAD, glassR * 0.9);
+    sink.add('bore', baffle, mTrans(0, axisY, 0));
+  }
   /* Front and rear bezels (annuli closing the tube around the glass). These are broad
    * *faces*, not chamfers — the rear one is the ring you stare at through the whole of
    * ADS — so they take the dark body material. Keyed to the edge shade they became a
    * bright grey doughnut around the sight picture. */
-  sink.add('opticBody', discG(tubeR * 0.99, zF + 0.0015, -1, 22, glassR), mTrans(0, axisY, 0));
-  sink.add('opticBody', discG(tubeR * 0.99, zB - 0.0015, 1, 22, glassR), mTrans(0, axisY, 0));
+  sink.add('opticBody', discG(bellR * 0.99, zF + 0.0015, -1, RAD, glassR), mTrans(0, axisY, 0));
+  sink.add('opticBody', discG(tubeR * 0.99, zB - 0.0015, 1, RAD, glassR), mTrans(0, axisY, 0));
 
-  // Hood ribs over the objective.
+  // Hood ribs over the objective, on the bell.
   for (let i = 0; i < 2; i++) {
     const rib = latheG(
       [
-        [tubeR * 1.01, zF + 0.003 + i * 0.007, 'hard'],
-        [tubeR * 1.045, zF + 0.0042 + i * 0.007, 'hard edge'],
-        [tubeR * 1.01, zF + 0.0055 + i * 0.007, 'hard'],
+        [bellR * 1.005, zF + 0.0016 + i * 0.0044, 'hard'],
+        [bellR * 1.035, zF + 0.0026 + i * 0.0044, 'hard edge'],
+        [bellR * 1.005, zF + 0.0036 + i * 0.0044, 'hard'],
       ],
-      22
+      RAD
     );
     sink.pair(rib, 'opticBody', 'opticEdge', mTrans(0, axisY, 0));
   }
 
-  // Turrets: elevation on top, windage on the right.
+  /* Turrets: elevation on top, windage on the right.
+   *
+   * The knurl used to be ten 1.1 mm pegs standing 0 mm proud of a 12.4 mm cylinder —
+   * sub-pixel, and keyed to a shade 3.8× the housing so all it contributed was
+   * sparkle. It is now eighteen real flutes cut as boxes that straddle the surface,
+   * plus a screwdriver slot across the cap and an index mark, so the turret reads as an
+   * adjustable control instead of a bottle top. */
   const turret = (rot, pos) => {
     const t = latheG(
       [
         [0.0072, 0, 'hard'],
-        [0.0072, 0.0055],
-        [0.0062, 0.0062, 'hard edge'],
-        [0.0062, 0.0092],
-        [0.0048, 0.0098, 'hard edge'],
+        [0.0072, 0.0052],
+        [0.0064, 0.006, 'hard edge'],
+        [0.0064, 0.0098],
+        [0.0049, 0.0106, 'hard edge'],
       ],
-      14,
+      18,
       { capEnd: true }
     );
-    sink.pair(t, 'opticBody', 'opticEdge', mCompose(pos, rot));
-    for (let i = 0; i < 10; i++) {
-      const a = (i / 10) * TAU;
-      const kn = plainBoxG(0.0011, 0.0011, 0.0055);
-      const m = new THREE.Matrix4()
-        .makeRotationZ(a)
-        .premultiply(new THREE.Matrix4().makeTranslation(0, 0, 0.0072));
-      const local = new THREE.Matrix4().makeTranslation(0.0062 * Math.cos(a), 0.0062 * Math.sin(a), 0.0035);
-      void m;
-      sink.pair(kn, 'opticBody', 'opticEdge', new THREE.Matrix4().multiplyMatrices(mCompose(pos, rot), local));
+    const base = mCompose(pos, rot);
+    sink.pair(t, 'opticBody', 'opticEdge', base);
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * TAU;
+      const kn = plainBoxG(0.0012, 0.0012, 0.0034);
+      const local = mCompose(
+        [0.0064 * Math.cos(a), 0.0064 * Math.sin(a), 0.0079],
+        new THREE.Euler(0, 0, a)
+      );
+      sink.pair(kn, 'opticEdge', 'opticEdge', new THREE.Matrix4().multiplyMatrices(base, local));
+    }
+    // Coin slot across the cap, and the zero index scored into the shoulder.
+    const slot = plainBoxG(0.0011, 0.0082, 0.0014);
+    sink.pair(slot, 'bore', 'bore', new THREE.Matrix4().multiplyMatrices(base, mTrans(0, 0, 0.0104)));
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * TAU + 0.12;
+      const tick = plainBoxG(0.0006, 0.0022, 0.0009);
+      const local = mCompose(
+        [0.00725 * Math.cos(a), 0.00725 * Math.sin(a), 0.0026],
+        new THREE.Euler(0, 0, a)
+      );
+      sink.pair(tick, 'bore', 'bore', new THREE.Matrix4().multiplyMatrices(base, local));
     }
   };
-  turret(new THREE.Euler(-Math.PI * 0.5, 0, 0), [0, axisY + tubeR * 0.93, 0.006]);
-  turret(new THREE.Euler(0, Math.PI * 0.5, 0), [tubeR * 0.93, axisY, 0.006]);
+  turret(new THREE.Euler(-Math.PI * 0.5, 0, 0), [0, axisY + tubeR * 0.9, 0.006]);
+  turret(new THREE.Euler(0, Math.PI * 0.5, 0), [tubeR * 0.9, axisY, 0.006]);
+  /* Housing markings: an engraved panel on the left flank and a serial block behind it.
+   * Recessed `bore` strokes, so they read as engraving in any light instead of as a
+   * decal that has to be lit. */
+  for (let i = 0; i < 5; i++) {
+    const mark = plainBoxG(0.0008, 0.0026, 0.0032 - (i % 2) * 0.0009);
+    sink.add('bore', mark, mTrans(-tubeR * 0.965, axisY - tubeR * 0.36, zB - 0.03 + i * 0.0052));
+  }
   // Battery cap on the left.
   const cap = latheG(
     [
@@ -3176,10 +3336,19 @@ export function buildRedDot(ctx, mats, o = {}) {
       [0.0068, 0.0042],
       [0.0055, 0.005, 'hard edge'],
     ],
-    14,
+    16,
     { capEnd: true }
   );
-  sink.pair(cap, 'opticBody', 'opticEdge', mCompose([-tubeR * 0.93, axisY, -0.004], new THREE.Euler(0, -Math.PI * 0.5, 0)));
+  const capM = mCompose([-tubeR * 0.9, axisY, -0.004], new THREE.Euler(0, -Math.PI * 0.5, 0));
+  sink.pair(cap, 'opticBody', 'opticEdge', capM);
+  // Coin slot in the battery cap, and the six grip flutes round its rim.
+  sink.pair(plainBoxG(0.0011, 0.0084, 0.0013), 'bore', 'bore', new THREE.Matrix4().multiplyMatrices(capM, mTrans(0, 0, 0.0048)));
+  for (let i = 0; i < 8; i++) {
+    const a2 = (i / 8) * TAU;
+    const fl = plainBoxG(0.0012, 0.0012, 0.003);
+    const local = mCompose([0.0068 * Math.cos(a2), 0.0068 * Math.sin(a2), 0.0022], new THREE.Euler(0, 0, a2));
+    sink.pair(fl, 'opticEdge', 'opticEdge', new THREE.Matrix4().multiplyMatrices(capM, local));
+  }
 
   for (const m of sink.meshes(mats, 'reddot')) group.add(m);
   bakeTree(group, { cell: 0.0022, maxDist: 0.018 });
@@ -3202,7 +3371,7 @@ export function buildRedDot(ctx, mats, o = {}) {
   gmat.uniforms.uFresnel.value = 0.92;
   gmat.uniforms.uCoat.value = 1.0;
   gmat.side = THREE.FrontSide;
-  const front = new THREE.Mesh(discG(glassR, 0, 1, 30), gmat);
+  const front = new THREE.Mesh(discG(glassR, 0, 1, RAD), gmat);
   front.position.set(0, axisY, zF + 0.0052);
   front.renderOrder = 10; // far -> near: front element, reticle, ocular element
   front.frustumCulled = false;
@@ -3217,7 +3386,7 @@ export function buildRedDot(ctx, mats, o = {}) {
   rearMat.uniforms.uTintMid.value.setRGB(0.15, 0.085, 0.26);
   rearMat.uniforms.uTintEdge.value.setRGB(0.3, 0.14, 0.3);
   rearMat.side = THREE.FrontSide;
-  const rear = new THREE.Mesh(discG(glassR, 0, 1, 30), rearMat);
+  const rear = new THREE.Mesh(discG(glassR, 0, 1, RAD), rearMat);
   rear.position.set(0, axisY, zB - 0.005);
   rear.renderOrder = 12;
   rear.frustumCulled = false;
@@ -3230,7 +3399,9 @@ export function buildRedDot(ctx, mats, o = {}) {
   rmat.uniforms.uSize.value = (o.dotMoa ?? 2) * 0.00092;
   rmat.uniforms.uRing.value = o.ring ? 5.4 : 0;
   rmat.uniforms.uIntensity.value = 9.0;
-  rmat.uniforms.uColor.value.setRGB(1.0, 0.055, 0.015);
+  // 650 nm. Not a hint of green: what little there is has to survive the ACES matrix.
+  rmat.uniforms.uColor.value.setRGB(1.0, 0.035, 0.008);
+  rmat.uniforms.uClip.value = 2.7;
   const quad = new THREE.PlaneGeometry(glassR * 1.9, glassR * 1.9);
   const reticle = new THREE.Mesh(quad, rmat);
   reticle.frustumCulled = false;
@@ -4013,7 +4184,7 @@ function wrapCurls(R, lens, tighten = 1.0, bend = 0) {
  * on a 48 mm tube only the finger pads and the thenar pad touch, and the thenar block
  * is modelled proud enough to reach.
  */
-function seatHand(node, hand, axis, u, t, seatR, slide = 0) {
+function seatHand(node, hand, axis, u, t, seatR, slide = 0, roll = 0) {
   const U = new THREE.Vector3().fromArray(u).normalize();
   const T = new THREE.Vector3().fromArray(t).normalize();
   T.sub(U.clone().multiplyScalar(T.dot(U))).normalize();
@@ -4026,6 +4197,28 @@ function seatHand(node, hand, axis, u, t, seatR, slide = 0) {
     axis[1] + U.y * (seatR - kZ) - T.y * kY + X.y * slide,
     axis[2] + U.z * (seatR - kZ) - T.z * kY + X.z * slide
   );
+  /* `roll` swings the wrist about the *contact point*, around the held cylinder's own
+   * axis, with the knuckle row pinned where it is.
+   *
+   * Without it the solve is stuck with a straight line from the contact to the wrist
+   * along the surface tangent, which puts the wrist a full palm-length — 82 mm — round
+   * the circumference from where the fingers touch. On a 24 mm tube that is most of a
+   * hand hanging in clear air off one side of the handguard, and it is exactly the
+   * "visible gap between hand and handguard, you can see the gravel through it" read:
+   * the palm was never near the tube, only the knuckles were. A real support hand is
+   * bent at the wrist, so the forearm leaves the hand at an angle to the palm rather
+   * than tangentially. Rolling the seated hand about the contact reproduces that with
+   * one number, and `wrapCurls` is told about it so the fingers stay on the surface. */
+  if (roll) {
+    const K = new THREE.Vector3(
+      axis[0] + U.x * seatR,
+      axis[1] + U.y * seatR,
+      axis[2] + U.z * seatR
+    );
+    const q = new THREE.Quaternion().setFromAxisAngle(X, roll);
+    node.position.sub(K).applyQuaternion(q).add(K);
+    node.quaternion.premultiply(q);
+  }
   return node;
 }
 
