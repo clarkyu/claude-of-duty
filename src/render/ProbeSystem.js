@@ -363,9 +363,18 @@ export class ProbeSystem {
   anchor(position, half) {
     const p = this.probes[0];
     if (!p || !position) return false;
-    // Hysteresis: re-capturing six faces every time the player takes a step would cost
-    // more than the reflection is worth.
-    if (p.captured && p.position.distanceToSquared(position) < 25) return false;
+    /**
+     * Hysteresis: re-capturing six faces every time the player takes a step would cost
+     * more than the reflection is worth.
+     *
+     * The test is on *position alone*, deliberately. Gating it on `captured` as well
+     * looks safer and is a disaster: while the first capture is still in progress the
+     * probe is by definition uncaptured, so every frame re-entered this function, reset
+     * `_face` to 0, and the capture never finished — one full scene render per frame,
+     * for ever, and a probe that never went live. It measured as 3.3 -> 13.2 s/frame
+     * on the check harness.
+     */
+    if (p.position.distanceToSquared(position) < 25) return false;
     p.position.copy(position);
     p.min.copy(position).sub(half);
     p.max.copy(position).add(half);

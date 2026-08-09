@@ -1178,7 +1178,12 @@ const MATSPEC = {
   /* Every chamfer on the gun. Anodising is 40 µm thick and it is gone off a corner
    * within a magazine or two of handling, so this is the single most common surface on
    * a used rifle and it has to read as bright bare aluminium, not as a grey line. */
-  anodisedEdge: { base: 'brushed_aluminium', color: 0x99a1ab, rough: [0.28, 0.48], metal: [0.14, 0.4], uv: 78, det: 0.004, nrm: 0.5, env: 0.34, grime: 0.5 },
+  /* The detail normal is dialled right down on the edge materials. A chamfer strip is
+   * under a millimetre wide, so a 4 mm-feature normal map across it is pure sub-pixel
+   * noise: on the rail, where there are four strips per tooth and a tooth is ten pixels,
+   * it turned a serrated rail into a band of white sparkle. The value break these
+   * materials exist for comes from albedo and needs no help from the normal. */
+  anodisedEdge: { base: 'brushed_aluminium', color: 0x99a1ab, rough: [0.3, 0.5], metal: [0.14, 0.4], uv: 78, det: 0.004, nrm: 0.26, env: 0.34, grime: 0.5 },
   /* Optic bodies are their own substance. A sight housing is a smooth turned cylinder
    * lying along the bore, so unlike the flat-sided receiver it always presents a broad
    * band to the key light at a grazing angle, and it sits proud of everything so the
@@ -1190,7 +1195,7 @@ const MATSPEC = {
    * and knurling, so putting them on the receiver's rub-through shade turned the whole
    * housing into a white tube. A sight is a sealed unit nobody handles once it is
    * zeroed: its edges are machined, not burnished. */
-  opticEdge: { base: 'brushed_aluminium', color: 0x4e545c, rough: [0.42, 0.62], metal: [0.1, 0.3], uv: 78, det: 0.004, nrm: 0.55, env: 0.22, grime: 0.8 },
+  opticEdge: { base: 'brushed_aluminium', color: 0x4e545c, rough: [0.44, 0.64], metal: [0.1, 0.3], uv: 78, det: 0.004, nrm: 0.3, env: 0.22, grime: 0.8 },
   /* ── manganese phosphate: barrel, gas block, controls, small steel ─────── */
   /* Phosphate is a porous conversion coating — it is measurably rougher than hard
    * anodising and it has to *look* it, or the barrel and the receiver read as one
@@ -1198,12 +1203,12 @@ const MATSPEC = {
    * roughness range: anodising 0.54-0.74, phosphate 0.68-0.9, polymer 0.74-0.94,
    * rubber 0.9-1.0. */
   phosphate: { base: 'painted_steel_chipped', color: 0x111214, rough: [0.68, 0.9], metal: [0.0, 0.14], uv: 66, det: 0.006, nrm: 1.05, env: 0.28, grime: 1.05 },
-  phosphateEdge: { base: 'brushed_aluminium', color: 0xa3aab4, rough: [0.26, 0.46], metal: [0.16, 0.44], uv: 78, det: 0.004, nrm: 0.5, env: 0.36, grime: 0.5 },
+  phosphateEdge: { base: 'brushed_aluminium', color: 0xa3aab4, rough: [0.28, 0.48], metal: [0.16, 0.44], uv: 78, det: 0.004, nrm: 0.28, env: 0.36, grime: 0.5 },
   /* ── bare steel worn through the finish at handling points ─────────────── */
   /* The brightest thing on the weapon. Reserved for surfaces a hand, a magazine or a
    * case actually scrubs: charging handle, selector, mag catch, bolt catch, trigger
    * shoe, magwell flare, port surround, rail tooth tips, receiver corners. */
-  wearBright: { base: 'brushed_aluminium', color: 0xc9cfd8, rough: [0.2, 0.36], metal: [0.2, 0.46], uv: 86, det: 0.003, nrm: 0.42, env: 0.4, grime: 0.3 },
+  wearBright: { base: 'brushed_aluminium', color: 0xc9cfd8, rough: [0.22, 0.38], metal: [0.2, 0.46], uv: 86, det: 0.003, nrm: 0.24, env: 0.4, grime: 0.3 },
   steelBright: { base: 'brushed_aluminium', color: 0xa2a9b2, rough: [0.22, 0.4], metal: [0.4, 0.7], uv: 82, det: 0.004, nrm: 0.5, env: 0.44, grime: 0.75 },
   /* parkerised steel — dark, matte, and emphatically not a mirror */
   steelDark: { base: 'galvanised_metal', color: 0x0f1012, rough: [0.5, 0.78], metal: [0.0, 0.2], uv: 64, det: 0.005, nrm: 0.8, env: 0.22, grime: 1.1 },
