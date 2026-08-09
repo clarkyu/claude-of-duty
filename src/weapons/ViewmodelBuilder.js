@@ -4178,51 +4178,45 @@ function buildForearm(mats, side) {
     18
   );
   sink.pair(strapRing, 'glovePad', 'glovePad', layM());
-  // Hook-and-loop tab on the strap, and its stitch line.
+  /* Everything below is placed in *group* space: the sleeve runs down −Y from the
+   * wrist, its section is `rAt(y)` across X and 0.86 of that across Z. */
+  const rAt = (y) => {
+    const d = -y;
+    if (d < 0.024) return 0.0288;
+    if (d < 0.072) return 0.0288 + ((d - 0.024) / 0.048) * 0.0064;
+    if (d < 0.14) return 0.0352 + ((d - 0.072) / 0.068) * 0.006;
+    if (d < 0.215) return 0.0412 + ((d - 0.14) / 0.075) * 0.0036;
+    return 0.0448 + Math.min(1, (d - 0.215) / 0.085) * 0.0014;
+  };
+  // Hook-and-loop tab on the wrist strap.
   sink.pair(
-    boxG(0.019, 0.0125, 0.0022, 0.0008, 1),
+    boxG(0.0022, 0.013, 0.019, 0.0008, 1),
     'sleeveDark',
     'sleeveDark',
-    mCompose([-s * 0.0322, 0.0, -0.056], new THREE.Euler(0, s * Math.PI * 0.5, 0))
+    mTrans(-s * 0.0334, -0.052, 0)
   );
 
   /* Seams. A flat-felled seam runs the length of a sleeve on both sides and it is the
-   * single cheapest thing that stops a tube reading as a tube: it is a hard value line
-   * that follows the silhouette and turns with it. */
+   * single cheapest thing that stops a tube reading as a tube: a hard value line that
+   * follows the silhouette and turns with it. Split into stations because the sleeve
+   * tapers — one straight bar would be buried at the wrist and floating at the elbow. */
   for (const sx of [1, -1]) {
-    const seam = latheG(
-      [
-        [0.0006, -0.03, 'hard'],
-        [0.0006, -0.30, 'hard'],
-      ],
-      6,
-      {}
-    );
-    void seam;
-    const bar = boxG(0.0026, 0.0016, 0.272, 0.0006, 1);
-    sink.pair(bar, 'sleeveDark', 'sleeveDark', mTrans(sx * 0.0392, -0.006, -0.166));
+    for (const yc of [-0.06, -0.12, -0.19, -0.26]) {
+      const bar = boxG(0.0026, 0.062, 0.0034, 0.0008, 1);
+      sink.pair(bar, 'sleeveDark', 'sleeveDark', mTrans(sx * (rAt(yc) - 0.0004), yc, 0));
+    }
   }
-  // Elbow-side reinforcement panel, offset onto the underside.
+  // Elbow reinforcement panel on the aft face.
   sink.pair(
-    boxG(0.052, 0.0032, 0.086, 0.0055, 2),
+    boxG(0.05, 0.09, 0.0034, 0.0055, 2),
     'sleeveDark',
     'sleeveDark',
-    mCompose([0, -0.0405, -0.238], new THREE.Euler(0.06, 0, 0))
+    mTrans(0, -0.245, -0.86 * rAt(-0.245) + 0.0006)
   );
-  // Sleeve pocket with a flap and two press studs, on the outboard face.
-  sink.pair(
-    boxG(0.0034, 0.052, 0.062, 0.0035, 2),
-    'sleeveDark',
-    'sleeveDark',
-    mCompose([-s * 0.0388, -0.006, -0.135], new THREE.Euler(0, s * Math.PI * 0.5, 0))
-  );
-  sink.pair(
-    boxG(0.0032, 0.054, 0.019, 0.0028, 2),
-    'glovePad',
-    'glovePad',
-    mCompose([-s * 0.0402, -0.006, -0.111], new THREE.Euler(0, s * Math.PI * 0.5, 0))
-  );
-  for (const dz of [-0.019, 0.019]) {
+  // Sleeve pocket with a flap and two press studs.
+  sink.pair(boxG(0.0034, 0.06, 0.045, 0.0035, 2), 'sleeveDark', 'sleeveDark', mTrans(-s * (rAt(-0.15) - 0.0006), -0.15, 0));
+  sink.pair(boxG(0.0032, 0.018, 0.048, 0.0028, 2), 'glovePad', 'glovePad', mTrans(-s * (rAt(-0.122) + 0.0012), -0.122, 0));
+  for (const dz of [-0.016, 0.016]) {
     const stud = latheG(
       [
         [0.0024, 0, 'hard'],
@@ -4233,19 +4227,19 @@ function buildForearm(mats, side) {
       { capEnd: true }
     );
     sink.pair(stud, 'steelBright', 'steelBright', mCompose(
-      [-s * 0.0418, -0.006 + dz * 0.0, -0.104 + dz],
+      [-s * (rAt(-0.116) + 0.0024), -0.116, dz],
       new THREE.Euler(0, -s * Math.PI * 0.5, 0)
     ));
   }
   // Fabric wrinkles: shallow rings that break the cylinder's shading gradient.
   for (let i = 0; i < 6; i++) {
     const z = -0.082 - i * 0.036;
-    const r = 0.0352 + (Math.abs(z) - 0.072) * 0.048;
+    const r = rAt(z);
     const wr = latheG(
       [
-        [r * 0.995, z + 0.006, 'hard'],
-        [r * 1.022, z, 'hard edge'],
-        [r * 0.995, z - 0.006, 'hard'],
+        [r * 0.998, z + 0.006, 'hard'],
+        [r * 1.024, z, 'hard edge'],
+        [r * 0.998, z - 0.006, 'hard'],
       ],
       18
     );
