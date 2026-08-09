@@ -121,8 +121,23 @@ export function marketStall(a, r, o = {}) {
   /* a hanging bulb on a flex */
   a.add('rust', tube([[0, poleH, 0], [0.02, poleH - 0.24, 0.03], [0.02, poleH - 0.38, 0.03]], 0.006, 5, { cap: false }), null, { grime: 1.2 });
   a.add('lens', blob(0.075, 0.1, 0.075, 8), xf(0.02, poleH - 0.43, 0.03), { grime: 0.15 });
-  /* price board leaning against a leg */
-  a.add('paintwood', chamferBox(0.4, 0.3, 0.018, 0.006), xf(-w / 2 + 0.28, 0.2, d / 2 + 0.06, -0.28, r.jitter(0.2), 0), { grime: 1.2 });
+  /* Price board leaning against a leg — with something written on it. The plaza
+     stalls are 13 m from the hero lens, so this is one of the closest legible marks
+     in the whole frame. */
+  {
+    const board = pickCell(r, r.chance(0.5) ? 'notice' : 'street');
+    const bw = 0.44;
+    const bh = bw / board.aspect;
+    const M = xf(-w / 2 + 0.28, 0.16 + bh * 0.5, d / 2 + 0.06, -0.28, r.jitter(0.2), 0);
+    a.add('paintwood', chamferBox(bw + 0.03, bh + 0.03, 0.018, 0.006), M, { grime: 1.2 });
+    addSign(a, 'signage', signQuad(bw, bh, board.uv), M.clone().multiply(xf(0, 0, 0.012)), { grime: 0.6 });
+  }
+  /* a fascia strip lashed to the front rail — the trader's own name */
+  if (r.chance(0.55)) {
+    const f = pickCell(r, 'fascia');
+    const fw = Math.min(w * 0.86, 1.5);
+    addSign(a, 'signage', signQuad(fw, fw / f.aspect, f.uv), xf(0, poleH - 0.16, d / 2 + over - 0.02), { grime: 0.7 });
+  }
 
   return {
     colliders: [

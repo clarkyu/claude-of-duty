@@ -15,8 +15,13 @@
  */
 import * as THREE from 'three';
 import { MeshBuilder, hash2, hash3, lerp, clamp01, TAU } from './geom.js';
+import { signageLayout, cellUv } from '../props/signage.js';
 
 const _up = new THREE.Vector3(0, 1, 0);
+
+/** Atlas layout is pure data — see props/signage.js. Used by signBoard(). */
+const SIGN_LAYOUT = signageLayout();
+const SIGN_FASCIA = SIGN_LAYOUT.groups.fascia;
 
 /** Build a local-space geometry once, for InstancedMesh use. */
 export function localGeometry(fn) {
@@ -632,7 +637,15 @@ export function grateGeometry() {
   });
 }
 
-/** Wall-mounted shop sign board with a lit face. */
+/**
+ * Wall-mounted shop fascia, with the shop's name on it.
+ *
+ * This used to emit a blank emissive rectangle — a glowing panel with nothing written
+ * on it, which on a street with no other lettering anywhere was the loudest tell in
+ * the frame. The face is now a quad UV-mapped to a cell of the shared signage atlas
+ * (props/signage.js), so the board carries an Arabic shop name, a French strapline and
+ * a phone number, and the two gooseneck lamps over it get something to light.
+ */
 export function signBoard(bat, x, y, z, yaw, w, h, opts = {}) {
   const m = new THREE.Matrix4().compose(
     new THREE.Vector3(x, y, z),
@@ -644,14 +657,31 @@ export function signBoard(bat, x, y, z, yaw, w, h, opts = {}) {
     mb.box([0, 0, 0], [w * 0.5, h * 0.5, 0.055], { chamfer: 0.014 });
     for (const s of [-1, 1]) mb.cylinder([s * (w * 0.5 - 0.1), h * 0.5, 0], [s * (w * 0.5 - 0.1), h * 0.5 + 0.22, -0.12], 0.018, 6);
   });
-  bat.upTo(opts.faceMat || 'sign.lit', 0, (mb) => {
+  /* Which fascia: deterministic from the board's own position, so a rebuild puts the
+     same shop on the same wall. */
+  const cellIdx = Math.abs(Math.round(x * 3) + Math.round(z * 7) + Math.round(w * 11)) % SIGN_FASCIA.length;
+  const uv = cellUv(SIGN_LAYOUT, SIGN_FASCIA[cellIdx]);
+  const ax = w * 0.5 - 0.05;
+  const ay = h * 0.5 - 0.05;
+  bat.upTo(opts.faceMat || 'sign.fascia', 0, (mb) => {
     mb.quad(
-      [-w * 0.5 + 0.05, -h * 0.5 + 0.05, 0.058],
-      [w * 0.5 - 0.05, -h * 0.5 + 0.05, 0.058],
-      [w * 0.5 - 0.05, h * 0.5 - 0.05, 0.058],
-      [-w * 0.5 + 0.05, h * 0.5 - 0.05, 0.058],
-      [0, 0, 1]
+      [-ax, -ay, 0.058],
+      [ax, -ay, 0.058],
+      [ax, ay, 0.058],
+      [-ax, ay, 0.058],
+      [0, 0, 1],
+      [uv[0], uv[1], uv[2], uv[1], uv[2], uv[3], uv[0], uv[3]]
     );
+  });
+  /* Two gooseneck lamps washing the board — a lit fascia is a night-pose practical
+     and a daytime silhouette break. */
+  bat.upTo('metal.rust', 0, (mb) => {
+    for (const s of [-1, 1]) {
+      const lx = s * (w * 0.5 - 0.22);
+      mb.cylinder([lx, h * 0.5 + 0.02, 0.02], [lx, h * 0.5 + 0.2, 0.06], 0.012, 5);
+      mb.cylinder([lx, h * 0.5 + 0.2, 0.06], [lx, h * 0.5 + 0.16, 0.24], 0.012, 5);
+      mb.cylinder([lx, h * 0.5 + 0.16, 0.24], [lx, h * 0.5 + 0.1, 0.29], 0.07, 8, { radius2: 0.03 });
+    }
   });
   bat.pop();
 }

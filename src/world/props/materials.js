@@ -16,8 +16,8 @@
  * `_animateCloth()` below turns into wind motion. See props/geom.js.
  */
 import * as THREE from 'three';
-import { chainLinkAlpha, Rng } from './geom.js';
-import { signageLayout, drawSignageAtlas } from './signage.js';
+import { chainLinkAlpha } from './geom.js';
+import { signageAtlas, disposeSignageAtlas } from './signageTexture.js';
 
 /**
  * key -> { base, opts, surface? , tint?, rough? }
@@ -237,33 +237,7 @@ export class PropPalette {
    * @returns {{layout: object, texture: THREE.Texture|null}}
    */
   signageAtlas() {
-    if (this._signage) return this._signage;
-    const layout = signageLayout();
-    let texture = null;
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = layout.W;
-      canvas.height = layout.H;
-      const g = canvas.getContext('2d');
-      if (g) {
-        // Deterministic: seeded from the props stream, never Math.random().
-        const rng = new Rng(0x5164a7 ^ ((this.ctx.rng ? Math.floor(this.ctx.rng() * 0xffffff) : 0x2b1d) >>> 0));
-        drawSignageAtlas(g, layout, () => rng.next());
-        texture = new THREE.CanvasTexture(canvas);
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
-        texture.magFilter = THREE.LinearFilter;
-        texture.minFilter = THREE.LinearMipmapLinearFilter;
-        texture.generateMipmaps = true;
-        texture.anisotropy = Math.min(8, this.ctx.renderer?.capabilities?.getMaxAnisotropy?.() || 1);
-        texture.needsUpdate = true;
-        this.textures.push(texture);
-      }
-    } catch (err) {
-      console.warn('[props] signage atlas failed', err?.message || err);
-    }
-    this._signage = { layout, texture };
-    return this._signage;
+    return signageAtlas(this.ctx);
   }
 
   /**
@@ -460,6 +434,7 @@ export class PropPalette {
   }
 
   dispose() {
+    disposeSignageAtlas();
     for (const m of this.owned) {
       try {
         m.dispose();

@@ -80,7 +80,15 @@ const CONTACT = '_contact';
  * wall — which is the difference between a street and a blockout. It costs no extra
  * draw calls: everything here merges into the same per-district, per-material batches.
  */
-const TRI_BUDGET = { low: 56000, medium: 132000, high: 200000, ultra: 265000 };
+/*
+ * Raised again, by about a seventh. The dressing pass grew two whole phases — the
+ * signage layer (fascias, plates, stencils, graffiti, road paint) and a much bigger
+ * roofline allowance — and taking that out of the wall-line budget would have thinned
+ * the pavements the last review credited. Eighteen thousand triangles on a 2.1 M frame
+ * is 0.8 %, and it costs no extra draw calls: it all merges into the existing
+ * per-district, per-material batches.
+ */
+const TRI_BUDGET = { low: 60000, medium: 150000, high: 224000, ultra: 292000 };
 const DYNAMIC_BUDGET = { low: 6, medium: 14, high: 20, ultra: 26 };
 
 const _v = new THREE.Vector3();

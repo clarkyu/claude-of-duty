@@ -323,7 +323,7 @@ const GROUND_GRIME = [
 function dressMarkings(P, r) {
   for (const [cell, x, z, yaw, w, len] of ROAD_PAINT) {
     if (P.budget <= 0) return;
-    P.spawn('road_mark', { x, z, yaw, cell, w, len, group: 'road', force: true });
+    P.spawn('road_mark', { x, z, yaw, cell, w, len, group: 'road', force: true, sink: 0 });
   }
   for (const [cell, x, z] of GROUND_GRIME) {
     if (P.budget <= 0) return;
@@ -335,6 +335,7 @@ function dressMarkings(P, r) {
       w: r.range(1.8, 3.2),
       len: r.range(1.0, 1.9),
       force: true,
+      sink: 0,
     });
   }
 }

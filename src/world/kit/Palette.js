@@ -17,6 +17,7 @@
  */
 import * as THREE from 'three';
 import { attachVertexAO } from './VertexAO.js';
+import { signageAtlas } from '../props/signageTexture.js';
 
 /**
  * spec: { m: recipe name, o: get() opts, tint: hex, k: extra clone() overrides }
@@ -171,6 +172,14 @@ export const PALETTE = {
   /* ── water & signage ────────────────────────────────────────────────── */
   'water.pool': { m: 'water_pool', o: {} },
   'sign.lit': { m: 'sign_emissive', o: {}, k: { emissiveIntensity: 1.5 } },
+  /**
+   * Lettered sign faces. The building-mounted fascia boards used to be an emissive
+   * blank rectangle — a glowing panel with nothing written on it, which is worse than
+   * no sign at all. This key resolves to the shared canvas atlas in
+   * `props/signage.js`, so a fascia carries an actual shop name; the caller supplies
+   * the atlas UVs on the quad. Not a recipe: see `signage: true` in Palette.get().
+   */
+  'sign.fascia': { m: 'painted_steel_chipped', o: {}, signage: true },
 };
 
 const FALLBACK = 'struct.concrete';
@@ -189,6 +198,11 @@ export class Palette {
     if (hit) return hit;
     const spec = PALETTE[key] || PALETTE[FALLBACK];
     if (!PALETTE[key]) this.missing.add(key);
+    if (spec.signage) {
+      const m = this._signage();
+      this.cache.set(key, m);
+      return m;
+    }
     let mat = null;
     try {
       const lib = this.ctx.materials;
@@ -218,6 +232,33 @@ export class Palette {
       /* AO is a nicety; never let it break the level */
     }
     this.cache.set(key, mat);
+    return mat;
+  }
+
+  /**
+   * The lettered sign face. A plain Standard material because MaterialLibrary owns
+   * `map` on everything it builds and would overwrite the atlas with a tiling albedo;
+   * every bit of wear, grime and chipped paint is painted into the canvas instead.
+   * Aerial perspective is injected by hand so a fascia 60 m away hazes with the wall
+   * it is bolted to.
+   */
+  _signage() {
+    const { texture } = signageAtlas(this.ctx);
+    const mat = new THREE.MeshStandardMaterial({
+      name: 'sign.fascia',
+      map: texture,
+      color: 0xffffff,
+      roughness: 0.66,
+      metalness: 0.0,
+      envMapIntensity: 0.6,
+      dithering: true,
+    });
+    this.owned.push(mat);
+    try {
+      this.ctx.sky?.applyAerialPerspective?.(mat);
+    } catch {
+      /* nicety */
+    }
     return mat;
   }
 

@@ -591,7 +591,14 @@ export default function createLevel(ctx) {
             sandbagWall(b, c.x0, c.z0, c.x1, c.z1, terrain.groundY(c.x0, c.z0), c.courses || 3);
             break;
           case 'stall':
-            marketStall(b, cx, gy, cz, c.yaw || 0);
+            // Frame and goods deck vary per position, so the four street stalls are
+            // four different traders rather than four copies of one prefab.
+            marketStall(b, cx, gy, cz, c.yaw || 0, {
+              variant: (Math.abs(Math.round(cx) + Math.round(cz) * 3) % 3) | 0,
+              goods: (Math.abs(Math.round(cx) * 5 + Math.round(cz)) % 4) | 0,
+              width: 2.4 + (Math.abs(Math.round(cz)) % 3) * 0.22,
+              depth: 1.6 + (Math.abs(Math.round(cx)) % 2) * 0.24,
+            });
             break;
           case 'crates':
             crateStack(b, cx, cz, gy, gy + (c.top || 1.8), c.yaw || 0, rng);
