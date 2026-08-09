@@ -814,7 +814,11 @@ export default function createWeaponSystem(ctx) {
      * viewer at hip that the tube is a live red dot rather than a pipe. */
     // Strong off-axis, almost gone once the eye is behind the sight: at hip it is the
     // "live optic" cue, but on the aiming axis it would be a pink filter over the target.
-    const glow = optic.kind === 'reflex' ? 0.07 * (1 - 0.72 * clamp01(anim?.adsBlend ?? 0)) : 0;
+    /* Pulled back from 0.07: with the coating term now scaled by the environment (see
+     * GLASS_FRAG) the emitter spill became the largest single contributor to the front
+     * element in a dark room, and a red-dot objective that glows pink from the front in
+     * an unlit interior is the same failure the coating had, one term along. */
+    const glow = optic.kind === 'reflex' ? 0.045 * (1 - 0.72 * clamp01(anim?.adsBlend ?? 0)) : 0;
     for (const g of optic.glass || []) {
       apply(g?.uniforms);
       if (g?.uniforms?.uGlow) g.uniforms.uGlow.value = glow;

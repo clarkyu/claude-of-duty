@@ -1191,10 +1191,25 @@ const G = {
  */
 const MATSPEC = {
   /* ── anodised aluminium: receiver, handguard, rails, optic bodies ──────── */
-  anodised: { base: 'brushed_aluminium', color: 0x191c21, rough: [0.54, 0.74], metal: [0.0, 0.14], uv: 62, det: 0.006, nrm: 0.9, env: 0.42, grime: 0.9 },
+  /* Roughness runs high for anodising. The one highlight left on the weapon after the
+   * edge palette was fixed was a hard clipped stripe down the top face of the rail —
+   * 140/255 at night on a body whose albedo cannot produce more than about 20, so it
+   * was pure specular lobe. Hard anodising is a matte oxide; a broad lobe is both more
+   * correct and 40 % dimmer at the peak. */
+  anodised: { base: 'brushed_aluminium', color: 0x191c21, rough: [0.60, 0.82], metal: [0.0, 0.12], uv: 62, det: 0.006, nrm: 0.9, env: 0.38, grime: 0.9 },
+  /* The rail is its own surface.
+   *
+   * After the edge palette was fixed the one hot spot left anywhere on the weapon was a
+   * hard clipped stripe down the top of the rail — 150-180 against a 40 scene in hero,
+   * 2.7 % of the weapon's pixels and the whole of its p99. A rail is the flattest,
+   * highest, most sky-facing thing on a rifle, so it collects the key light's specular
+   * lobe along its entire length; it is also the part that every mount, sling, torch and
+   * doorframe has scrubbed, and a scrubbed rail is *matte*. Rougher and with a third of
+   * the environment weight, the same highlight is a soft sheen instead of a blown edge. */
+  railBody: { base: 'brushed_aluminium', color: 0x171a1e, rough: [0.78, 0.95], metal: [0.0, 0.08], uv: 62, det: 0.006, nrm: 0.85, env: 0.14, grime: 1.0 },
   /* The default chamfer: a machined bevel in the same anodising, 1.6:1 on the flank.
    * NOT rub-through — see the note above. */
-  anodisedEdge: { base: 'brushed_aluminium', color: 0x282c32, rough: [0.46, 0.66], metal: [0.04, 0.18], uv: 78, det: 0.004, nrm: 0.26, env: 0.3, grime: 0.7 },
+  anodisedEdge: { base: 'brushed_aluminium', color: 0x282c32, rough: [0.52, 0.72], metal: [0.04, 0.16], uv: 78, det: 0.004, nrm: 0.26, env: 0.26, grime: 0.7 },
   /* Optic bodies are their own substance. A sight housing is a smooth turned cylinder
    * lying along the bore, so unlike the flat-sided receiver it always presents a broad
    * band to the key light at a grazing angle, and it sits proud of everything so the
@@ -1233,11 +1248,15 @@ const MATSPEC = {
   /* ── the inside of anything: bores, slots, recesses, the ejection port ─── */
   bore: { base: 'rusted_steel', color: 0x040405, rough: [0.7, 0.98], metal: [0.0, 0.12], env: 0.07, uv: 52, det: 0.006, nrm: 0.8, grime: 1.3 },
   /* ── moulded polymer: stock, grip, magazine ────────────────────────────── */
-  polymer: { base: 'rubber_tyre', color: 0x2b3021, rough: [0.74, 0.94], metal: [0.0, 0.03], uv: 96, det: 0.0032, nrm: 1.2, env: 0.2, grime: 0.9 },
+  /* Same luminance as before, more chroma. The four families were measurably separated
+   * in value and roughness and still read as one substance, because under a 3300 K key
+   * a desaturated olive and a desaturated blue-grey both land on warm mid-grey. The
+   * separation has to be in hue as well as in value to survive the light. */
+  polymer: { base: 'rubber_tyre', color: 0x28321c, rough: [0.74, 0.94], metal: [0.0, 0.03], uv: 96, det: 0.0032, nrm: 1.2, env: 0.2, grime: 0.9 },
   /* Polymer does not polish, it *scuffs*: the pigment goes chalky along a moulded edge.
    * 1.6:1 on the body — it used to be 2.4:1 and glossy, which is what put the hard
    * clipped specular on the top edge of the stock. */
-  polymerEdge: { base: 'rubber_tyre', color: 0x444c3a, rough: [0.64, 0.86], metal: [0.0, 0.04], uv: 104, det: 0.0028, nrm: 0.8, env: 0.2, grime: 0.7 },
+  polymerEdge: { base: 'rubber_tyre', color: 0x414e33, rough: [0.64, 0.86], metal: [0.0, 0.04], uv: 104, det: 0.0028, nrm: 0.8, env: 0.2, grime: 0.7 },
   rubber: { base: 'rubber_tyre', color: 0x0b0c0e, rough: [0.88, 1.0], metal: [0.0, 0.02], uv: 44, det: 0.0068, nrm: 1.6, env: 0.12, grime: 1.0 },
   /* Ejected cases only: they are in frame for four frames at a time and they are
    * genuinely polished brass. */
@@ -1255,9 +1274,13 @@ const MATSPEC = {
    * fabric recipes carry a heavy sheen term (0.85 on the uniform) that is authored for a
    * sunlit canvas awning and has to be pulled right down for a 9 cm object 40 cm from
    * the lens — see `makeWeaponMaterials`. */
-  glove: { base: 'fabric_webbing', color: 0x14171c, rough: [0.82, 1.0], metal: [0.0, 0.03], uv: 62, det: 0.0034, nrm: 1.3, env: 0.18, grime: 0.95 },
-  glovePad: { base: 'rubber_tyre', color: 0x0d0e11, rough: [0.66, 0.92], metal: [0.0, 0.03], uv: 124, det: 0.0022, nrm: 1.4, env: 0.14, grime: 1.0 },
-  sleeve: { base: 'fabric_uniform', color: 0x1a1e17, rough: [0.82, 1.0], metal: [0.0, 0.02], uv: 46, det: 0.0042, nrm: 1.35, env: 0.15, grime: 1.1 },
+  /* Low grime on purpose. The support hand is wrapped hard onto a 44 mm tube, so the
+   * cavity bake sees near-total occlusion along the whole contact band; on the previous
+   * grime weight that came out as a black smear exactly where the fingers meet the
+   * handguard, which reads as dirt on the gun rather than as a hand on it. */
+  glove: { base: 'fabric_webbing', color: 0x111419, rough: [0.82, 1.0], metal: [0.0, 0.03], uv: 62, det: 0.0034, nrm: 1.3, env: 0.16, grime: 0.5 },
+  glovePad: { base: 'rubber_tyre', color: 0x0d0e11, rough: [0.66, 0.92], metal: [0.0, 0.03], uv: 124, det: 0.0022, nrm: 1.4, env: 0.14, grime: 0.6 },
+  sleeve: { base: 'fabric_uniform', color: 0x161b13, rough: [0.82, 1.0], metal: [0.0, 0.02], uv: 46, det: 0.0042, nrm: 1.35, env: 0.13, grime: 1.1 },
   /* Second sleeve shade for the pattern breakup — see buildForearm. */
   sleeveDark: { base: 'fabric_uniform', color: 0x111410, rough: [0.84, 1.0], metal: [0.0, 0.02], uv: 52, det: 0.0036, nrm: 1.35, env: 0.13, grime: 1.15 },
   skin: { base: 'skin', color: 0x6d4d38, rough: [0.46, 0.76], metal: [0.0, 0.02], uv: 52, det: 0.004, nrm: 0.85, env: 0.22, grime: 0.8 },
@@ -1424,7 +1447,7 @@ void main() {
   vec3 env = mix( uGround, uSky, smoothstep( -0.32, 0.5, R.y ) );
   float sd = max( dot( R, uSunDir ), 0.0 );
   float glint = pow( sd, 300.0 ) * 6.0;   // the sun itself
-  float sheen = pow( sd, 16.0 ) * 0.45;   // the bright half of the sky around it
+  float sheen = pow( sd, 16.0 ) * 0.26;   // the bright half of the sky around it
 
   float r = length( vLocal ) / max( 1e-4, uRadius );
 
@@ -1446,16 +1469,20 @@ void main() {
    *
    * uTintEdge is a fixed colour, coatAmt runs to about 1.2 at hip angles, and the term
    * went straight into the sum with no environment factor at all — so the element put
-   * out the same pastel lilac whether it was noon or midnight. Measured across a 4.2×
-   * swing in ambient the lens moved 22 %: 111 under a 127 sky, 105 under a 57 night sky,
-   * 127 in a room with an ambient of 30. That is not glass, that is an LED.
+   * out the same pastel lilac whether it was noon or midnight. Measured over a 4.2×
+   * swing in ambient the lens moved 13 %: 111 under a 132 sky, 109 under a 59 night sky,
+   * 124 in a room whose median is 28. That is not glass, that is an LED, and it is why
+   * the sight reads as an opaque pastel bubble stuck on the front of the tube.
    *
-   * A residual reflection cannot be brighter than what it is reflecting, so the whole
-   * coating term now scales with the luminance of the environment the element faces.
-   * The small floor is the residual of the *emitter and rim spill* inside the tube,
-   * which genuinely is self-lit — but it is a floor of a few percent, not of 100 %. */
+   * A residual reflection cannot out-radiate what it reflects, so the coating is now
+   * exactly that: the environment, tinted. The coat colour is normalised to unit
+   * luminance first so it contributes *hue* — the green-square / cyan / violet sweep an
+   * AR stack shows with incidence angle, which is the whole reason this term exists —
+   * while its brightness comes entirely from envLum. Self-calibrating: at
+   * noon the element carries the sky, at night it carries whatever little there is, and
+   * no constant anywhere needs to know which. */
   float envLum = dot( env, vec3( 0.2126, 0.7152, 0.0722 ) );
-  float coatLit = 0.04 + 2.1 * envLum;
+  vec3 coatTint = coat / max( 0.02, dot( coat, vec3( 0.2126, 0.7152, 0.0722 ) ) );
 
   // Bevel + the haze of decades of lens tissue: brighter right at the field stop.
   float rim = smoothstep( 0.70, 1.0, r );
@@ -1463,10 +1490,17 @@ void main() {
   float wipe = sin( vLocal.x * 640.0 + vLocal.y * 210.0 ) * sin( vLocal.y * 430.0 );
   float smudge = 0.020 + 0.030 * wipe * wipe;
 
+  /* The sun lobes were unconditional too. uSunDir and uSunColor are the *world* sun,
+   * which exists whether or not any of it is reaching the weapon: indoors, where the
+   * measured room median is 28, an unshadowed 0.45-weight sheen lobe on the objective
+   * was a large part of why the element still measured 124. There is no shadow term
+   * available in this shader, so the sun is gated on the same ambient level — outdoors
+   * it is at full strength, in a dark room and at night it is gone. */
+  float sunLit = clamp( envLum * 3.2, 0.0, 1.0 );
   vec3 col = env * ( uBase + smudge + 0.09 * pres + 0.55 * f4 )
-           + coat * coatAmt * coatLit
-           + uSunColor * ( glint + sheen * ( 0.2 + 0.8 * pres ) )
-           + env * rim * 0.4;
+           + coatTint * envLum * coatAmt * 0.44
+           + uSunColor * ( glint + sheen * ( 0.2 + 0.8 * pres ) ) * sunLit
+           + env * rim * 0.30;
   /* The emitter sits low in the tube and throws a little red into the coating stack;
    * on a real red dot you can see that glow from well off the aiming axis, and it is
    * the cue that says "live optic" rather than "tube". It stays a *patch down by the
@@ -1475,9 +1509,16 @@ void main() {
   float ey = ( vLocal.y / max( 1e-4, uRadius ) ) + 0.55;
   col += uGlowColor * uGlow * ( 0.25 * exp( -r * r * 5.0 ) + 0.85 * exp( -ey * ey * 9.0 ) );
 
+  /* Alpha is what decides how much of the *tube* shows through, and the tube is now an
+   * actually opaque near-black wall (see makeWeaponMaterials: the bore material is
+   * double-sided now, so the interior draws instead of being culled). With something
+   * dark genuinely behind it the element can be as present as the geometry says without
+   * turning into a pastel disc — but it must not be a *sheet*, so the coating's own
+   * contribution to opacity is pulled back and the presence ramp does the work.
+   * (bore is double-sided now; before, the interior was back-face culled.) */
   float a = clamp(
-    uBase * 1.1 + smudge + pres * uFresnel * 0.55 + graze * uFresnel * 0.45
-      + f4 * uFresnel * 0.4 + coatAmt * 0.30 + glint * 0.5 + rim * 0.42 + uGlow * 0.28,
+    uBase * 1.1 + smudge + pres * uFresnel * 0.42 + graze * uFresnel * 0.38
+      + f4 * uFresnel * 0.4 + coatAmt * 0.12 + glint * 0.5 + rim * 0.42 + uGlow * 0.28,
     0.0, 1.0 );
   gl_FragColor = vec4( col, a );
   #include <tonemapping_fragment>
@@ -1993,7 +2034,7 @@ function buildUpper(sink, b) {
    * rub-through: at ten pixels a tooth there are four chamfer strips per tooth, and on
    * the brightest material on the gun that stops being a serrated rail and becomes a
    * band of white noise. The discrete handling points keep `wearBright`. */
-  sink.pair(rail.body, 'anodised', 'anodisedEdge', railM);
+  sink.pair(rail.body, 'railBody', 'anodisedEdge', railM);
   for (const s of rail.slots) sink.pair(s, 'steelDark', 'steelDark', railM.clone());
 
   // Brass deflector behind the port, and the port's rear wall.
@@ -2338,7 +2379,7 @@ function buildHandguard(sink, b) {
    * rub-through: at ten pixels a tooth there are four chamfer strips per tooth, and on
    * the brightest material on the gun that stops being a serrated rail and becomes a
    * band of white noise. The discrete handling points keep `wearBright`. */
-  sink.pair(rail.body, 'anodised', 'anodisedEdge', railM);
+  sink.pair(rail.body, 'railBody', 'anodisedEdge', railM);
   for (const s of rail.slots) sink.pair(s, 'steelDark', 'steelDark', railM.clone());
 
   // QD sling socket underneath.
@@ -3243,18 +3284,27 @@ export function buildRedDot(ctx, mats, o = {}) {
    * looked straight through — which is what left the element with nothing dark behind
    * it and made it read as a self-lit bubble. Three baffle rings, because a smooth
    * black cone still reads as a hole. */
+  /* Only the front third of the tube is walled.
+   *
+   * The wall has to be there — without it the element has nothing behind it and reads
+   * as a self-lit bubble — but it must not become a tunnel. The eye sits 100 mm behind
+   * an 88 mm tube, so a wall running the full length subtends twice the angle the front
+   * aperture does and eats half the sight picture as a black funnel, which trades one
+   * regression for another: the review credits this sight for clearing on-axis. Thirty
+   * millimetres is more than enough to backstop every off-axis ray through the
+   * objective (at 50 degrees a ray crosses the 18 mm bore in 15 mm) and short enough
+   * that on the aiming axis it is a 1 mm rim. */
   const bore = latheG(
     [
       [glassR + 0.0016, zF + 0.0018, 'hard'],
-      [glassR + 0.0016, zB - 0.0018, 'hard'],
+      [glassR + 0.0016, zF + 0.034, 'hard'],
     ],
     RAD
   );
   sink.pair(bore, 'bore', 'bore', mTrans(0, axisY, 0));
-  for (let i = 0; i < 3; i++) {
-    const bz = zF + 0.018 + i * 0.017;
-    if (bz > zB - 0.016) break;
-    const baffle = discG(glassR + 0.0016, bz, 1, RAD, glassR * 0.9);
+  for (let i = 0; i < 2; i++) {
+    const bz = zF + 0.016 + i * 0.014;
+    const baffle = discG(glassR + 0.0016, bz, 1, RAD, glassR * 0.975);
     sink.add('bore', baffle, mTrans(0, axisY, 0));
   }
   /* Front and rear bezels (annuli closing the tube around the glass). These are broad
@@ -3327,7 +3377,7 @@ export function buildRedDot(ctx, mats, o = {}) {
    * decal that has to be lit. */
   for (let i = 0; i < 5; i++) {
     const mark = plainBoxG(0.0008, 0.0026, 0.0032 - (i % 2) * 0.0009);
-    sink.add('bore', mark, mTrans(-tubeR * 0.965, axisY - tubeR * 0.36, zB - 0.03 + i * 0.0052));
+    sink.pair(mark, 'bore', 'bore', mTrans(-tubeR * 0.965, axisY - tubeR * 0.36, zB - 0.03 + i * 0.0052));
   }
   // Battery cap on the left.
   const cap = latheG(
@@ -4065,8 +4115,15 @@ function buildHand(mats, side, o = {}) {
     holder.remove(w);
   }
 
-  // Thumb: two phalanges, rotated out of the palm plane.
-  {
+  /* Thumb: two phalanges, rotated out of the palm plane.
+   *
+   * Both hands on the rifle now place their thumb explicitly in *weapon* space instead
+   * (see buildArms): a thumb is the one digit whose position is decided by the object
+   * being held rather than by the hand's own pose, and solving it in hand space put the
+   * support thumb in clear air beside the handguard and the firing thumb round the far
+   * side of the grip where no camera in the game can see it. This branch stays for any
+   * caller that just wants a free hand. */
+  if (!o.hideThumb) {
     const tn = new THREE.Group();
     const tb = o.thumbBase ?? [0.036, 0.033, 0.006];
     tn.position.set(-s * tb[0], tb[1], tb[2]);
@@ -4381,8 +4438,9 @@ export function buildArms(ctx, mats, def) {
     thumb: [0.5, 0.72, 0.46],
     thumbYaw: 0.5,
     thumbRoll: -0.5,
-    squash: 0.2,
+    squash: 0.28,
     palmBend: rBend,
+    hideThumb: true,
   });
   const rHand = new THREE.Group();
   rHand.add(right.root);
@@ -4402,6 +4460,53 @@ export function buildArms(ctx, mats, def) {
     0.004
   );
   rRig.add(rHand);
+
+  /* Firing thumb and the web of the hand, in weapon space.
+   *
+   * The firing hand sits on the *far* side of the grip from the camera, so the only
+   * parts of it a hip pose can see are the fingers coming round the front strap — three
+   * pale beads with nothing joining them, which is exactly what the review measured. A
+   * real firing thumb wraps to the near side and lies along the left of the grip
+   * pointing at the muzzle, and the web between thumb and index fills the corner where
+   * the grip tang meets the receiver. Those two shapes are the difference between three
+   * beads and a hand. */
+  {
+    const ts = new Sink();
+    // Set 9 mm outboard of the grip flank so the digit overlaps the polymer by a third
+    // of its radius: a thumb on a pistol grip is squashed against it, not resting on it.
+    const gx = -(g.w * 0.5 + 0.009);
+    const B = new THREE.Vector3(gx, g.y + 0.012, g.z + 0.024);
+    const D = new THREE.Vector3(-0.04, -0.34, -0.94).normalize();
+    const cur = B.clone();
+    const segs = [
+      [0.0126, 0.030],
+      [0.0106, 0.025],
+    ];
+    for (let i = 0; i < segs.length; i++) {
+      const [rr, ln] = segs[i];
+      const dir = D.clone().add(new THREE.Vector3(0, -0.18 * i, 0)).normalize();
+      const mid = cur.clone().addScaledVector(dir, ln * 0.5);
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      ts.add('glove', capsuleY(rr, ln + rr * 1.5, 9, 2).main, new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1)));
+      cur.addScaledVector(dir, ln);
+    }
+    // Thumbnail plate on the back of the distal segment.
+    ts.pair(
+      boxG(0.0026, 0.016, 0.010, 0.0012, 1),
+      'glovePad',
+      'glovePad',
+      mCompose([gx - 0.010, g.y - 0.020, g.z - 0.024], new THREE.Euler(0.34, 0, 0.1))
+    );
+    // Web / thenar mass filling the corner where the grip tang meets the receiver.
+    ts.pair(
+      boxG(0.017, 0.032, 0.024, 0.008, 2),
+      'glove',
+      'glove',
+      mCompose([gx + 0.004, g.y + 0.015, g.z + 0.020], new THREE.Euler(-0.34, 0, 0.1))
+    );
+    for (const m of ts.meshes(mats, 'palm_right')) rRig.add(m);
+  }
+
   const rArm = buildForearm(mats, 'right');
   const rDir = [0.26, -0.76, 0.6];
   // Start it inside the cuff so wrist and sleeve are one continuous limb.
@@ -4420,7 +4525,14 @@ export function buildArms(ctx, mats, def) {
    * than guessed: palm on the lower left at 215°, fingers travelling anticlockwise
    * under the tube and up the far side.
    */
+  /* `handguard.r` is the radius the facet *centres* are placed on, not the radius of
+   * the surface a hand would touch: buildHandguard sinks each panel by half its own
+   * thickness, so the flat of a facet sits 2.3 mm inside `r` and only the corners come
+   * out to 23.9. Every contact number here is derived from the flat, which is why the
+   * old solve floated: it was seating fingers on a cylinder 2.3 mm larger than the one
+   * that is actually there. */
   const hgR = b.handguard.r;
+  const hgSurf = hgR * (1 - 0.19 * 0.5);
   /* Clock angle of the knuckle row on the handguard, and how far the wrist is rolled
    * off the tangent from there. Between them these decide where the whole support arm
    * comes from. At 215° with no roll the wrist landed 47 mm *above* the bore and the
@@ -4440,7 +4552,7 @@ export function buildArms(ctx, mats, def) {
     // Under 1.0 on purpose: the middle and ring fingers are the longest, so at a full
     // wrap they carry 165° of arc and their tips come over the top of the handguard
     // into the sight picture. This stops the row on the far flank.
-    wrap: { R: hgR + FINGER_R, tighten: 0.9, bend: lBend, roll: lRoll },
+    wrap: { R: hgSurf + FINGER_R, tighten: 0.9, bend: lBend, roll: lRoll },
     // The support thumb is built separately below, hugging the tube — see palm shell.
     thumb: [0.1, 0.14, 0.08],
     thumbYaw: 0.1,
@@ -4448,77 +4560,97 @@ export function buildArms(ctx, mats, def) {
     thumbBase: [0.03, 0.02, -0.011],
     squash: 0.26,
     palmBend: lBend,
+    hideThumb: true,
   });
   const lHand = new THREE.Group();
   lHand.add(left.root);
   const hz = b.handguard.z0 * 0.5 + b.handguard.z1 * 0.5;
-  // Bedded 3 mm into the nominal contact radius. Gloves compress; a finger row solved
-  // to exactly one radius off reads as hovering because it *is* hovering.
-  seatHand(lHand, left, [0, 0, hz], uL, tL, hgR + FINGER_R - 0.003, 0.006, -lRoll);
+  // Bedded 1 mm into the surface. Gloves compress; a finger row solved to exactly one
+  // radius off the geometry reads as hovering, because it *is* hovering.
+  seatHand(lHand, left, [0, 0, hz], uL, tL, hgSurf + FINGER_R - 0.001, 0.006, -lRoll);
   lRig.add(lHand);
 
-  /* The palm itself, as a shell wrapped on the tube.
+  /* The support hand's contact with the handguard, solved in weapon space.
    *
-   * The finger solve puts the knuckle row on the handguard and the analytic seat puts
-   * the wrist where the forearm needs it, and between those two there was nothing at
-   * all: the palm block is a flat slab tangent to a 24 mm cylinder, so it touches along
-   * one line and everywhere else there is a wedge of daylight — which is what the
-   * review saw gravel through. A hand does not do that. The thenar and hypothenar
-   * eminences and the whole metacarpal arch are in contact along the full width of the
-   * grip, which is what a support hand is *for*.
+   * The analytic seat can only put the *knuckle row* on the tube: the palm behind it is
+   * a flat slab tangent to a 22 mm cylinder, so it touches along one line and diverges
+   * from there, and the fingers it solves wrap anticlockwise onto the far flank where
+   * no camera in the game can see them. Between those two facts the near side of the
+   * handguard — the side the player is looking at — had nothing on it at all, which is
+   * why the review could see gravel between the hand and the gun and counted no fingers
+   * and no thumb.
    *
-   * So the contact is modelled as what it physically is: a band of glove wrapped on the
-   * tube from the near flank round to the knuckles, with the tendon ridges on its back
-   * and a thumb running forward along the top of it. It lives in weapon space rather
-   * than hand space because that is the frame in which it is guaranteed to stay in
-   * contact. */
+   * What a support hand actually presents to the shooter's own eye is four finger backs
+   * running *around* the tube, spaced along it, with the metacarpal mass above them and
+   * the thumb lying forward along the top. All four of those are cylinder-aligned
+   * shapes, so they are built here as arcs on the handguard's own axis: guaranteed in
+   * contact, guaranteed on the visible side, and cheap. The solved hand behind them
+   * supplies the wrist and the far-side fingers. */
   {
     const ps = new Sink();
-    const zA = hz - 0.040;
-    const zB2 = hz + 0.032;
-    const p0 = 172 * (Math.PI / 180);
-    const p1 = 286 * (Math.PI / 180);
-    ps.pair(arcShellG(hgR + 0.0006, hgR + 0.0125, p0, p1, zA, zB2, 0.0032), 'glove', 'glove');
-    // Metacarpal tendons on the back of the shell: the valleys between them are what
-    // the cavity bake fills, and the valleys are the part that reads as a hand.
-    for (let k = 0; k < 4; k++) {
-      const a = p0 + 0.1 + ((p1 - p0 - 0.2) * (k + 0.5)) / 4;
-      const rd = boxG(0.0092, 0.0035, (zB2 - zA) * 0.72, 0.0014, 1);
-      ps.pair(rd, 'glove', 'glove', mCompose(
-        [Math.cos(a) * (hgR + 0.0135), Math.sin(a) * (hgR + 0.0135), (zA + zB2) * 0.5 - 0.002],
-        new THREE.Euler(0, 0, a + Math.PI * 0.5)
-      ));
+    const D = Math.PI / 180;
+    const rSurf = hgSurf - 0.0011;
+    /* Glove leather in contact: from the near-upper flank, under the tube, onto the far
+     * side. This is the layer that closes the daylight. */
+    ps.pair(arcShellG(rSurf, hgSurf + 0.0068, 120 * D, 300 * D, hz - 0.062, hz + 0.032, 0.003), 'glove', 'glove');
+    /* Four finger backs. Index nearest the muzzle and wrapping furthest, little finger
+     * rearmost and stopping short — the stagger is most of what stops a row of fingers
+     * reading as a moulded sleeve.
+     *
+     * They own the clock range the camera can actually see, 126-180 degrees, and the
+     * metacarpal mass behind them starts where they stop. The first attempt had the
+     * mass spanning 146-214 at a larger radius than the fingers, so it buried the
+     * entire finger row on precisely the side being looked at and the hand came out as
+     * one smooth sock. */
+    const FB = [
+      [-0.0300, 0.0192, 124, 300],
+      [-0.0098, 0.0196, 126, 304],
+      [0.0102, 0.0186, 129, 296],
+      [0.0292, 0.0166, 134, 284],
+    ];
+    for (const [dz, wide, a0, a1] of FB) {
+      ps.pair(
+        arcShellG(hgSurf + 0.0046, hgSurf + 0.0202, a0 * D, a1 * D, hz + dz - wide * 0.5, hz + dz + wide * 0.5, 0.0062),
+        'glove',
+        'glove'
+      );
     }
-    // Hypothenar roll at the near-flank end, so the shell tapers into the wrist rather
-    // than stopping in a machined edge.
-    ps.pair(
-      arcShellG(hgR + 0.0006, hgR + 0.017, p0, p0 + 0.42, hz - 0.024, hz + 0.020, 0.004),
-      'glove',
-      'glove'
-    );
-    /* C-clamp thumb: up on the near-upper flank, running forward along the tube toward
-     * the muzzle. This is the one part of the support hand the camera has a clean view
-     * of in every hip pose, and there was nothing there at all. */
-    const tPhi = 148 * (Math.PI / 180);
-    const tR = hgR + 0.0125;
-    let tz = hz + 0.014;
+    /* Metacarpal mass on the back of the hand, *behind* the finger row, and the
+     * hypothenar roll that carries it into the wrist. */
+    ps.pair(arcShellG(rSurf, hgSurf + 0.0238, 184 * D, 236 * D, hz - 0.034, hz + 0.030, 0.007), 'glove', 'glove');
+    ps.pair(arcShellG(rSurf, hgSurf + 0.0300, 208 * D, 244 * D, hz - 0.024, hz + 0.026, 0.008), 'glove', 'glove');
+    /* C-clamp thumb: on the near-upper flank, running forward along the tube toward the
+     * muzzle. In every hip pose this is the part of the support hand with the cleanest
+     * line of sight to the camera, and there was nothing there at all. */
+    const tPhi = 152 * D;
+    const tR = hgSurf + 0.0126;
+    let tz = hz - 0.040;
     for (let i = 0; i < 3; i++) {
-      const rr = 0.0125 - i * 0.0016;
-      const ln = 0.026 - i * 0.004;
-      const a = tPhi - i * 0.11;
+      const rr = 0.0126 - i * 0.0016;
+      const ln = 0.028 - i * 0.005;
+      const a = tPhi + i * 0.08;
       const seg = capsuleY(rr, ln + rr * 1.4, 9, 2);
       ps.pair(seg, 'glove', 'glove', mCompose(
-        [Math.cos(a) * (tR + i * 0.0004), Math.sin(a) * (tR + i * 0.0004), tz - ln * 0.5],
+        [Math.cos(a) * (tR - i * 0.0006), Math.sin(a) * (tR - i * 0.0006), tz - ln * 0.5],
         new THREE.Euler(Math.PI * 0.5, 0, 0)
       ));
       tz -= ln;
     }
-    // Thumbnail-side pad and the web between thumb and shell.
-    ps.pair(
-      arcShellG(hgR + 0.0008, hgR + 0.0138, tPhi - 0.30, p0 + 0.06, hz - 0.004, hz + 0.020, 0.003),
-      'glove',
-      'glove'
-    );
+    // Thenar web joining the thumb's root to the front of the finger row.
+    ps.pair(arcShellG(rSurf, hgSurf + 0.0168, 138 * D, 178 * D, hz - 0.054, hz - 0.026, 0.005), 'glove', 'glove');
+    // Knuckle pads on the crest of each finger, on the near-upper flank where they show.
+    for (const [dz, wide] of FB) {
+      const a = 146 * D;
+      ps.pair(
+        boxG(0.0118, 0.0036, wide * 0.74, 0.0014, 1),
+        'glovePad',
+        'glovePad',
+        mCompose(
+          [Math.cos(a) * (hgSurf + 0.0218), Math.sin(a) * (hgSurf + 0.0218), hz + dz],
+          new THREE.Euler(0, 0, a + Math.PI * 0.5)
+        )
+      );
+    }
     for (const m of ps.meshes(mats, 'palm_left')) lRig.add(m);
   }
 
