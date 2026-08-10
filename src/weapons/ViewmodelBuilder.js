@@ -1298,11 +1298,11 @@ const MATSPEC = {
    * receiver, so the whole point of this pass is that the gun overtakes them. Nomex is
    * near-black; at 0x1a1e25 it sits two stops under the anodising in albedo and reads
    * below it in every pose. */
-  glove: { base: 'fabric_webbing', color: 0x1a1e25, rough: [0.86, 1.0], metal: [0.0, 0.03], uv: 62, det: 0.0034, nrm: 1.3, env: 0.12, grime: 0.5 },
-  glovePad: { base: 'rubber_tyre', color: 0x14161a, rough: [0.80, 0.96], metal: [0.0, 0.03], uv: 124, det: 0.0022, nrm: 1.4, env: 0.10, grime: 0.6 },
-  sleeve: { base: 'fabric_uniform', color: 0x212819, rough: [0.88, 1.0], metal: [0.0, 0.02], uv: 46, det: 0.0042, nrm: 1.35, env: 0.10, grime: 1.1 },
+  glove: { base: 'fabric_webbing', color: 0x232832, rough: [0.86, 1.0], metal: [0.0, 0.03], uv: 62, det: 0.0034, nrm: 1.3, env: 0.12, grime: 0.5 },
+  glovePad: { base: 'rubber_tyre', color: 0x1b1e23, rough: [0.80, 0.96], metal: [0.0, 0.03], uv: 124, det: 0.0022, nrm: 1.4, env: 0.10, grime: 0.6 },
+  sleeve: { base: 'fabric_uniform', color: 0x2a3320, rough: [0.88, 1.0], metal: [0.0, 0.02], uv: 46, det: 0.0042, nrm: 1.35, env: 0.10, grime: 1.1 },
   /* Second sleeve shade for the pattern breakup — see buildForearm. */
-  sleeveDark: { base: 'fabric_uniform', color: 0x191d15, rough: [0.90, 1.0], metal: [0.0, 0.02], uv: 52, det: 0.0036, nrm: 1.35, env: 0.10, grime: 1.15 },
+  sleeveDark: { base: 'fabric_uniform', color: 0x212719, rough: [0.90, 1.0], metal: [0.0, 0.02], uv: 52, det: 0.0036, nrm: 1.35, env: 0.10, grime: 1.15 },
   skin: { base: 'skin', color: 0x6d4d38, rough: [0.55, 0.82], metal: [0.0, 0.02], uv: 52, det: 0.004, nrm: 0.85, env: 0.16, grime: 0.8 },
 };
 

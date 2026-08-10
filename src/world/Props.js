@@ -1078,11 +1078,12 @@ export default function createProps(ctx) {
         geometries.push(geo);
         const m = new THREE.Mesh(geo, mat);
         m.name = `props:${name}:detail:${mat.userData?.propMaterial || 'mat'}`;
-        /* Clutter casts too. It is one extra draw in the shadow pass for the whole
-           map, and a bottle, a pallet or a length of pipe with no shadow under it is
-           the exact tell the review calls "a decal, not an object". `applyQuality`
-           takes it back off on `low`, where the whole group is hidden anyway. */
-        m.castShadow = true;
+        /* The detail bucket is exactly the `flat` catalogue kinds — drain grates,
+           manhole covers, road markings, litter — i.e. geometry that lies *on* the
+           surface it would be shadowing. Casting from a coplanar quad buys nothing and
+           costs shadow acne on its own receiver, so this stays off; see `applyQuality`,
+           which now says so explicitly instead of inferring it from a parent's name. */
+        m.castShadow = false;
         m.receiveShadow = true;
         tagMesh(m, d.detail, mat, 'detail');
         detail.add(m);
@@ -1137,18 +1138,21 @@ export default function createProps(ctx) {
   }
 
   /**
-   * **Every prop casts.** The previous test was
-   *   `o.castShadow = shadows && o.parent?.name?.indexOf('detail') < 0`
-   * which is `undefined < 0` — i.e. **false** — for any mesh whose parent is missing or
-   * unnamed. `commitSolo()` parents its meshes to an anonymous `new THREE.Group()`, and
-   * a dynamic prop's mesh sits directly under a group the LOD may re-parent, so a whole
-   * class of props silently dropped out of the shadow caster set the first time a
-   * quality event fired. It also read `indexOf` on a name that may legitimately contain
-   * "detail" further along the path.
+   * **Say which bucket may cast, do not infer it from a parent's name.**
    *
-   * Now: an explicit, total function of the bucket the mesh was built into, tagged at
-   * build time rather than sniffed from a string, with the string test kept only as a
-   * fallback for meshes that predate the tag.
+   * The previous test was
+   *   `o.castShadow = shadows && o.parent?.name?.indexOf('detail') < 0`
+   * which evaluates to `undefined < 0` — i.e. **false** — for any mesh whose parent is
+   * missing or unnamed, and which re-derives, from a string, a fact the builder already
+   * knew. `commitSolo()` parents its meshes to an anonymous `new THREE.Group()`, whose
+   * name is `''` rather than undefined, so the expression happened to survive on every
+   * path this file takes today; it is one re-parent away from silently emptying the
+   * caster set, and it says nothing about *why* the detail bucket is excluded.
+   *
+   * Now the bucket is tagged at build time (`tagMesh`) and the rule is stated: the
+   * detail bucket is the `flat` catalogue kinds (grates, manhole covers, road markings,
+   * litter) and is coplanar with its own receiver, so it never casts; contact grime
+   * never casts; everything else always does.
    */
   function applyQuality() {
     const t = tier();
@@ -1158,9 +1162,12 @@ export default function createProps(ctx) {
     root?.traverse((o) => {
       if (!o.isMesh || !o.userData?.prop) return;
       const pn = typeof o.parent?.name === 'string' ? o.parent.name : '';
-      const isDetail = o.userData.propBucket === 'detail' || pn.endsWith(':detail') || /:detail:/.test(pn);
-      const isContact = o.userData.propBucket === 'contact' || pn.endsWith(':contact');
-      o.castShadow = shadows && !isContact && (!isDetail || show);
+      const bucket = o.userData.propBucket;
+      const coplanar =
+        bucket === 'detail' ||
+        bucket === 'contact' ||
+        (bucket === undefined && (pn.includes(':detail') || pn.endsWith(':contact')));
+      o.castShadow = shadows && !coplanar;
     });
   }
 

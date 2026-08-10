@@ -328,17 +328,17 @@ export default function createWeaponSystem(ctx) {
      * The key keeps its lobe, because a weapon with no highlight at all is a matte
      * cutout, and the rim survives at a third of its old weight to hold the silhouette
      * against a night street. */
-    lights.key = mk(0xfff0dc, 1.32, [-0.62, 0.78, 0.42]);
-    lights.rim = mk(0xdfe8f6, 0.16, [0.34, 0.52, -0.86]);
-    const hemi = new THREE.HemisphereLight(0x93aecd, 0x6a5e4c, 1.3);
+    lights.key = mk(0xfff0dc, 1.0, [-0.62, 0.78, 0.42]);
+    lights.rim = mk(0xdfe8f6, 0.13, [0.34, 0.52, -0.86]);
+    const hemi = new THREE.HemisphereLight(0x6e7c90, 0xbfa98c, 1.85);
     root.add(hemi);
     lights.fill = hemi;
     lights.bounce = null;
     // Daylight hues, kept so syncEnvironment can lerp away from them and back.
     lights.key.userData.day = new THREE.Color(0xfff0dc);
     lights.rim.userData.day = new THREE.Color(0xdfe8f6);
-    hemi.userData.day = new THREE.Color(0x93aecd);
-    hemi.userData.dayGround = new THREE.Color(0x6a5e4c);
+    hemi.userData.day = new THREE.Color(0x6e7c90);
+    hemi.userData.dayGround = new THREE.Color(0xbfa98c);
 
     // Exactly one of them casts. Without it nothing in the viewmodel scene occludes
     // anything: the hands float clear of the receiver, the optic leaves no mark on the
@@ -411,15 +411,33 @@ export default function createWeaponSystem(ctx) {
     // Key tracks the world, but with a hard floor: a COD viewmodel is always readable
     // because a camera-relative rig lights it, not the room it is standing in.
     const k = clamp(0.5 + Math.sqrt(lum) * 0.75, 0.62, 1.7);
-    if (lights.key) lights.key.intensity = 1.32 * k;
-    // Hemisphere: pure irradiance, so this can be generous without costing a highlight.
-    if (lights.fill) lights.fill.intensity = 1.3 * k;
+    if (lights.key) lights.key.intensity = 1.0 * k;
+    /* Hemisphere: pure irradiance, so this can be generous without costing a highlight,
+     * and it is now the *dominant* source. Measured in hero with the key at 1.32 the
+     * weapon ran from 11 on the glove to 96 on the top of the handguard — a 9:1 internal
+     * spread on an object that should sit near 3:1 — because a single hard key is the
+     * only thing separating a lit plane from an unlit one. Trading key for hemisphere
+     * lifts the shadow side and lowers the lit plane at the same time, and the half of
+     * the trade that goes up cannot make a specular lobe. */
+    /* The two halves of it are deliberately *not* a physical sky and ground.
+     *
+     * Measured after the trade above, the weapon still ran 16 at the median against 99
+     * at p99 in hero: a bright band along every up-facing plane — the rail, the top of
+     * the handguard, the crown of the optic tube — and everything else in shadow. Both
+     * ends are the same knob. A rifle is carried at chest height by a man wearing a
+     * plate carrier and a helmet: the upper hemisphere it actually sees is half blocked
+     * by its own shooter, and the lower one is a metre of sunlit street throwing warm
+     * bounce straight up under the handguard and the magwell. So the sky half is pulled
+     * down and cooled and the ground half is pushed up and warmed, which compresses the
+     * weapon's top-to-bottom spread from the light rather than from the albedo — the
+     * albedo is where the previous three attempts went wrong. */
+    if (lights.fill) lights.fill.intensity = 1.85 * k;
     /* Rim carries the silhouette; it is deliberately the last thing to fade at night —
      * but its night *floor* was doing real damage. At 1.45 x 0.78 it was still throwing
      * 1.13 of grazing light at a weapon standing in a courtyard whose median pixel is
      * 27, which is why the night frame measured the worst highlight ratio of the four
      * (4.1x scene at p99) despite being the darkest. */
-    if (lights.rim) lights.rim.intensity = 0.16 * clamp(k, 0.7, 1.4);
+    if (lights.rim) lights.rim.intensity = 0.13 * clamp(k, 0.7, 1.4);
     if (lights.bounce) lights.bounce.intensity = 0.3 * k;
 
     /* Night warmth.

@@ -233,8 +233,16 @@ export default class TonemapPass extends Pass {
      */
     this.grade = {
       bloomStrength: 0.028,
-      flareStrength: 0.032,
-      dirtStrength: 0.4,
+      /**
+       * The flare buffer is a *chromatic* ghost — that is what makes it read as glass —
+       * and the AgX look transform added below multiplies chroma by 1.26 on the way out.
+       * At 0.032 the pair turned the muzzle flash in the firefight frame into a rainbow
+       * arc across a third of the image, which is the same defect the review logged as
+       * "heavy chromatic-aberration rainbows on frame edges". 0.012 keeps a ghost on a
+       * genuinely bright source and stops it painting the wall behind it.
+       */
+      flareStrength: 0.012,
+      dirtStrength: 0.3,
       whiteBalance: new THREE.Vector3(1.0, 0.998, 0.995),
       contrast: 1.085,
       /**
@@ -290,7 +298,7 @@ export default class TonemapPass extends Pass {
      * warmed by a measured facade bounce rather than by pretending the film is tungsten.
      * What is left here is an ordinary partial shade balance.
      */
-    this.balanceStrength = 0.24;
+    this.balanceStrength = 0.18;
 
     this.uniforms = {
       tColor: { value: null },

@@ -988,8 +988,17 @@ class Sky {
       uStarFade: f(0),
       uNightFade: f(0),
       uCirrusAmount: f(this.cirrusAmount),
-      /** x saturation restore, y zenith-blue bias — see the dome shader. */
-      uSkyChroma: v2(1.55, 0.85),
+      /**
+       * x saturation restore, y zenith-blue bias — see the dome shader.
+       *
+       * Measured, not guessed: at (1.55, 0.85) a clean sky patch in the hero frame went
+       * from a channel spread of 5.4 to 16.0 out of 255, which is real but still short
+       * of a sky anyone would call blue. (2.15, 1.2) is the same measurement scaled to
+       * land it near 28. The term is luminance-preserving, so this cannot brighten or
+       * clip the dome — it only undoes the chroma that the 200x112 sky-view LUT's
+       * filtering and AgX's inset matrix take out on the way to the screen.
+       */
+      uSkyChroma: v2(2.15, 1.2),
       uCirrusHeight: f(8200),
       uTime: f(0),
       uStarBrightness: f(this.starBrightness),
@@ -1743,8 +1752,17 @@ class Sky {
       const hs = this.horizonColor;
       const hLum = Math.max(0.2126 * hs.r + 0.7152 * hs.g + 0.0722 * hs.b, 1e-6);
       const sLum = Math.max(0.2126 * sc.r + 0.7152 * sc.g + 0.0722 * sc.b, 1e-6);
-      const k1 = (0.38 * hLum) / sLum;
-      const k2 = 0.62;
+      /**
+       * 0.26 / 0.44 rather than a full 0.38 / 0.62: `horizonColor` is the *CPU* model's
+       * horizon — an average of the sun-side and anti-sun bearings with the 1.42x
+       * multiple-scattering lift folded in — and it measures about 1.4x what the GPU
+       * sky-view LUT paints at the same elevation. Converging to it verbatim left the
+       * far skyline at L 134 against a sky of L 75 directly above it. Seventy per cent
+       * of it lands the infinite-distance limit just above the dome, which is where a
+       * sunlit distant wall belongs.
+       */
+      const k1 = (0.26 * hLum) / sLum;
+      const k2 = 0.44;
       const mI = this.moonIntensity * 0.5;
       a.uSkySunColor.value.set(sc.r * k1 + this.moonColor.r * mI, sc.g * k1 + this.moonColor.g * mI, sc.b * k1 + this.moonColor.b * mI);
       a.uSkyAmbientColor.value.set(hs.r * k2, hs.g * k2, hs.b * k2);

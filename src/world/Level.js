@@ -1497,6 +1497,18 @@ export default function createLevel(ctx) {
    *
    * Costs two raycasts per opening, once, at build time.
    */
+  /**
+   * How many frames the portal sweep is still allowed to re-run.
+   *
+   * `collectPortals()` needs a *queryable* physics world: it decides which side of each
+   * aperture is indoors by casting straight up from either side. Our own colliders are
+   * registered a few lines earlier in `init()`, but the broadphase they go into is only
+   * guaranteed to be refit once the solver has stepped, and `ctx.props` (order 34) has
+   * not run at all yet — so an init-time sweep can legitimately come back with nothing.
+   * Retry for a few frames and stop as soon as it finds apertures.
+   */
+  let portalRetries = 4;
+
   function collectPortals() {
     const out = [];
     const phys = ctx.physics;
@@ -1523,8 +1535,17 @@ export default function createLevel(ctx) {
       const y = Math.max(op.y, 0.4);
       const roofA = probeUp(ax, y, az);
       const roofB = probeUp(bx, y, bz);
-      if (roofA === roofB) continue; // both open, or both enclosed: no aperture story
-      // The inward normal points at the roofed side.
+      if (!roofA && !roofB) continue; // open on both sides: a gate in a wall, no room
+      /**
+       * Roofed on both sides is not a mistake — it is a colonnade. The market hall's
+       * arcade is four 2.6 x 3.5 m arches between a covered walkway and the hall, i.e.
+       * the largest apertures on the map and the ones the interior camera is looking
+       * straight at, and a strict "one side must see sky" test throws every one of them
+       * away. Keep them, mark them two-sided (a negative `hh` carries the flag through
+       * to the shader), and derate: an arch opening onto a shaded walkway transmits the
+       * street at second hand, not the open sky.
+       */
+      const twoSided = roofA && roofB;
       const s = roofA ? 1 : -1;
       out.push({
         x: op.x,
@@ -1534,14 +1555,17 @@ export default function createLevel(ctx) {
         nx: op.nx * s,
         nz: op.nz * s,
         hw: op.hw,
-        hh: op.hh,
+        hh: twoSided ? -op.hh : op.hh,
         type: op.type,
         glazed: !!op.glazed,
       });
     }
     api.portals = out;
     api.stats.portals = out.length;
+    api.stats.portalCandidates = WALL_OPENINGS.length;
+    return out.length;
   }
+  api.collectPortals = collectPortals;
 
   /* ═══════════════════════════════════════════════════════════════ utilities ══ */
 
@@ -1571,6 +1595,18 @@ export default function createLevel(ctx) {
   return {
     name: 'level',
     order: 32,
+
+    /** Only job: give the aperture sweep a few frames' grace. See `portalRetries`. */
+    update() {
+      if (portalRetries <= 0) return;
+      portalRetries--;
+      try {
+        if (collectPortals() > 0) portalRetries = 0;
+      } catch (err) {
+        portalRetries = 0;
+        warn('portal collection failed', err);
+      }
+    },
 
     async init() {
       const t0 = now();
@@ -1657,6 +1693,7 @@ export default function createLevel(ctx) {
         reflectionProbes: api.reflectionProbes,
       });
       ctx.bus?.emit?.('level:built', { stats: api.stats });
+      portalRetries = 0;
       if (!ctx.settings?.get?.('headless')) {
         console.log(
           `[level] ${api.stats.drawGroups} meshes, ${(api.stats.triangles / 1000) | 0}k tris, ` +

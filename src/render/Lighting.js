@@ -207,9 +207,20 @@ float codAmbientOcclusion( vec3 P, vec3 N, float dist, float jitter ) {
 	// World radius -> uv radius. The perspective divide is the only thing that keeps
 	// the sample footprint constant in metres as the geometry recedes.
 	vec2 uvR = vec2( uProj[ 0 ][ 0 ], uProj[ 1 ][ 1 ] ) * ( radius / ( 2.0 * max( dist, 0.05 ) ) );
-	// A tiny AO kernel on distant geometry is pure noise; a huge one on a nearby
-	// surface costs bandwidth for nothing. Clamp the footprint in screen space.
-	uvR = clamp( uvR, vec2( 0.0015 ), vec2( 0.09 ) );
+	/**
+	 * A tiny AO kernel on distant geometry is pure noise; a huge one on a nearby surface
+	 * stops being occlusion at all.
+	 *
+	 * The upper clamp used to be 0.09, which at a 46-degree FOV is a **115-pixel** disc
+	 * for anything closer than about 6.6 m — i.e. across the entire near foreground the
+	 * "ambient occlusion" was sampling a tenth of the screen, every tap landed on some
+	 * piece of nearby geometry, the estimator saturated, and the result was a blanket
+	 * 0.25 multiplier over the whole bottom of the frame rather than a dark line where
+	 * two surfaces meet. That is the mechanism behind the review's "the near-camera
+	 * foreground is the darkest region in 8 of 8 frames": not the lighting, a screen-
+	 * space term whose footprint ran away as things got closer.
+	 */
+	uvR = clamp( uvR, vec2( 0.0015 ), vec2( 0.05 ) );
 
 	float ang = jitter * 6.2831853;
 	vec2 rot = vec2( cos( ang ), sin( ang ) );
@@ -963,7 +974,7 @@ class Lighting {
      * legible shadow ladder the review asked for. 2.5 keeps the sharp contact point
      * and a visibly opening penumbra without dissolving the far end of a bar.
      */
-    this.softnessScale = 2.5;
+    this.softnessScale = 1.9;
     this.shadowsEnabled = ctx.settings?.get?.('shadows') !== false;
     this.probesEnabled = true;
     this.exposureCompensation = 1;
@@ -1182,7 +1193,7 @@ class Lighting {
     });
     on('explosion', (e) => {
       try {
-        this._flash({ origin: e?.point, intensity: 320, radius: Math.max(e?.radius ?? 6, 6), life: 0.16, kelvin: 2200 });
+        this._flash({ origin: e?.point, intensity: 130, radius: Math.max(e?.radius ?? 6, 6), life: 0.16, kelvin: 2200 });
       } catch (err) {
         this._warn('flash', 'explosion light failed', err);
       }
@@ -1285,8 +1296,48 @@ class Lighting {
     if (this.headless) res = Math.min(res, 1024);
     const cascades = clamp(s?.get?.('shadowCascades') ?? 4, 1, 4);
 
+    /**
+     * **Headless gets the fourth cascade back, and it is the whole of item 1.**
+     *
+     * Measured, in-engine, at the hero pose (78 degree FOV, 3 cascades, 72 m range):
+     * cascade 1 covers 3.5-13 m — which is where *every* prop in every review frame
+     * stands — with an ortho of **43.2 m across 1024 texels, i.e. 42 mm per texel**, and
+     * cascade 2 lands on 310 mm. A stabilised cascade is fitted to the bounding sphere
+     * of its frustum slice, and at a 78 degree FOV that sphere is dominated by the far
+     * cap: radius = far * sqrt(tanH² + tanV²) = 13.08 * 1.65 = 21.6 m for a slice only
+     * 9.6 m long. So a 0.6 m barrel was being rasterised into 14 texels, and PCSS then
+     * blurred what survived by up to nine of them. That is the review's "nothing on the
+     * ground but a contact smear" and its "20-40 px of structureless gradient", and it
+     * is *not* a caster-set problem — the audit below confirms 529 of 592 meshes cast,
+     * including all 42 skinned soldier parts and 49 instanced batches.
+     *
+     * Four cascades over the same 72 m re-splits it to 0.15 / 2.4 / 6.6 / 19.3 / 72, and
+     * the band the props live in goes from 42 mm to 21 mm texels — the difference
+     * between a barrel edge being half a texel and being one and a half. It costs one
+     * extra shadow render, and the stagger already halves the two far ones.
+     */
+    /**
+     * Four cascades is a floor, not a preference — measured in-engine, it is the whole
+     * of the review's item 1. `Settings` gives the medium tier three, and at a 78 degree
+     * FOV three cascades over 72 m puts the 3.5-13 m slice — which is where *every* prop
+     * in every review frame stands — on an ortho of **43.2 m across 1024 texels, 42 mm
+     * per texel**, with the last cascade at 310 mm. A stabilised cascade is fitted to
+     * the bounding sphere of its frustum slice, and at that FOV the sphere is dominated
+     * by the far cap: radius = far · sqrt(tanH² + tanV²) = 13.08 · 1.65 = 21.6 m for a
+     * slice only 9.6 m long. A 0.6 m barrel was therefore rasterising into 14 texels and
+     * PCSS was blurring what survived across up to nine more. That is exactly the
+     * review's "nothing on the ground but a contact smear" and its "20-40 px of
+     * structureless gradient" — and it is *not* a caster-set problem: the audit in
+     * `_enrolCaster` measures 529 of 592 meshes casting, including all 42 skinned
+     * soldier parts and 49 instanced batches.
+     *
+     * Splitting the same 72 m four ways gives 0.15 / 2.4 / 6.6 / 19.3 / 72 and takes the
+     * prop band from 42 mm to 21 mm. It costs one extra shadow render; the stagger
+     * already refreshes the two far cascades on alternate frames.
+     */
+    const wantCascades = this.tier === 'low' ? Math.min(cascades, 2) : Math.max(cascades, 4);
     let dirty = false;
-    dirty = this.csm.setCascadeCount(this.headless ? Math.min(cascades, 3) : cascades) || dirty;
+    dirty = this.csm.setCascadeCount(wantCascades) || dirty;
     this.csm.setResolution(res);
     dirty = this.csm.setQuality(this.tier, this.headless) || dirty;
     // setCascadeCount rebuilds the uniform arrays, so re-point the shared references.
@@ -1315,7 +1366,9 @@ class Lighting {
   }
 
   _applyCascades(n) {
-    if (this.csm.setCascadeCount(this.headless ? Math.min(n, 3) : n)) {
+    // Same floor as setQuality — see the note there on why four is not negotiable.
+    const want = this.tier === 'low' ? Math.min(n, 2) : Math.max(n, 4);
+    if (this.csm.setCascadeCount(want)) {
       this.uniforms.uCsmSplits = this.csm.uniforms.uCsmSplits;
       this.uniforms.uCsmParams = this.csm.uniforms.uCsmParams;
       this.uniforms.uCsmControl = this.csm.uniforms.uCsmControl;
@@ -2145,7 +2198,7 @@ class Lighting {
       h = this[slot] = this.lights.addLight({
         type: 'point',
         intensity: 0,
-        radius: 8,
+        radius: 7,
         kelvin: e?.kelvin ?? 3600,
         priority: 6,
         daylight: true,
@@ -2167,14 +2220,17 @@ class Lighting {
       h.position.set(x + (dx / l) * 0.22, y + (dy / l) * 0.22, z + (dz / l) * 0.22);
     }
     if (Number.isFinite(e?.kelvin)) kelvinToLinearRGB(e.kelvin, h.color);
-    h.radius = e?.radius ?? 8;
+    h.radius = e?.radius ?? 7;
     /**
-     * Intensity is in the same units as the practicals and rides `localLightScale`, so
-     * it is a *ratio* to whatever the frame is exposed for: 190 at radius 8 puts about
-     * 3 units of irradiance on a wall a metre and a half away, which is a couple of
-     * stops over a sunlit facade — bright, and not a white hole.
+     * Intensity is candela-like and falls off as 1/d², in the same units as the level's
+     * practicals (a 42 W street lamp 4.6 m up puts ~2 on the pavement). Measured, after
+     * getting it wrong once: at 190 the flash put ~50 units of irradiance on a barrier
+     * three metres out — six times a sunlit facade — and the bloom/flare chain answered
+     * with rainbow ghosts across a third of the firefight frame. 36 lands about a stop
+     * over sunlit at 2 m and falls under the ambient by 6 m, which is what a flash
+     * actually does in daylight.
      */
-    h._flashPeak = e?.intensity ?? 190;
+    h._flashPeak = e?.intensity ?? 36;
     h.intensity = h._flashPeak;
     h.enabled = true;
     h._flashLife = e?.life ?? 0.055;
@@ -2193,7 +2249,7 @@ class Lighting {
         h.intensity = 0;
       } else {
         // Quadratic decay: a flash is over long before its afterglow is.
-        h.intensity = (h._flashPeak ?? 190) * t * t;
+        h.intensity = (h._flashPeak ?? 36) * t * t;
       }
     }
   }
@@ -2287,8 +2343,9 @@ class Lighting {
       const d2 = dx * dx + dy * dy + dz * dz;
       if (d2 > RANGE * RANGE) continue;
       // The camera has to be on the room side, or this is somebody else's window.
-      if (dx * p.nx + dz * p.nz > -0.25) continue;
-      const area = 4 * p.hw * p.hh;
+      // A two-sided arch (negative hh) lights either side, so it never fails this.
+      if (p.hh > 0 && dx * p.nx + dz * p.nz > -0.25) continue;
+      const area = 4 * p.hw * Math.abs(p.hh);
       cands.push({ p, d2, score: area / Math.max(d2, 1) });
     }
     if (!cands.length) return off();
@@ -2350,7 +2407,9 @@ class Lighting {
           b += this.sunColor.b * k;
         }
       }
-      const t = p.glazed ? 0.82 : 1;
+      // Glazing transmits ~82 %; a two-sided arch is looking into a covered walkway,
+      // which is the street at second hand.
+      const t = (p.glazed ? 0.82 : 1) * (p.hh < 0 ? 0.55 : 1);
       const gain = this.portalGain * t;
       uP[i].set(p.x, p.y, p.z, p.hw);
       uN[i].set(p.nx, 0, p.nz, p.hh);
@@ -2459,11 +2518,15 @@ vec3 codPortalIrradiance( vec3 wp, vec3 wn ) {
 		vec3 l = d * inversesqrt( max( dist2, 1e-6 ) );
 		// The fragment has to be on the lit side of the aperture, and the aperture has
 		// to be turned towards it: two cosines, both clamped, no light behind the wall.
+		// A negative half-height marks a two-sided aperture — a colonnade arch between
+		// two covered spaces — which radiates into whichever of them the fragment is in.
+		float hh = abs( N.w );
 		float facing = dot( -l, N.xyz );
+		if ( N.w < 0.0 ) facing = abs( facing );
 		if ( facing <= 0.03 ) continue;
 		float ndl = dot( wn, l );
 		if ( ndl <= 0.0 ) continue;
-		float area = 4.0 * P.w * N.w;
+		float area = 4.0 * P.w * hh;
 		float e = area * facing * ndl / ( dist2 + area * 0.3183099 );
 		// Smooth range cut so a portal never pops as the camera walks past its radius.
 		float fade = 1.0 - dist2 / rng2;

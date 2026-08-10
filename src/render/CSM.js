@@ -127,8 +127,16 @@ export class CascadedShadowMaps {
      * shadow *bars* is exactly that failure. 9 texels keeps the contact-to-tip ramp
      * PCSS exists for and stops the tip dissolving.
      */
-    this.maxRadiusTexels = 9.0;
-    this.baseRadiusTexels = 1.1;
+    /*
+     * Trimmed again to 6 once the cascade texels were measured in-engine: in the band
+     * the props stand in (3.5-13 m) a texel is 21 mm with four cascades, so nine of them
+     * is a 19 cm penumbra on a 0.6 m barrel — wider than the thing casting it. Six is
+     * 13 cm, which still opens visibly along a two-metre shadow and leaves the contact
+     * point hard. The base radius comes down with it: 1.1 texels of *unconditional*
+     * blur was ten screen pixels of softness on every contact point in the near field.
+     */
+    this.maxRadiusTexels = 6.0;
+    this.baseRadiusTexels = 0.85;
 
     this.direction = new THREE.Vector3(0.35, 0.72, 0.6).normalize();
     this.color = new THREE.Color(1, 1, 1);

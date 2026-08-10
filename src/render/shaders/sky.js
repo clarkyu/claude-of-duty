@@ -834,13 +834,21 @@ void main() {
    * applied here where the sky is still scene-referred and nothing else has been mixed
    * into it. The zenith bias then leans the top of the dome further towards blue, which
    * is where single scattering is strongest and where the filtering loss is worst.
+   *
+   * **Not in the environment cube.** Both losses this corrects are display-path
+   * effects — a texture filter and a tonemapper — and neither one happens on the way
+   * into an irradiance probe. Saturating the cube as well would hand every shaded
+   * surface in the level a bluer sky than the physics says it stands under, which is
+   * how a soldier in open shade turns from olive into a blue cutout.
    */
+#ifndef SKY_ENV
   {
     float skyL = dot( sky, vec3( 0.2126, 0.7152, 0.0722 ) );
     sky = max( mix( vec3( skyL ), sky, uSkyChroma.x ), vec3( 0.0 ) );
     float up = sat1( dir.y );
     sky *= mix( vec3( 1.0 ), vec3( 0.86, 0.97, 1.20 ), up * up * uSkyChroma.y );
   }
+#endif
 
   /* --- ground / distant terrain haze below the horizon ---------------------- */
   if ( dir.y < 0.0 ) {
