@@ -1155,8 +1155,8 @@ const G = {
  * darkens and roughens the surface.
  */
 /**
- * A note on the *edge* materials, which is where this model earned and then lost its
- * "used weapon" read twice in a row.
+ * A note on the *edge* materials, and on the albedo level of the whole weapon, which is
+ * where this model lost its read three rounds running.
  *
  * Attempt one keyed chamfers as near-pure metal. A metal chamfer has no diffuse term,
  * so on a viewmodel whose environment weight is clamped it flared for the two frames a
@@ -1164,39 +1164,48 @@ const G = {
  *
  * Attempt two overcorrected: bright *dielectric* rub-through, 0x99a1ab against a
  * 0x191c21 body — a 6:1 albedo step — applied by `sink.pair(main, edge, …)` to the
- * chamfer of **every primitive in the model**. Every bevel, every M-LOK lip, every rail
- * tooth, every knurl. The bodies were dark and correct and every millimetre-wide feature
- * on them was six times brighter, which is not edge wear, it is salt crust: measured at
- * 2.93× scene p99 against 0.52× scene p50, a 5.7:1 internal contrast on an object that
- * should sit around 3:1.
+ * chamfer of **every primitive in the model**. That is not edge wear, it is salt crust.
  *
- * What is authored here instead:
+ * Attempt three fixed the palette ratio and left the *level* alone, and that is the
+ * error this pass is undoing. Measured against an exact viewmodel mask (render the pose
+ * twice, once with `viewScene.visible = false`, and difference the frames) the weapon
+ * came out at 0.83× the scene median and 3.2× it at p99 in hero, 4.1× at p99 at night.
+ * Decomposed, a lit anodised face was putting out 0.12 in scene-referred linear of which
+ * **0.005 was diffuse**: at 0x191c21 the body albedo is 1 % reflectance — blacker than
+ * any real coating — so 96 % of every rendered pixel on this weapon was a dielectric
+ * specular lobe off a four-light rig. That is the definition of chrome, and no amount of
+ * re-tinting the chamfers can fix it: the bodies had no midtone to defend.
  *
- *  - **The default chamfer is a machined bevel, not rub-through.** A cut face on an
- *    anodised part is still anodised: it is a slightly lighter, slightly smoother
- *    version of the flank it came off, about 1.6:1, and that is all. This is the shade
- *    almost every `sink.pair` in the file gets, and at 1.6:1 a thousand of them read as
- *    machining rather than as confetti.
- *  - **Rub-through is a sparse mask, capped at ~2:1.** `wearBright` is reserved for the
- *    handful of places a hand, a magazine or a case actually scrubs, and even there the
- *    step is two stops, not six. Anodising that has genuinely worn to bare aluminium is
- *    a *matte* grey — burnished by a palm, oxidised within the hour — not a mirror, so
- *    it is also rougher than it used to be, which stops it collecting tight speculars.
- *  - **Every edge family is defined as a ratio against its own body**, listed after the
- *    hex, so the next person changing one can see immediately what they are doing to the
- *    internal contrast of the weapon.
+ * So the two levers are pulled together:
+ *
+ *  - **Albedo comes up to a physical value.** Hard black anodising is 4–8 % reflectance,
+ *    not 1 %. Every coated body is ~2.8× lighter in sRGB than it was, which through the
+ *    base texture lands around 4 %. The gun's midtone is now carried by its own diffuse
+ *    term instead of by a highlight, which is the only way a dark object reads as dark
+ *    *and* solid.
+ *  - **Roughness comes up so the lobe cannot spike.** Nothing coated on this weapon is
+ *    under 0.80 any more (anodising 0.80–0.94, phosphate 0.86–0.99, rail 0.88–1.0,
+ *    polymer 0.88–1.0). A broad lobe at a higher albedo is the same total energy spread
+ *    over the surface instead of piled into 3 % of its pixels.
+ *  - **No edge material is glossier than the body it sits on.** This was the actual
+ *    confetti mechanism: `anodisedEdge` ran 0.52–0.72 against a 0.60–0.82 body, so every
+ *    chamfer in the model collected a *tighter* highlight than the flank it came off. A
+ *    machined bevel on an anodised part is not polished; every edge family is now at
+ *    least as rough as its parent.
+ *  - **The edge step is 1.33:1 and rub-through is sparse and capped at 1.8:1.**
+ *    `wearBright` is reserved for the handful of places a hand, a magazine or a case
+ *    actually scrubs. Every edge family lists its ratio against its own body so the next
+ *    person changing one can see what they are doing to the weapon's internal contrast.
  *
  * The detail normal stays dialled right down on the edge materials: a chamfer strip is
  * under a millimetre wide, so a 4 mm-feature normal across it is pure sub-pixel noise.
  */
 const MATSPEC = {
   /* ── anodised aluminium: receiver, handguard, rails, optic bodies ──────── */
-  /* Roughness runs high for anodising. The one highlight left on the weapon after the
-   * edge palette was fixed was a hard clipped stripe down the top face of the rail —
-   * 140/255 at night on a body whose albedo cannot produce more than about 20, so it
-   * was pure specular lobe. Hard anodising is a matte oxide; a broad lobe is both more
-   * correct and 40 % dimmer at the peak. */
-  anodised: { base: 'brushed_aluminium', color: 0x191c21, rough: [0.60, 0.82], metal: [0.0, 0.12], uv: 62, det: 0.006, nrm: 0.9, env: 0.38, grime: 0.9 },
+  /* Hard anodising is an aluminium-oxide layer: a matte dark dielectric at roughly 5 %
+   * reflectance, cool and slightly blue. Not 1 %, which is what it used to be authored
+   * at and which left the surface with no diffuse term for the specular to sit on. */
+  anodised: { base: 'brushed_aluminium', color: 0x464c55, rough: [0.80, 0.94], metal: [0.0, 0.10], uv: 62, det: 0.006, nrm: 0.9, env: 0.26, grime: 0.9 },
   /* The rail is its own surface.
    *
    * After the edge palette was fixed the one hot spot left anywhere on the weapon was a
@@ -1206,10 +1215,12 @@ const MATSPEC = {
    * lobe along its entire length; it is also the part that every mount, sling, torch and
    * doorframe has scrubbed, and a scrubbed rail is *matte*. Rougher and with a third of
    * the environment weight, the same highlight is a soft sheen instead of a blown edge. */
-  railBody: { base: 'brushed_aluminium', color: 0x171a1e, rough: [0.78, 0.95], metal: [0.0, 0.08], uv: 62, det: 0.006, nrm: 0.85, env: 0.14, grime: 1.0 },
-  /* The default chamfer: a machined bevel in the same anodising, 1.6:1 on the flank.
-   * NOT rub-through — see the note above. */
-  anodisedEdge: { base: 'brushed_aluminium', color: 0x282c32, rough: [0.52, 0.72], metal: [0.04, 0.16], uv: 78, det: 0.004, nrm: 0.26, env: 0.26, grime: 0.7 },
+  railBody: { base: 'brushed_aluminium', color: 0x40464e, rough: [0.88, 1.0], metal: [0.0, 0.06], uv: 62, det: 0.006, nrm: 0.85, env: 0.08, grime: 1.0 },
+  /* The rail's own chamfer shade — see buildUpper. */
+  railEdge: { base: 'brushed_aluminium', color: 0x4a5058, rough: [0.90, 1.0], metal: [0.0, 0.05], uv: 78, det: 0.004, nrm: 0.24, env: 0.07, grime: 0.9 },
+  /* The default chamfer: a machined bevel in the same anodising, 1.33:1 on the flank and
+   * a shade *rougher* than it, never smoother. NOT rub-through — see the note above. */
+  anodisedEdge: { base: 'brushed_aluminium', color: 0x5d6571, rough: [0.82, 0.95], metal: [0.02, 0.10], uv: 78, det: 0.004, nrm: 0.26, env: 0.18, grime: 0.7 },
   /* Optic bodies are their own substance. A sight housing is a smooth turned cylinder
    * lying along the bore, so unlike the flat-sided receiver it always presents a broad
    * band to the key light at a grazing angle, and it sits proud of everything so the
@@ -1218,54 +1229,58 @@ const MATSPEC = {
    * are bead-blasted before anodising and they are among the *darkest* things on a
    * weapon, so this is darker than the receiver and its environment weight is halved
    * again on top of that. */
-  opticBody: { base: 'brushed_aluminium', color: 0x0e1013, rough: [0.74, 0.94], metal: [0.0, 0.08], uv: 70, det: 0.005, nrm: 0.85, env: 0.09, grime: 0.95 },
-  /* ...and so are its chamfers, of which a sight is nearly half made. 1.7:1 on the
-   * housing. A sight is a sealed unit nobody handles once it is zeroed: its edges are
-   * machined, not burnished. */
-  opticEdge: { base: 'brushed_aluminium', color: 0x191c20, rough: [0.62, 0.82], metal: [0.02, 0.14], uv: 78, det: 0.004, nrm: 0.3, env: 0.12, grime: 0.85 },
+  opticBody: { base: 'brushed_aluminium', color: 0x383d45, rough: [0.86, 0.99], metal: [0.0, 0.06], uv: 70, det: 0.005, nrm: 0.85, env: 0.06, grime: 0.95 },
+  /* ...and so are its chamfers, of which a sight is nearly half made. 1.33:1 on the
+   * housing and rougher than it. A sight is a sealed unit nobody handles once it is
+   * zeroed: its edges are machined, not burnished. */
+  opticEdge: { base: 'brushed_aluminium', color: 0x4a515b, rough: [0.88, 1.0], metal: [0.02, 0.10], uv: 78, det: 0.004, nrm: 0.3, env: 0.07, grime: 0.85 },
   /* ── manganese phosphate: barrel, gas block, controls, small steel ─────── */
   /* Phosphate is a porous conversion coating — it is measurably rougher than hard
    * anodising and it has to *look* it, or the barrel and the receiver read as one
    * substance in two colours. The four families are deliberately spread across the
    * roughness range: anodising 0.54-0.74, phosphate 0.68-0.9, polymer 0.74-0.94,
    * rubber 0.9-1.0. */
-  phosphate: { base: 'painted_steel_chipped', color: 0x111214, rough: [0.68, 0.9], metal: [0.0, 0.14], uv: 66, det: 0.006, nrm: 1.05, env: 0.28, grime: 1.05 },
-  /* 1.9:1 on phosphate. Same job as anodisedEdge, one family down in value. */
-  phosphateEdge: { base: 'brushed_aluminium', color: 0x212429, rough: [0.5, 0.7], metal: [0.06, 0.22], uv: 78, det: 0.004, nrm: 0.28, env: 0.26, grime: 0.7 },
+  phosphate: { base: 'painted_steel_chipped', color: 0x3b3a37, rough: [0.86, 0.99], metal: [0.0, 0.10], uv: 66, det: 0.006, nrm: 1.05, env: 0.18, grime: 1.05 },
+  /* 1.33:1 on phosphate, and warm where the anodising is cool: the two families have to
+   * separate in hue as well as in value or a 3300 K key lands them both on mid-grey. */
+  phosphateEdge: { base: 'brushed_aluminium', color: 0x4e4d49, rough: [0.88, 1.0], metal: [0.02, 0.12], uv: 78, det: 0.004, nrm: 0.28, env: 0.16, grime: 0.7 },
   /* ── bare aluminium worn through the finish at handling points ─────────── */
-  /* 2.1:1 on the receiver, and SPARSE: charging handle, selector, mag catch, bolt
+  /* 1.7:1 on the receiver, and SPARSE: charging handle, selector, mag catch, bolt
    * catch, trigger shoe, magwell flare, port surround, takedown pins. Everything that
    * is merely a cut edge takes `anodisedEdge`. Worn anodising is matte grey aluminium
    * oxide, so this is a *rougher* surface than the coating it wore off, not a polished
    * one — a glossy wear shade is what turned the rail teeth into white noise. */
-  wearBright: { base: 'brushed_aluminium', color: 0x363a41, rough: [0.4, 0.58], metal: [0.1, 0.28], uv: 86, det: 0.003, nrm: 0.24, env: 0.28, grime: 0.5 },
-  /* 2.4:1, and only ever on hardware you could count: cross-bolts, ring screws, pins.
-   * It keeps a real metal fraction because a screw head genuinely is bare steel, but
-   * the environment weight is low enough that it cannot mirror the sky. */
-  steelBright: { base: 'brushed_aluminium', color: 0x3f434a, rough: [0.34, 0.5], metal: [0.25, 0.5], uv: 82, det: 0.004, nrm: 0.5, env: 0.26, grime: 0.8 },
+  wearBright: { base: 'brushed_aluminium', color: 0x767e8b, rough: [0.70, 0.86], metal: [0.06, 0.20], uv: 86, det: 0.003, nrm: 0.24, env: 0.18, grime: 0.5 },
+  /* 1.8:1, and only ever on hardware you could count: cross-bolts, ring screws, pins,
+   * the gas tube. It keeps a real metal fraction because a screw head genuinely is bare
+   * steel, but both the metal fraction and the environment weight are low enough that
+   * it cannot mirror the sky. */
+  steelBright: { base: 'brushed_aluminium', color: 0x7b8391, rough: [0.60, 0.76], metal: [0.15, 0.32], uv: 82, det: 0.004, nrm: 0.5, env: 0.18, grime: 0.8 },
   /* parkerised steel — dark, matte, and emphatically not a mirror */
-  steelDark: { base: 'galvanised_metal', color: 0x0f1012, rough: [0.5, 0.78], metal: [0.0, 0.2], uv: 64, det: 0.005, nrm: 0.8, env: 0.22, grime: 1.1 },
+  steelDark: { base: 'galvanised_metal', color: 0x323438, rough: [0.80, 0.94], metal: [0.0, 0.14], uv: 64, det: 0.005, nrm: 0.8, env: 0.14, grime: 1.1 },
   /* ── the inside of anything: bores, slots, recesses, the ejection port ─── */
-  bore: { base: 'rusted_steel', color: 0x040405, rough: [0.7, 0.98], metal: [0.0, 0.12], env: 0.07, uv: 52, det: 0.006, nrm: 0.8, grime: 1.3 },
+  /* Stays the darkest thing in the model by a wide margin: it is the backdrop the optic
+   * element is read against, and every engraved stroke and coin slot on the weapon. */
+  bore: { base: 'rusted_steel', color: 0x0d0e10, rough: [0.90, 1.0], metal: [0.0, 0.08], env: 0.04, uv: 52, det: 0.006, nrm: 0.8, grime: 1.3 },
   /* ── moulded polymer: stock, grip, magazine ────────────────────────────── */
   /* Same luminance as before, more chroma. The four families were measurably separated
    * in value and roughness and still read as one substance, because under a 3300 K key
    * a desaturated olive and a desaturated blue-grey both land on warm mid-grey. The
    * separation has to be in hue as well as in value to survive the light. */
-  polymer: { base: 'rubber_tyre', color: 0x28321c, rough: [0.74, 0.94], metal: [0.0, 0.03], uv: 96, det: 0.0032, nrm: 1.2, env: 0.2, grime: 0.9 },
+  polymer: { base: 'rubber_tyre', color: 0x333f24, rough: [0.88, 1.0], metal: [0.0, 0.03], uv: 96, det: 0.0032, nrm: 1.2, env: 0.16, grime: 0.9 },
   /* Polymer does not polish, it *scuffs*: the pigment goes chalky along a moulded edge.
-   * 1.6:1 on the body — it used to be 2.4:1 and glossy, which is what put the hard
-   * clipped specular on the top edge of the stock. */
-  polymerEdge: { base: 'rubber_tyre', color: 0x414e33, rough: [0.64, 0.86], metal: [0.0, 0.04], uv: 104, det: 0.0028, nrm: 0.8, env: 0.2, grime: 0.7 },
-  rubber: { base: 'rubber_tyre', color: 0x0b0c0e, rough: [0.88, 1.0], metal: [0.0, 0.02], uv: 44, det: 0.0068, nrm: 1.6, env: 0.12, grime: 1.0 },
+   * 1.33:1 on the body and matter than it — it used to be 2.4:1 and glossier, which is
+   * what put the hard clipped specular on the top edge of the stock. */
+  polymerEdge: { base: 'rubber_tyre', color: 0x44532f, rough: [0.86, 0.98], metal: [0.0, 0.03], uv: 104, det: 0.0028, nrm: 0.8, env: 0.16, grime: 0.7 },
+  rubber: { base: 'rubber_tyre', color: 0x101216, rough: [0.94, 1.0], metal: [0.0, 0.02], uv: 44, det: 0.0068, nrm: 1.6, env: 0.09, grime: 1.0 },
   /* Ejected cases only: they are in frame for four frames at a time and they are
    * genuinely polished brass. */
-  brass: { base: 'brushed_aluminium', color: 0x8f7130, rough: [0.26, 0.5], metal: [0.9, 1.0], uv: 96, det: 0.003, nrm: 0.5, env: 0.8, grime: 0.6 },
+  brass: { base: 'brushed_aluminium', color: 0x8f7130, rough: [0.36, 0.58], metal: [0.82, 0.96], uv: 96, det: 0.003, nrm: 0.5, env: 0.5, grime: 0.6 },
   /* A *loaded* round is a different problem: the top of the stack sits in the magwell
    * for the whole match, and on the ejected-case shade it read as an orange bulb glowing
    * inside the gun. Lacquered military brass is dull, dark and half-shadowed by the feed
    * lips. */
-  cartridge: { base: 'brushed_aluminium', color: 0x4a3a1c, rough: [0.5, 0.74], metal: [0.35, 0.6], uv: 96, det: 0.003, nrm: 0.5, env: 0.16, grime: 1.1 },
+  cartridge: { base: 'brushed_aluminium', color: 0x4c3f24, rough: [0.62, 0.82], metal: [0.24, 0.46], uv: 96, det: 0.003, nrm: 0.5, env: 0.10, grime: 1.1 },
   /* ── hands ─────────────────────────────────────────────────────────────────
    * A viewmodel's value hierarchy runs gun < glove < sleeve only in a game where the
    * player is wearing white gloves. Measured, these came out at 79 against a 59
@@ -1278,12 +1293,17 @@ const MATSPEC = {
    * cavity bake sees near-total occlusion along the whole contact band; on the previous
    * grime weight that came out as a black smear exactly where the fingers meet the
    * handguard, which reads as dirt on the gun rather than as a hand on it. */
-  glove: { base: 'fabric_webbing', color: 0x111419, rough: [0.82, 1.0], metal: [0.0, 0.03], uv: 62, det: 0.0034, nrm: 1.3, env: 0.16, grime: 0.5 },
-  glovePad: { base: 'rubber_tyre', color: 0x0d0e11, rough: [0.66, 0.92], metal: [0.0, 0.03], uv: 124, det: 0.0022, nrm: 1.4, env: 0.14, grime: 0.6 },
-  sleeve: { base: 'fabric_uniform', color: 0x161b13, rough: [0.82, 1.0], metal: [0.0, 0.02], uv: 46, det: 0.0042, nrm: 1.35, env: 0.13, grime: 1.1 },
+  /* The gloves come up by a third where the weapon bodies came up by nearly three: the
+   * hands were already diffuse-dominated and already measured *brighter* than the
+   * receiver, so the whole point of this pass is that the gun overtakes them. Nomex is
+   * near-black; at 0x1a1e25 it sits two stops under the anodising in albedo and reads
+   * below it in every pose. */
+  glove: { base: 'fabric_webbing', color: 0x1a1e25, rough: [0.86, 1.0], metal: [0.0, 0.03], uv: 62, det: 0.0034, nrm: 1.3, env: 0.12, grime: 0.5 },
+  glovePad: { base: 'rubber_tyre', color: 0x14161a, rough: [0.80, 0.96], metal: [0.0, 0.03], uv: 124, det: 0.0022, nrm: 1.4, env: 0.10, grime: 0.6 },
+  sleeve: { base: 'fabric_uniform', color: 0x212819, rough: [0.88, 1.0], metal: [0.0, 0.02], uv: 46, det: 0.0042, nrm: 1.35, env: 0.10, grime: 1.1 },
   /* Second sleeve shade for the pattern breakup — see buildForearm. */
-  sleeveDark: { base: 'fabric_uniform', color: 0x111410, rough: [0.84, 1.0], metal: [0.0, 0.02], uv: 52, det: 0.0036, nrm: 1.35, env: 0.13, grime: 1.15 },
-  skin: { base: 'skin', color: 0x6d4d38, rough: [0.46, 0.76], metal: [0.0, 0.02], uv: 52, det: 0.004, nrm: 0.85, env: 0.22, grime: 0.8 },
+  sleeveDark: { base: 'fabric_uniform', color: 0x191d15, rough: [0.90, 1.0], metal: [0.0, 0.02], uv: 52, det: 0.0036, nrm: 1.35, env: 0.10, grime: 1.15 },
+  skin: { base: 'skin', color: 0x6d4d38, rough: [0.55, 0.82], metal: [0.0, 0.02], uv: 52, det: 0.004, nrm: 0.85, env: 0.16, grime: 0.8 },
 };
 
 /** Materials whose base recipe carries a fabric sheen lobe fitted to metre-scale cloth.
@@ -1291,7 +1311,7 @@ const MATSPEC = {
 const SHEEN_TAME = { glove: 0.16, sleeve: 0.2, sleeveDark: 0.2, glovePad: 0.1 };
 
 /** Global scale on every weapon material's environment weight; see MATSPEC.env. */
-export const VIEWMODEL_ENV_SCALE = 0.55;
+export const VIEWMODEL_ENV_SCALE = 0.17;
 
 export function makeWeaponMaterials(ctx) {
   const lib = ctx?.materials;
@@ -1496,18 +1516,25 @@ void main() {
    * was a large part of why the element still measured 124. There is no shadow term
    * available in this shader, so the sun is gated on the same ambient level — outdoors
    * it is at full strength, in a dark room and at night it is gone. */
-  float sunLit = clamp( envLum * 3.2, 0.0, 1.0 );
-  vec3 col = env * ( uBase + smudge + 0.09 * pres + 0.55 * f4 )
-           + coatTint * envLum * coatAmt * 0.44
-           + uSunColor * ( glint + sheen * ( 0.2 + 0.8 * pres ) ) * sunLit
-           + env * rim * 0.30;
+  float sunLit = clamp( envLum * 2.6 - 0.12, 0.0, 1.0 );
+  vec3 col = env * ( uBase + smudge + 0.05 * pres + 0.28 * f4 )
+           + coatTint * envLum * coatAmt * 0.20
+           + uSunColor * ( glint + sheen * ( 0.2 + 0.8 * pres ) ) * sunLit * 0.6
+           + env * rim * 0.13;
   /* The emitter sits low in the tube and throws a little red into the coating stack;
    * on a real red dot you can see that glow from well off the aiming axis, and it is
    * the cue that says "live optic" rather than "tube". It stays a *patch down by the
    * emitter*, not a wash: spread evenly over the element it turns the whole sight
    * picture pink, which is exactly what it did on the first pass. */
+  /* ...and it is the last term in here that did not know what time of day it was. An
+   * LED is genuinely self-luminous, so it does not scale with the environment the way
+   * the coating does — but a red dot's emitter is a *reflection off the coating stack*
+   * from the shooter's side, and in a room whose median is 28 an unscaled spill was the
+   * largest single contributor to the objective. Three quarters of it tracks the
+   * environment; the quarter that does not is the emitter itself. */
   float ey = ( vLocal.y / max( 1e-4, uRadius ) ) + 0.55;
-  col += uGlowColor * uGlow * ( 0.25 * exp( -r * r * 5.0 ) + 0.85 * exp( -ey * ey * 9.0 ) );
+  float glowLit = 0.28 + 0.72 * clamp( envLum * 2.2, 0.0, 1.0 );
+  col += uGlowColor * uGlow * glowLit * ( 0.25 * exp( -r * r * 5.0 ) + 0.85 * exp( -ey * ey * 9.0 ) );
 
   /* Alpha is what decides how much of the *tube* shows through, and the tube is now an
    * actually opaque near-black wall (see makeWeaponMaterials: the bore material is
@@ -1516,10 +1543,16 @@ void main() {
    * turning into a pastel disc — but it must not be a *sheet*, so the coating's own
    * contribution to opacity is pulled back and the presence ramp does the work.
    * (bore is double-sided now; before, the interior was back-face culled.) */
+  /* Measured at the previous weights this saturated around 0.78 at hip angles, which is
+   * the reason nothing dark ever showed through: the tube behind the element is now
+   * genuinely opaque and near-black, and the element was covering it up. Two thirds of
+   * the presence, and a ceiling below 1, so the black wall is always part of what the
+   * objective reads as — which is also what makes the element track the room, because
+   * what shows through does not care how bright the sky is. */
   float a = clamp(
-    uBase * 1.1 + smudge + pres * uFresnel * 0.42 + graze * uFresnel * 0.38
-      + f4 * uFresnel * 0.4 + coatAmt * 0.12 + glint * 0.5 + rim * 0.42 + uGlow * 0.28,
-    0.0, 1.0 );
+    uBase * 0.8 + smudge + pres * uFresnel * 0.22 + graze * uFresnel * 0.18
+      + f4 * uFresnel * 0.24 + coatAmt * 0.06 + glint * 0.4 + rim * 0.22 + uGlow * 0.16,
+    0.0, 0.78 );
   gl_FragColor = vec4( col, a );
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -1554,12 +1587,20 @@ void main() {
   /* The emitted radiance is capped, the *alpha* is not.
    *
    * Additively blending uColor * a with a running to 15 does not make a brighter red
-   * dot, it makes a white one: ACES desaturates hard above about 4, so the core clipped
-   * out at (216,201,198) — a white pip with a red halo, which is what a blown-out
-   * tungsten bulb looks like, not a 650 nm LED. A real emitter is monochromatic; the
-   * core is *saturated* and the apparent size grows with brightness rather than the hue
-   * washing out. Clipping the radiance and letting the skirt carry the intensity keeps
-   * the dot red at every setting, and the bloom pass still sees a >1 pixel. */
+   * dot, it makes a white one: ACES desaturates hard, so the core clipped out at
+   * (216,201,198) — a white pip with a red halo, which is what a blown-out tungsten
+   * bulb looks like, not a 650 nm LED. A real emitter is monochromatic; the core is
+   * *saturated* and the apparent size grows with brightness rather than the hue washing
+   * out. Clipping the radiance and letting the skirt carry the intensity keeps the dot
+   * red, and the bloom pass still sees a >1 pixel.
+   *
+   * The cap was 2.7 and it was still white: measured, the core came out at
+   * (201,178,167). ACES starts desaturating a monochromatic primary well below 1 — the
+   * input matrix already spills 13 % of a pure red into green — and the tone curve
+   * compresses the loaded channel hardest, so the ratio collapses as soon as R clips.
+   * The cap has to sit just over 1, where the curve is still steep in all three
+   * channels and the hue survives. The dot loses no apparent size: the skirt below it
+   * is unclipped, so what used to be a white core is now a red one the same width. */
   vec3 emit = uColor * min( a, uClip );
   gl_FragColor = vec4( emit, min( a, 1.0 ) );
   #include <tonemapping_fragment>
@@ -1751,7 +1792,7 @@ function makeOpticMaterials(ctx) {
       uRing: { value: 0.0 },
       uIntensity: { value: 6.5 },
       uJitter: { value: 0.0 },
-      uClip: { value: 2.6 },
+      uClip: { value: 0.62 },
     },
   });
   const scope = new THREE.ShaderMaterial({
@@ -2030,11 +2071,17 @@ function buildUpper(sink, b) {
   // the chamfers go to bare metal rather than to the ordinary edge shade.
   const rail = railG(Math.abs(b.rail.z1 - b.receiver.z0) + 0.001, b.rail.halfW, b.rail.y, { pitch: 0.0101 });
   const railM = mTrans(0, 0, (b.rail.z1 + b.receiver.z0) * 0.5);
-  /* The tooth tips take the ordinary bare-aluminium edge shade rather than full
-   * rub-through: at ten pixels a tooth there are four chamfer strips per tooth, and on
-   * the brightest material on the gun that stops being a serrated rail and becomes a
-   * band of white noise. The discrete handling points keep `wearBright`. */
-  sink.pair(rail.body, 'railBody', 'anodisedEdge', railM);
+  /* The tooth tips get `railEdge`, which is the rail's *own* shade barely lifted, and
+   * nothing else on the weapon uses it.
+   *
+   * At ten pixels a tooth there are four chamfer strips per tooth and about fifty teeth
+   * in frame, so whatever shade this line names is painted as a continuous ribbon from
+   * the muzzle to the receiver — this one call is the single largest contributor to the
+   * "white confetti" read, and it was keyed to `anodisedEdge`, a material tuned against
+   * the *receiver* and carrying more than twice the rail's environment weight. A rail is
+   * also the most-scrubbed and therefore mattest part of the gun. 1.16:1 and the same
+   * env as the body: the teeth read as teeth and stop reading as sparkle. */
+  sink.pair(rail.body, 'railBody', 'railEdge', railM);
   for (const s of rail.slots) sink.pair(s, 'steelDark', 'steelDark', railM.clone());
 
   // Brass deflector behind the port, and the port's rear wall.
@@ -2375,11 +2422,17 @@ function buildHandguard(sink, b) {
   // rail, so the two are one continuous sight plane the way a free-float rail is.
   const rail = railG(len + 0.004, b.rail.halfW, b.rail.y, { pitch: 0.0101 });
   const railM = mTrans(0, 0, (z0 + z1) * 0.5);
-  /* The tooth tips take the ordinary bare-aluminium edge shade rather than full
-   * rub-through: at ten pixels a tooth there are four chamfer strips per tooth, and on
-   * the brightest material on the gun that stops being a serrated rail and becomes a
-   * band of white noise. The discrete handling points keep `wearBright`. */
-  sink.pair(rail.body, 'railBody', 'anodisedEdge', railM);
+  /* The tooth tips get `railEdge`, which is the rail's *own* shade barely lifted, and
+   * nothing else on the weapon uses it.
+   *
+   * At ten pixels a tooth there are four chamfer strips per tooth and about fifty teeth
+   * in frame, so whatever shade this line names is painted as a continuous ribbon from
+   * the muzzle to the receiver — this one call is the single largest contributor to the
+   * "white confetti" read, and it was keyed to `anodisedEdge`, a material tuned against
+   * the *receiver* and carrying more than twice the rail's environment weight. A rail is
+   * also the most-scrubbed and therefore mattest part of the gun. 1.16:1 and the same
+   * env as the body: the teeth read as teeth and stop reading as sparkle. */
+  sink.pair(rail.body, 'railBody', 'railEdge', railM);
   for (const s of rail.slots) sink.pair(s, 'steelDark', 'steelDark', railM.clone());
 
   // QD sling socket underneath.
@@ -3417,8 +3470,8 @@ export function buildRedDot(ctx, mats, o = {}) {
   gmat.uniforms.uTint.value.setRGB(0.028, 0.145, 0.125);
   gmat.uniforms.uTintMid.value.setRGB(0.038, 0.17, 0.36);
   gmat.uniforms.uTintEdge.value.setRGB(0.27, 0.11, 0.38);
-  gmat.uniforms.uBase.value = 0.03;
-  gmat.uniforms.uFresnel.value = 0.92;
+  gmat.uniforms.uBase.value = 0.022;
+  gmat.uniforms.uFresnel.value = 0.78;
   gmat.uniforms.uCoat.value = 1.0;
   gmat.side = THREE.FrontSide;
   const front = new THREE.Mesh(discG(glassR, 0, 1, RAD), gmat);
@@ -3429,8 +3482,8 @@ export function buildRedDot(ctx, mats, o = {}) {
   const rearMat = gmat.clone();
   rearMat.uniforms = THREE.UniformsUtils.clone(gmat.uniforms);
   // Ocular: a warmer, weaker stack, so the two elements do not read as one sheet.
-  rearMat.uniforms.uBase.value = 0.02;
-  rearMat.uniforms.uFresnel.value = 0.68;
+  rearMat.uniforms.uBase.value = 0.015;
+  rearMat.uniforms.uFresnel.value = 0.56;
   rearMat.uniforms.uCoat.value = 0.78;
   rearMat.uniforms.uTint.value.setRGB(0.055, 0.095, 0.185);
   rearMat.uniforms.uTintMid.value.setRGB(0.15, 0.085, 0.26);
@@ -3451,7 +3504,7 @@ export function buildRedDot(ctx, mats, o = {}) {
   rmat.uniforms.uIntensity.value = 9.0;
   // 650 nm. Not a hint of green: what little there is has to survive the ACES matrix.
   rmat.uniforms.uColor.value.setRGB(1.0, 0.035, 0.008);
-  rmat.uniforms.uClip.value = 2.7;
+  rmat.uniforms.uClip.value = 0.62;
   const quad = new THREE.PlaneGeometry(glassR * 1.9, glassR * 1.9);
   const reticle = new THREE.Mesh(quad, rmat);
   reticle.frustumCulled = false;

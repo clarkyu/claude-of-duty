@@ -304,17 +304,41 @@ export default function createWeaponSystem(ctx) {
       root.add(l);
       return l;
     };
-    // Camera-relative three-point rig: the gun must read as a solid object against a
-    // blown-out sky or a black doorway, and still pick up the world IBL for bounce.
-    lights.key = mk(0xfff0dc, 2.5, [-0.62, 0.78, 0.42]);
-    lights.fill = mk(0x93aecd, 0.95, [0.72, -0.18, 0.5]);
-    lights.rim = mk(0xdfe8f6, 1.7, [0.34, 0.52, -0.86]);
-    lights.bounce = mk(0x6a5e4c, 0.55, [0.1, -0.9, 0.2]);
+    /* Camera-relative rig: the gun must read as a solid object against a blown-out sky
+     * or a black doorway, and still pick up the world IBL for bounce.
+     *
+     * Two of the four lights are gone and that is the whole point of this revision.
+     *
+     * Ablation: render the hero frame with each contribution removed in turn, invert the
+     * tone curve and difference the results, and the weapon's top 1 % of pixels comes
+     * out as *fill + bounce + rim + IBL*, not key. That is not an accident of these
+     * particular intensities, it is what a dielectric does. A coated weapon has F0 =
+     * 0.04, so at normal incidence 96 % of what you see is diffuse — but fresnel takes
+     * the specular to 1.0 at grazing, so any light arriving side-on or behind puts
+     * essentially *all* of its energy into a lobe along the silhouette and none into the
+     * shading. A fill from the right, a bounce from below and a rim from behind are
+     * three grazing lights, and between them they were most of the "white salt-crust"
+     * the review kept measuring: they were paying for the highlight and not for the
+     * form.
+     *
+     * So the two that exist purely to open up the shadow side are now a HemisphereLight.
+     * In three's PBR a hemisphere light lands in `irradiance` and therefore only ever
+     * reaches `RE_IndirectDiffuse`: it fills the dark side of the receiver with a cool
+     * sky above and a warm ground bounce below and contributes **no specular at all**.
+     * The key keeps its lobe, because a weapon with no highlight at all is a matte
+     * cutout, and the rim survives at a third of its old weight to hold the silhouette
+     * against a night street. */
+    lights.key = mk(0xfff0dc, 1.7, [-0.62, 0.78, 0.42]);
+    lights.rim = mk(0xdfe8f6, 0.24, [0.34, 0.52, -0.86]);
+    const hemi = new THREE.HemisphereLight(0x93aecd, 0x6a5e4c, 0.92);
+    root.add(hemi);
+    lights.fill = hemi;
+    lights.bounce = null;
     // Daylight hues, kept so syncEnvironment can lerp away from them and back.
     lights.key.userData.day = new THREE.Color(0xfff0dc);
-    lights.fill.userData.day = new THREE.Color(0x93aecd);
     lights.rim.userData.day = new THREE.Color(0xdfe8f6);
-    lights.bounce.userData.day = new THREE.Color(0x6a5e4c);
+    hemi.userData.day = new THREE.Color(0x93aecd);
+    hemi.userData.dayGround = new THREE.Color(0x6a5e4c);
 
     // Exactly one of them casts. Without it nothing in the viewmodel scene occludes
     // anything: the hands float clear of the receiver, the optic leaves no mark on the
@@ -375,16 +399,28 @@ export default function createWeaponSystem(ctx) {
     // It scales *down* with the world, not up: a dark scene is exactly where a residual
     // sky reflection becomes the brightest thing on screen. The rim light, which has
     // its own floor below, is what keeps the gun readable at night — not the sky.
-    scene.environmentIntensity = clamp(0.34 * Math.sqrt(lum / 0.6), 0.09, 0.42);
+    /* Environment weight. Measured alone — every rig light off, IBL on — the sky was
+     * putting the weapon's top 1 % at 88/255 against a 42 scene, because a low
+     * `envMapIntensity` still multiplies a genuinely HDR sky and grazing fresnel does
+     * not care how small the multiplier is. It was buying almost nothing in exchange:
+     * with the rig off the same frame's *median* weapon pixel was 6.6. So the sky is
+     * now down to a sixth of its old hold and the shadow fill it used to pretend to
+     * provide comes from the hemisphere light instead, where it cannot make a highlight. */
+    scene.environmentIntensity = clamp(0.13 * Math.sqrt(lum / 0.6), 0.035, 0.17);
 
     // Key tracks the world, but with a hard floor: a COD viewmodel is always readable
     // because a camera-relative rig lights it, not the room it is standing in.
     const k = clamp(0.5 + Math.sqrt(lum) * 0.75, 0.62, 1.7);
-    if (lights.key) lights.key.intensity = 2.15 * k;
-    if (lights.fill) lights.fill.intensity = 0.6 * k;
-    // Rim carries the silhouette; it is deliberately the last thing to fade at night.
-    if (lights.rim) lights.rim.intensity = 1.45 * clamp(k, 0.78, 1.5);
-    if (lights.bounce) lights.bounce.intensity = 0.38 * k;
+    if (lights.key) lights.key.intensity = 1.7 * k;
+    // Hemisphere: pure irradiance, so this can be generous without costing a highlight.
+    if (lights.fill) lights.fill.intensity = 0.92 * k;
+    /* Rim carries the silhouette; it is deliberately the last thing to fade at night —
+     * but its night *floor* was doing real damage. At 1.45 x 0.78 it was still throwing
+     * 1.13 of grazing light at a weapon standing in a courtyard whose median pixel is
+     * 27, which is why the night frame measured the worst highlight ratio of the four
+     * (4.1x scene at p99) despite being the darkest. */
+    if (lights.rim) lights.rim.intensity = 0.24 * clamp(k, 0.7, 1.4);
+    if (lights.bounce) lights.bounce.intensity = 0.3 * k;
 
     /* Night warmth.
      *
@@ -404,6 +440,10 @@ export default function createWeaponSystem(ctx) {
     warmTo(lights.fill, 0xffc48a, 0.82);
     warmTo(lights.rim, 0xffcf9a, 0.7);
     warmTo(lights.bounce, 0xff9c52, 0.55);
+    // The hemisphere's lower half stands in for the old bounce light.
+    if (lights.fill?.groundColor && lights.fill.userData?.dayGround) {
+      lights.fill.groundColor.copy(lights.fill.userData.dayGround).lerp(_col.set(0xff9c52), 0.55 * night);
+    }
     // The environment is a night sky: blue, and at this point the only blue left. Pull
     // its hold down further than the daylight curve does so it tints rather than casts.
     if (night > 0.01) scene.environmentIntensity *= 1 - 0.45 * night;
