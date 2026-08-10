@@ -869,7 +869,7 @@ void main() {
    * below the horizon so the glow does not survive into the ground blend.
    */
   vec3 aureole = uSunGlowColor *
-    ( 0.85 * exp( -sunAng * 9.5 ) + 0.34 * exp( -sunAng * 2.3 ) ) *
+    ( exp( -sunAng * 11.0 ) + 0.22 * exp( -sunAng * 2.6 ) ) *
     sat1( dir.y * 5.0 + 0.55 );
 
   float moonAng = safeacos( dot( dir, uMoonDirection ) );

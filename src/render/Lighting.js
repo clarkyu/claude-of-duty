@@ -2328,9 +2328,9 @@ class Lighting {
         g += hz.ground[1] * 1.1;
         b += hz.ground[2] * 1.1;
       }
-      // Direct sun arriving at the outside face.
+      // Direct sun arriving at the outside face. The aperture's normal is horizontal,
+      // so only the sun's horizontal component lands on it.
       const sd = this.sunDirection;
-      const cosOut = -(p.nx * sd.x + p.nz * sd.z) * Math.sqrt(Math.max(1 - sd.y * sd.y, 0)) + 0;
       const face = -(p.nx * sd.x + p.nz * sd.z);
       if (face > 0.02 && this.sunIntensity > 1e-3 && sd.y > 0) {
         let vis = 1;
@@ -2350,7 +2350,6 @@ class Lighting {
           b += this.sunColor.b * k;
         }
       }
-      void cosOut;
       const t = p.glazed ? 0.82 : 1;
       const gain = this.portalGain * t;
       uP[i].set(p.x, p.y, p.z, p.hw);

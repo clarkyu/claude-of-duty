@@ -1597,8 +1597,18 @@ class Sky {
      * legible in a frame the disc itself never enters.
      */
     const glowFade = clamp01((this.sunDirection.y + 0.03) / 0.08);
-    const gk = 0.62 * glowFade * this.adaptLift * this.exposureScale * clamp01(0.45 + 0.55 * this.haze);
-    u.uSunGlowColor.value.set(sc.r * gk, sc.g * gk * 0.86, sc.b * gk * 0.62);
+    /**
+     * Scaled off the sky's own horizon radiance rather than off a constant, so the glow
+     * is always the same *ratio* to the sky it sits in whatever the hour and whatever
+     * the eye adaptation is doing. 1.6 puts the core at roughly twice the horizon and
+     * the 20-degree shoulder at about a fifth of it, which is what a hazy low sun
+     * measures; anything anchored to `exposureScale` blows out by an order of magnitude
+     * the moment `adaptLift` moves.
+     */
+    const hzc = this.horizonColor;
+    const hLum = Math.max(0.2126 * hzc.r + 0.7152 * hzc.g + 0.0722 * hzc.b, 1e-5);
+    const gk = 1.6 * hLum * glowFade * clamp01(0.5 + 0.5 * this.haze);
+    u.uSunGlowColor.value.set(sc.r * gk, sc.g * gk * 0.93, sc.b * gk * 0.8);
     /**
      * **The lunar disc rides `adaptLift` too.** It was the last term that did not, and
      * it is the one that matters most for a night frame: the exposure curve lifts the
