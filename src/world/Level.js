@@ -89,7 +89,7 @@ import { Palette } from './kit/Palette.js';
 import { Batcher } from './kit/Batcher.js';
 import { OcclusionField, bakeOcclusion, setVertexAOStrength } from './kit/VertexAO.js';
 import { mulberry32, clamp01, fbm2, lerp, smoothstep, valueNoise2 } from './kit/geom.js';
-import { wallRun, lowWall } from './kit/Walls.js';
+import { wallRun, lowWall, WALL_OPENINGS, resetWallOpenings } from './kit/Walls.js';
 import { stairs, ramp, ladder, railing, crate, crateStack } from './kit/Stairs.js';
 import {
   kerb,

@@ -860,6 +860,20 @@ const SH_THETA = 12;
 const BOUNCE_ALBEDO = new THREE.Color(0.26, 0.215, 0.165);
 
 /**
+ * Object / material names that must stay out of the shadow caster set. See
+ * `Lighting._enrolCaster`. Deliberately narrow: everything not matched here casts.
+ */
+const NO_CAST_RE =
+  /sky|dome|cloud|cirrus|star|galaxy|moon|horizon|backdrop|decal|grime|contact|scorch|roadpaint|tracer|muzzle|flash|spark|smoke|ember|dust|mote|particle|billboard|impostor|sprite|flare|halo|debug|helper|gizmo|hud|reticle|crosshair|marker|minimap|preview|outline|silhouette|viewmodel|wire|cable/i;
+
+/**
+ * How many window/door apertures can light a room at once. Four covers every review
+ * pose (the market hall's south wall shows three from the interior camera) and keeps
+ * the per-fragment loop under twenty instructions on the software rasteriser.
+ */
+const PORTAL_SLOTS = 4;
+
+/**
  * ── The local environment probe ─────────────────────────────────────────────────
  *
  * `BOUNCE_ALBEDO` and the analytic skyline below it are a *guess* at what surrounds
@@ -967,9 +981,23 @@ class Lighting {
       uCodContactMap: { value: null },
       uCodContactMtx: { value: new THREE.Matrix4() },
       uCodContactParams: { value: new THREE.Vector4(0, 140, 0, 0) },
+      /**
+       * What the occlusion occludes *towards*. rgb is the measured one-bounce
+       * irradiance of the surroundings, w scales it. See `_glsl()` / `_updateBounce`.
+       */
+      uCodBounce: { value: new THREE.Vector4(0, 0, 0, 1) },
+      /** x = AO floor on the indirect term, y = spare. */
+      uCodAoFloor: { value: new THREE.Vector2(0.34, 0) },
+      /* ── window / aperture portals, see `_updatePortals` ───────────────── */
+      uCodPortalP: { value: Array.from({ length: PORTAL_SLOTS }, () => new THREE.Vector4()) },
+      uCodPortalN: { value: Array.from({ length: PORTAL_SLOTS }, () => new THREE.Vector4(0, 0, 1, 0)) },
+      uCodPortalC: { value: Array.from({ length: PORTAL_SLOTS }, () => new THREE.Vector4()) },
     };
 
     this._patched = new WeakSet();
+    /** Meshes the caster audit has already ruled on — see `_enrolCaster`. */
+    this._audited = new WeakSet();
+    this._casterFlips = 0;
     /** @type {Set<THREE.Material>} materials we have patched and may need to recompile */
     this._materials = new Set();
     this._glslCache = null;
@@ -1110,6 +1138,9 @@ class Lighting {
     const rescan = () => {
       this._scanFrame = -999;
       this._probeBuildPending = true;
+      // A module that has just rebuilt its geometry may also have re-run its own
+      // quality pass over `castShadow`; re-audit rather than trust the memo.
+      this._audited = new WeakSet();
     };
     on('boot:done', rescan);
     on('level:ready', rescan);
@@ -1231,7 +1262,12 @@ class Lighting {
   }
 
   setShadowsEnabled(on) {
+    const was = this.shadowsEnabled;
     this.shadowsEnabled = !!on;
+    if (!was && this.shadowsEnabled) {
+      this._audited = new WeakSet();
+      this._scanFrame = -999;
+    }
     this.csm.enabled = this.shadowsEnabled;
     if (this.ctx.renderer) this.ctx.renderer.shadowMap.enabled = this.shadowsEnabled;
     this.contact.enabled = this.shadowsEnabled && (this.ctx.settings?.get?.('contactShadows') ?? true);
@@ -2082,6 +2118,61 @@ float codSpotShadow( sampler2D shadowMap, vec2 mapSize, float intensity, float b
 	return mix( 1.0, sum * ${(1 / spotTaps).toFixed(8)}, intensity );
 }
 #endif
+
+// ═════════════════ window / door apertures as area lights ═════════════════
+/**
+ * **A room is lit by its openings, not by the beam that happens to reach the floor.**
+ *
+ * The interior review measured window panes at 1.7:1 over the wall beside them, no
+ * reveal wash, no spill and no directional cue anywhere in a 30 x 25 m hall — because
+ * at the staged sun the beam geometrically cannot reach the ground storey, so *every*
+ * lighting term in the rig honestly returned "nothing here". The missing physics is
+ * that an aperture is a luminous rectangle in its own right: it radiates the sky and
+ * the sunlit street outside it into the room whether or not a single ray of direct sun
+ * makes it through.
+ *
+ * Each portal is a rectangle with an inward normal. The irradiance a fragment receives
+ * is the standard disc-solid-angle approximation of a diffuse rectangle,
+ *   E = L · A · cos(theta_portal) · cos(theta_surface) / ( d² + A/pi ),
+ * which is exact at range, finite at the aperture plane, and costs one normalise and a
+ * divide. The +A/pi is what stops a fragment in the reveal itself going to infinity.
+ *
+ * Radiance, the aperture's inward-facing side, and which side of the wall is "inside"
+ * are all resolved on the CPU — see `_updatePortals`.
+ */
+uniform vec4 uCodPortalP[ ${PORTAL_SLOTS} ];   // xyz centre (world), w half-width
+uniform vec4 uCodPortalN[ ${PORTAL_SLOTS} ];   // xyz inward normal, w half-height
+uniform vec4 uCodPortalC[ ${PORTAL_SLOTS} ];   // rgb radiance, w range (m); w<=0 = unused
+uniform mat4 uCodInvView;
+uniform vec4 uCodBounce;    // rgb measured one-bounce irradiance of the surroundings, w gain
+uniform vec2 uCodAoFloor;   // x: how far the indirect AO is allowed to close
+
+vec3 codPortalIrradiance( vec3 wp, vec3 wn ) {
+	vec3 sum = vec3( 0.0 );
+	for ( int i = 0; i < ${PORTAL_SLOTS}; i ++ ) {
+		vec4 C = uCodPortalC[ i ];
+		if ( C.w <= 0.0 ) continue;
+		vec4 P = uCodPortalP[ i ];
+		vec4 N = uCodPortalN[ i ];
+		vec3 d = P.xyz - wp;
+		float dist2 = dot( d, d );
+		float rng2 = C.w * C.w;
+		if ( dist2 > rng2 ) continue;
+		vec3 l = d * inversesqrt( max( dist2, 1e-6 ) );
+		// The fragment has to be on the lit side of the aperture, and the aperture has
+		// to be turned towards it: two cosines, both clamped, no light behind the wall.
+		float facing = dot( -l, N.xyz );
+		if ( facing <= 0.03 ) continue;
+		float ndl = dot( wn, l );
+		if ( ndl <= 0.0 ) continue;
+		float area = 4.0 * P.w * N.w;
+		float e = area * facing * ndl / ( dist2 + area * 0.3183099 );
+		// Smooth range cut so a portal never pops as the camera walks past its radius.
+		float fade = 1.0 - dist2 / rng2;
+		sum += C.rgb * ( e * fade * fade );
+	}
+	return sum;
+}
 `;
 
     if (useSH) {
@@ -2155,7 +2246,7 @@ float codContactAO( vec3 viewPos ) {
       pars += this.probes.parsGLSL();
       pars += `
 #if defined( COD_PROBES )
-uniform mat4 uCodInvView;
+// uCodInvView is declared once, above, next to the portal block.
 
 vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
 	vec3 rv = reflect( - viewDir, nrm );
@@ -2285,11 +2376,29 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
        * weighted diffuse, so for a standard/physical material this is the whole IBL
        * diffuse path. Specular gets a gentler share: a rough surface integrates a wide
        * lobe and is genuinely occluded, a mirror is not.
+       *
+       * ── Occlusion multiplies towards the bounce, not towards zero ─────────────
+       * A straight `iblIrradiance *= ao` says that a fully occluded fragment receives
+       * no light at all, which is only true inside a sealed black box. Physically, what
+       * an occluder does is *replace* the sky in that solid angle with itself — and the
+       * things doing the occluding here are a sunlit ochre facade, a pavement and a
+       * canvas awning, none of which are black. The review measured the consequence:
+       * a 25-pixel profile down the hero wall into the awning falling from L 128 to
+       * RGB [1, 6, 19], and a third of the frame under L 32.
+       *
+       * So the occluded fraction is handed the *measured* one-bounce radiance of the
+       * surroundings (`uCodBounce`, filled from the same horizon probe the SH is built
+       * from) instead of nothing, and the multiplier itself is floored so a crevice
+       * that the screen-space estimator over-occludes cannot reach black on its own.
+       * Energy still goes down with occlusion — the bounce is roughly a tenth of open
+       * sky — it just goes down to the right colour.
        */
       mapsChunk += `
 #if defined( COD_CONTACT ) && defined( RE_IndirectDiffuse )
-	float codAo = codContactAO( geometryPosition );
-	iblIrradiance *= codAo;
+	float codAoRaw = codContactAO( geometryPosition );
+	float codAo = mix( uCodAoFloor.x, 1.0, codAoRaw );
+	vec3 codFill = uCodBounce.rgb * ( ( 1.0 - codAoRaw ) * uCodBounce.a );
+	iblIrradiance = iblIrradiance * codAo + codFill;
 	irradiance *= codAo;
 	#if defined( RE_IndirectSpecular )
 		radiance *= mix( 1.0, codAo, 0.55 * material.roughness + 0.15 );
@@ -2297,6 +2406,17 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
 #endif
 `;
     }
+
+    /* ---- aperture portals: an opening lights the room it opens into ---- */
+    mapsChunk += `
+#if defined( RE_IndirectDiffuse )
+	{
+		vec3 codPw = ( uCodInvView * vec4( geometryPosition, 1.0 ) ).xyz;
+		vec3 codNw = transformNormalByInverseViewMatrix( geometryNormal, viewMatrix );
+		iblIrradiance += codPortalIrradiance( codPw, codNw );
+	}
+#endif
+`;
 
     this._glslCache = {
       pars,
@@ -2380,10 +2500,22 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
     if (frame - this._scanFrame < interval) return;
     this._scanFrame = frame;
 
-    const visit = (obj) => {
+    const visitWorld = (obj) => {
+      if (obj.isMesh || obj.isInstancedMesh || obj.isSkinnedMesh) {
+        this._enrolCaster(obj);
+        this._suppressGlazingShadow(obj);
+      }
       const m = obj.material;
       if (!m) return;
-      if (obj.isMesh) this._suppressGlazingShadow(obj);
+      if (Array.isArray(m)) {
+        for (const mm of m) this._patch(mm);
+      } else {
+        this._patch(m);
+      }
+    };
+    const visitView = (obj) => {
+      const m = obj.material;
+      if (!m) return;
       if (Array.isArray(m)) {
         for (const mm of m) this._patch(mm);
       } else {
@@ -2391,11 +2523,84 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
       }
     };
     try {
-      this.ctx.scene?.traverse(visit);
-      this.ctx.viewScene?.traverse(visit);
+      this.ctx.scene?.traverse(visitWorld);
+      this.ctx.viewScene?.traverse(visitView);
     } catch (err) {
       this._warn('scan', 'material scan failed', err);
     }
+  }
+
+  /**
+   * **The caster audit.** Nothing in this rig ever decided *what* casts — that was left
+   * to eleven other modules, each with its own opinion and its own bug, and the review
+   * measured the result: buildings and kerbs cast, and props, instanced street furniture,
+   * foliage and soldiers did not. A barrel four metres from the lens, lit 3.4:1 side to
+   * side, put nothing on the pavement.
+   *
+   * Shadow casting is a *lighting* decision, so it is made here, once, for the whole
+   * scene, and the rule is the physical one: **opaque geometry casts.** The exclusions
+   * below are all cases where a depth-buffer footprint would be a lie —
+   *
+   *   • the sky dome, the cloud shell, the star field and the horizon/backdrop rings,
+   *     which are either at infinity or deliberately outside the shadow range;
+   *   • decals, contact grime and road paint, which are coplanar with what they sit on
+   *     and would shadow-acne their own receiver;
+   *   • sprites, impostors, tracers, muzzle flashes, sparks, smoke and motes, which are
+   *     camera-facing or additive and have no solid form to project;
+   *   • anything a module explicitly opted out with `userData.noShadow`;
+   *   • glazing, which `_suppressGlazingShadow` takes back off immediately after.
+   *
+   * The audit only ever turns casting **on**; a module that has deliberately switched a
+   * mesh off keeps its decision by tagging it, not by leaving the flag false, so this can
+   * never fight a caller that actually thought about it.
+   *
+   * `castShadow` is idempotent and the WeakSet means each mesh is examined exactly once,
+   * so the whole thing costs one traversal of newly-added geometry per scan.
+   */
+  _enrolCaster(obj) {
+    if (this._audited.has(obj)) return;
+    this._audited.add(obj);
+    if (obj.castShadow) return;
+    if (!this.shadowsEnabled) return;
+    if (obj.isSprite || obj.isPoints || obj.isLine) return;
+    if (obj.userData?.noShadow || obj.userData?.decal || obj.userData?.viewmodel) return;
+
+    // Name-based rejects. Test the whole ancestry: a mesh called `deck` inside a group
+    // called `sky` is still sky.
+    let node = obj;
+    for (let depth = 0; node && depth < 8; depth++, node = node.parent) {
+      if (node.userData?.noShadow) return;
+      if (node.name && NO_CAST_RE.test(node.name)) return;
+    }
+
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    if (!mats.length || !mats[0]) return;
+    for (const m of mats) {
+      if (!m) return;
+      if (m.userData?.noShadow) return;
+      if (m.visible === false) return;
+      if (m.depthWrite === false) return;
+      if (m.blending !== undefined && m.blending !== THREE.NormalBlending) return;
+      if ((m.transmission ?? 0) > 0.15) return;
+      if (m.transparent && (m.opacity ?? 1) < 0.85) return;
+      if (m.name && NO_CAST_RE.test(m.name)) return;
+    }
+
+    // Size sanity. A 1 km backdrop shell in the caster set drags nothing useful into the
+    // cascades and costs a full extra draw; a 2 mm fragment is below one texel anywhere.
+    const geo = obj.geometry;
+    if (geo && !geo.boundingSphere) {
+      try {
+        geo.computeBoundingSphere();
+      } catch {
+        /* degenerate geometry: fall through and let the size test pass */
+      }
+    }
+    const r = geo?.boundingSphere?.radius ?? 1;
+    if (!(r > 0.01) || r > 320) return;
+
+    obj.castShadow = true;
+    this._casterFlips++;
   }
 
   /* ─────────────────────────────────────────────────────────────── per frame */

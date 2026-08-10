@@ -127,7 +127,12 @@ export async function bootGame(page, url, { quality = 'high', seed = 0x5eed1234,
 
 export async function capture(page, pose, outPath, { warm = null } = {}) {
   await page.evaluate((p) => window.__COD.applyPose(p), pose);
-  const frames = warm ?? pose.warm ?? 32;
+  // Auto-exposure needs time to settle. A reviewer measured hero at warm 6 against its
+  // native warm 48 and found 1.6 of central chroma spread missing and black crush at
+  // 13.75% against 7.68% — so a short warm-up does not just soften the frame, it roughly
+  // doubles the apparent crush and invites tuning against an artefact. Floor it.
+  const MIN_WARM = 16;
+  const frames = Math.max(MIN_WARM, warm ?? pose.warm ?? 32);
   // Step in small batches so a slow software rasteriser never trips the
   // single-evaluate timeout.
   for (let done = 0; done < frames; ) {
@@ -136,6 +141,25 @@ export async function capture(page, pose, outPath, { warm = null } = {}) {
     done += batch;
   }
   await page.evaluate(() => window.__COD.frame(1 / 60));
-  await page.screenshot({ path: outPath, type: 'png', timeout: 300000, animations: 'disabled' });
+  // Concurrent agents rendering on a 4-core box push a capture past any fixed cap, and a
+  // single timeout used to lose the whole multi-pose run. Retry with a longer budget and
+  // a settling pause instead of failing the pose.
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await page.screenshot({
+        path: outPath,
+        type: 'png',
+        timeout: 300000 + attempt * 300000,
+        animations: 'disabled',
+      });
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      await page.evaluate(() => window.__COD.frame(1 / 60)).catch(() => {});
+    }
+  }
+  if (lastErr) throw lastErr;
   return page.evaluate(() => window.__COD.stats());
 }

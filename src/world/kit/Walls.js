@@ -23,6 +23,33 @@ import { clamp, hash2, hash3, lerp } from './geom.js';
 const CH = 0.022; // default chamfer, metres
 const _v = new THREE.Vector3();
 
+/**
+ * **Every aperture this module authors, recorded in world space.**
+ *
+ * A window is the only light source an interior has that the sun cannot supply
+ * directly: at a 19-degree key the market hall's ground floor receives no beam at all,
+ * so the hall was measured with panes 1.7:1 over the wall beside them, no reveal wash
+ * and no directional cue anywhere in it. `render/Lighting.js` turns these records into
+ * real rectangular area lights (see `_updatePortals` there) so the opening lights the
+ * room whether or not a beam gets through it.
+ *
+ * Geometry only — this file has no opinion about brightness, and no dependency on the
+ * lighting module. `Level.js` collects the list after it has finished building and
+ * publishes it as `ctx.level.portals`.
+ *
+ *   { x, y, z }        centre of the opening, world space
+ *   { nx, nz }         wall's outward normal (unit, horizontal)
+ *   hw, hh             half width and half height, metres
+ *   type               'window' | 'door' | 'gate' | 'arch' | 'hole'
+ *   glazed             true when a pane was actually fitted (attenuates transmission)
+ */
+export const WALL_OPENINGS = [];
+
+/** Call before rebuilding the level, or the list grows without bound. */
+export function resetWallOpenings() {
+  WALL_OPENINGS.length = 0;
+}
+
 /** Wall-local frame: X along (p0->p1), Y up, Z outward. Right-handed by construction. */
 export function wallFrame(x0, z0, x1, z1, y0) {
   const dx = x1 - x0;
@@ -206,6 +233,27 @@ export function wallRun(bat, o) {
 
   /* ── openings: reveals, sills, lintels, frames, glass ──────────────────── */
   for (const op of openings) {
+    /* Record the aperture for the lighting module before anything is drawn into it —
+       see WALL_OPENINGS. `solid()` has already decided the opening's real top, so use
+       the same clamp here rather than the requested height. */
+    {
+      const top = Math.min(H, op.sill + op.h);
+      const hh = (top - op.sill) * 0.5;
+      if (hh > 0.12 && op.w > 0.24) {
+        const c = localToWorld(frame, op.u, o.y0 + op.sill + hh, 0);
+        WALL_OPENINGS.push({
+          x: c.x,
+          y: c.y,
+          z: c.z,
+          nx: frame.nx,
+          nz: frame.nz,
+          hw: op.w * 0.5,
+          hh,
+          type: op.type,
+          glazed: op.type === 'window' && op.style !== 'boarded',
+        });
+      }
+    }
     const r = hash2(seed + Math.round(op.u * 10), Math.round(op.sill * 10));
     if (op.type === 'door' || op.type === 'gate') {
       addDoorFurniture(bat, frame, op, { t, half, r, mat: o.doorMat || (r > 0.5 ? 'wood.weathered' : 'metal.paintBlue') });

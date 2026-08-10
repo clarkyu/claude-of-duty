@@ -742,7 +742,7 @@ export default function createProps(ctx) {
       const m = new THREE.Mesh(geo, mat);
       m.castShadow = true;
       m.receiveShadow = true;
-      tagMesh(m, local, mat);
+      tagMesh(m, local, mat, 'solo');
       near.add(m);
     }
     const shell = new Accum();
@@ -779,7 +779,7 @@ export default function createProps(ctx) {
       m.receiveShadow = true;
       // Motion blur / TAA reprojection: the velocity pass looks for this.
       m.userData.dynamic = true;
-      tagMesh(m, local, mat);
+      tagMesh(m, local, mat, 'dynamic');
       g.add(m);
     }
     g.userData.dynamic = true;
@@ -896,10 +896,13 @@ export default function createProps(ctx) {
     return best;
   }
 
-  function tagMesh(mesh, acc, mat) {
+  function tagMesh(mesh, acc, mat, bucket) {
     mesh.userData.codMaterial = mat?.userData?.codMaterial || null;
     mesh.userData.surface = mat?.userData?.surface || 'concrete';
     mesh.userData.prop = true;
+    /* Which batch this mesh came out of. `applyQuality` keys the shadow-caster
+       decision off this rather than off the parent's name — see the note there. */
+    mesh.userData.propBucket = bucket || 'main';
     void acc;
   }
 
@@ -1063,7 +1066,7 @@ export default function createProps(ctx) {
         m.name = `props:${name}:${mat.userData?.propMaterial || 'mat'}`;
         m.castShadow = true;
         m.receiveShadow = true;
-        tagMesh(m, d.main, mat);
+        tagMesh(m, d.main, mat, 'main');
         near.add(m);
         any = true;
         stats.draws++;
@@ -1075,9 +1078,13 @@ export default function createProps(ctx) {
         geometries.push(geo);
         const m = new THREE.Mesh(geo, mat);
         m.name = `props:${name}:detail:${mat.userData?.propMaterial || 'mat'}`;
-        m.castShadow = false;
+        /* Clutter casts too. It is one extra draw in the shadow pass for the whole
+           map, and a bottle, a pallet or a length of pipe with no shadow under it is
+           the exact tell the review calls "a decal, not an object". `applyQuality`
+           takes it back off on `low`, where the whole group is hidden anyway. */
+        m.castShadow = true;
         m.receiveShadow = true;
-        tagMesh(m, d.detail, mat);
+        tagMesh(m, d.detail, mat, 'detail');
         detail.add(m);
         stats.draws++;
       }
@@ -1115,7 +1122,7 @@ export default function createProps(ctx) {
           const m = new THREE.Mesh(geo, mat);
           m.castShadow = true;
           m.receiveShadow = true;
-          tagMesh(m, d.shell, mat);
+          tagMesh(m, d.shell, mat, 'shell');
           far.add(m);
         }
         lod.addLevel(far, lodDist);
@@ -1129,13 +1136,31 @@ export default function createProps(ctx) {
     }
   }
 
+  /**
+   * **Every prop casts.** The previous test was
+   *   `o.castShadow = shadows && o.parent?.name?.indexOf('detail') < 0`
+   * which is `undefined < 0` — i.e. **false** — for any mesh whose parent is missing or
+   * unnamed. `commitSolo()` parents its meshes to an anonymous `new THREE.Group()`, and
+   * a dynamic prop's mesh sits directly under a group the LOD may re-parent, so a whole
+   * class of props silently dropped out of the shadow caster set the first time a
+   * quality event fired. It also read `indexOf` on a name that may legitimately contain
+   * "detail" further along the path.
+   *
+   * Now: an explicit, total function of the bucket the mesh was built into, tagged at
+   * build time rather than sniffed from a string, with the string test kept only as a
+   * fallback for meshes that predate the tag.
+   */
   function applyQuality() {
     const t = tier();
     const show = t !== 'low';
     for (const g of detailGroups) g.visible = show;
     const shadows = ctx.settings?.get?.('shadows') !== false;
     root?.traverse((o) => {
-      if (o.isMesh && o.userData?.prop) o.castShadow = shadows && o.parent?.name?.indexOf('detail') < 0;
+      if (!o.isMesh || !o.userData?.prop) return;
+      const pn = typeof o.parent?.name === 'string' ? o.parent.name : '';
+      const isDetail = o.userData.propBucket === 'detail' || pn.endsWith(':detail') || /:detail:/.test(pn);
+      const isContact = o.userData.propBucket === 'contact' || pn.endsWith(':contact');
+      o.castShadow = shadows && !isContact && (!isDetail || show);
     });
   }
 
