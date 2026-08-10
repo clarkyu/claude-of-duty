@@ -131,8 +131,11 @@ export async function capture(page, pose, outPath, { warm = null } = {}) {
   // native warm 48 and found 1.6 of central chroma spread missing and black crush at
   // 13.75% against 7.68% — so a short warm-up does not just soften the frame, it roughly
   // doubles the apparent crush and invites tuning against an artefact. Floor it.
+  // A pose declares the warm-up it needs; a caller's --warm may raise that but must not
+  // lower it. The night pose was captured at an overridden 16 and came back unconverged,
+  // with an auto-exposure and flare wash that a reviewer then measured as real.
   const MIN_WARM = 16;
-  const frames = Math.max(MIN_WARM, warm ?? pose.warm ?? 32);
+  const frames = Math.max(MIN_WARM, pose.warm ?? 32, warm ?? 0);
   // Step in small batches so a slow software rasteriser never trips the
   // single-evaluate timeout.
   for (let done = 0; done < frames; ) {

@@ -47,7 +47,7 @@ export const POSES = {
     fov: 46,
     time: 9.0,
     warm: 40,
-    state: { sunAzimuth: 46, sunAltitude: 24.0, sunKelvin: 4200, weapon: 'none' },
+    state: { sunAzimuth: 78, sunAltitude: 38.0, sunKelvin: 4200, weapon: 'none' },
   },
   vista: {
     desc: 'Long-range vista: sky, clouds, aerial perspective, distant LODs, volumetrics',
