@@ -574,25 +574,29 @@ class RenderPipeline {
       volume: volOn,
     });
 
-    // --- 6. viewmodel on top, with its own depth ----------------------------
+    // --- 6. exposure, metered on the world BEFORE the viewmodel lands --------
+    // The gun fills a third of the screen and used to be metered along with the
+    // scene, so it set the exposure it was then judged under: hiding it shifted the
+    // whole frame, which also silently contaminated any A/B that masked it out.
+    // A log-average does not care about TAA resolve, so metering here costs nothing.
+    this.passes.autoExposure.prime(r);
+    const exposureBias = this.ctx.settings?.get?.('exposure') ?? 1;
+    if (this.isEnabled('autoExposure')) {
+      this.passes.autoExposure.render(r, this.rtComp.texture, dt, exposureBias);
+    }
+
+    // --- 7. viewmodel on top, with its own depth ----------------------------
     r.setRenderTarget(this.rtComp);
     r.clear(false, true, false);
     if (ctx.viewScene && ctx.viewScene.children.length) {
       r.render(ctx.viewScene, viewCam);
     }
 
-    // --- 7. TAA --------------------------------------------------------------
+    // --- 8. TAA --------------------------------------------------------------
     let current = this.rtComp.texture;
     if (taaOn) {
       const resolved = this.passes.taa.render(r, this.rtComp.texture);
       current = resolved.texture;
-    }
-
-    // --- 8. exposure ---------------------------------------------------------
-    this.passes.autoExposure.prime(r);
-    const exposureBias = this.ctx.settings?.get?.('exposure') ?? 1;
-    if (this.isEnabled('autoExposure')) {
-      this.passes.autoExposure.render(r, current, dt, exposureBias);
     }
 
     // --- 9. bloom + flare ----------------------------------------------------
