@@ -738,7 +738,25 @@ class Sky {
     this.tier = ctx.settings?.tier || 'high';
 
     /** Art-directed key bearing, degrees; null = follow the almanac. See _stageSun(). */
-    this._sunStaging = { azimuth: null, altitude: null };
+    this._sunStaging = { azimuth: null, altitude: null, kelvin: null };
+    /**
+     * **The golden-hour grade lives here, not downstream of here.**
+     *
+     * `render/Lighting.js` used to warm the key on an altitude curve *after* taking it
+     * from this module, which meant exactly one consumer of the sun's colour was graded
+     * — the CSM — while the six that live in this file were not: the cloud deck, the
+     * cirrus, the aerial-perspective in-scatter, the lit-ground term the dome blends to
+     * below the horizon, and the solar disc itself. The review measured the result as
+     * "the key is graded and the sky is not": cloud undersides grey at a 3300 K golden
+     * hour, sky channel spread of 2-12 parts in 255, and no sun-side asymmetry at all.
+     *
+     * The curve is the same one and the justification is unchanged (see the WARP_X note
+     * above): the disc's own transmittance at a 15-degree sun is about 4900 K, a camera
+     * at golden hour records 2800-3500 K, and the *altitude* cannot be lowered to buy
+     * that colour without putting the entire playable street in shadow. It fades out
+     * above ~40 degrees so harsh noon stays exactly as physics delivers it.
+     */
+    this._gradeStrength = 1;
 
     /* ------------------------------------------------------- published state */
     this.sunDirection = new THREE.Vector3(0, 0.2, -1).normalize();
@@ -953,6 +971,8 @@ class Sky {
       tGalaxy: { value: this.texGalaxy },
       uMoonDirection: v3(0, -1, 0),
       uSunDiscRadiance: v3(400, 380, 340),
+      /** Circumsolar aureole — see the `uSunGlowColor` note in `_pushUniforms`. */
+      uSunGlowColor: v3(0.4, 0.3, 0.18),
       uMoonDiscRadiance: v3(2, 2.1, 2.4),
       uMoonGlowColor: v3(0.05, 0.06, 0.09),
       uNightSkyColor: v3(0.0022, 0.0034, 0.0072),
@@ -968,6 +988,8 @@ class Sky {
       uStarFade: f(0),
       uNightFade: f(0),
       uCirrusAmount: f(this.cirrusAmount),
+      /** x saturation restore, y zenith-blue bias — see the dome shader. */
+      uSkyChroma: v2(1.55, 0.85),
       uCirrusHeight: f(8200),
       uTime: f(0),
       uStarBrightness: f(this.starBrightness),
@@ -1300,20 +1322,91 @@ class Sky {
   }
 
   /**
-   * @param {{azimuth?:number|null, altitude?:number|null}|null} opts degrees; `null`
-   *        for a field (or for the whole object) releases it back to the almanac.
+   * @param {{azimuth?:number|null, altitude?:number|null, kelvin?:number|null}|null} opts
+   *        degrees (kelvin in K); `null` for a field (or for the whole object) releases
+   *        it back to the almanac / the default altitude curve.
    */
   setSunStaging(opts) {
     const s = this._sunStaging;
     if (!opts) {
       s.azimuth = null;
       s.altitude = null;
+      s.kelvin = null;
     } else {
       if ('azimuth' in opts) s.azimuth = Number.isFinite(opts.azimuth) ? opts.azimuth : null;
       if ('altitude' in opts) s.altitude = Number.isFinite(opts.altitude) ? opts.altitude : null;
+      if ('kelvin' in opts) s.kelvin = Number.isFinite(opts.kelvin) ? opts.kelvin : null;
     }
     this.setTimeOfDay(this.hours, true);
-    return { azimuth: s.azimuth, altitude: s.altitude };
+    return { azimuth: s.azimuth, altitude: s.altitude, kelvin: s.kelvin };
+  }
+
+  /**
+   * Planckian locus -> linear sRGB, peak-normalised. Same fit `render/Lighting.js`
+   * uses (Kim et al. cubic + CIE xyY -> Rec.709), duplicated rather than imported so
+   * this module keeps its "depends on nothing but three" contract.
+   */
+  _kelvinRGB(kelvin, out) {
+    const T = THREE.MathUtils.clamp(kelvin || 6500, 1600, 25000);
+    const t2 = T * T;
+    const t3 = t2 * T;
+    let x;
+    if (T <= 4000) x = -0.2661239e9 / t3 - 0.2343589e6 / t2 + 0.8776956e3 / T + 0.17991;
+    else x = -3.0258469e9 / t3 + 2.1070379e6 / t2 + 0.2226347e3 / T + 0.24039;
+    const x2 = x * x;
+    const x3 = x2 * x;
+    let y;
+    if (T <= 2222) y = -1.1063814 * x3 - 1.3481102 * x2 + 2.18555832 * x - 0.20219683;
+    else if (T <= 4000) y = -0.9549476 * x3 - 1.37418593 * x2 + 2.09137015 * x - 0.16748867;
+    else y = 3.081758 * x3 - 5.8733867 * x2 + 3.75112997 * x - 0.37001483;
+    y = Math.max(y, 1e-4);
+    const X = x / y;
+    const Z = (1 - x - y) / y;
+    let r = 3.2404542 * X - 1.5371385 - 0.4985314 * Z;
+    let g = -0.969266 * X + 1.8760108 + 0.041556 * Z;
+    let b = 0.0556434 * X - 0.2040259 + 1.0572252 * Z;
+    r = Math.max(r, 0);
+    g = Math.max(g, 0);
+    b = Math.max(b, 0);
+    const peak = Math.max(r, g, b, 1e-6);
+    return out.setRGB(r / peak, g / peak, b / peak);
+  }
+
+  /**
+   * Warm the key towards a golden-hour colour temperature, in place, before anything in
+   * this file consumes `sunColor`. Peak-normalised on both sides, so this changes hue
+   * and nothing else — the intensity, the disc size and the geometry all stay physical.
+   * See `_gradeStrength` for why the grade exists at all.
+   *
+   * @returns {number} 0..1, how much of the grade was applied — the dome uses it to
+   *          decide how much circumsolar warmth to add.
+   */
+  _gradeSun() {
+    this.gradeWeight = 0;
+    if (this.sunIntensity <= 1e-4) return 0;
+    const altDeg = (Math.asin(THREE.MathUtils.clamp(this.sunDirection.y, -1, 1)) * 180) / Math.PI;
+    if (altDeg <= 0) return 0;
+    let kelvin = this._sunStaging.kelvin;
+    let weight = this._gradeStrength;
+    if (kelvin === null) {
+      kelvin = THREE.MathUtils.clamp(2450 + 62 * altDeg, 2300, 6500);
+      const t = clamp01((altDeg - 24) / 18);
+      weight *= 1 - t * t * (3 - 2 * t);
+    }
+    if (weight <= 0.001) return 0;
+    const c = this._gradeColor || (this._gradeColor = new THREE.Color());
+    this._kelvinRGB(kelvin, c);
+    const s = this.sunColor;
+    const peak = Math.max(s.r, s.g, s.b, 1e-6);
+    s.setRGB(
+      (s.r / peak + (c.r - s.r / peak) * weight) * peak,
+      (s.g / peak + (c.g - s.g / peak) * weight) * peak,
+      (s.b / peak + (c.b - s.b / peak) * weight) * peak
+    );
+    const p2 = Math.max(s.r, s.g, s.b, 1e-6);
+    s.setRGB(s.r / p2, s.g / p2, s.b / p2);
+    this.gradeWeight = weight;
+    return weight;
   }
 
   /** Everything CPU-side that depends on the sun position. */
@@ -1377,6 +1470,10 @@ class Sky {
       const p = Math.max(r, g, b, 1e-6);
       this.sunColor.setRGB(r / p, g / p, b / p);
     }
+
+    // Grade before anything downstream reads it: clouds, cirrus, aerial perspective,
+    // the lit-ground term and the disc all consume `sunColor` from here on.
+    this._gradeSun();
 
     this.zenithColor.setRGB(boost(zen[0]), boost(zen[1]), boost(zen[2]));
     this.horizonColor.setRGB(
@@ -1480,7 +1577,28 @@ class Sky {
     // transmittance, which is what reddens and dims it as it sets.
     const discFade = clamp01((this.sunDirection.y + 0.02) / 0.03);
     const disc = this.sunDiscScale * discFade * this.adaptLift;
-    u.uSunDiscRadiance.value.set(disc, disc * 0.985, disc * 0.96);
+    // The disc takes the graded key's hue. It was a hard-coded (1, 0.985, 0.96) — a
+    // white sun over a 3300 K key, which is the one object in frame that absolutely
+    // cannot disagree with the light it is casting.
+    const sc = this.sunColor;
+    u.uSunDiscRadiance.value.set(disc * sc.r, disc * sc.g, disc * sc.b);
+    /**
+     * **Circumsolar aureole.** The dome had a disc four pixels across and nothing else:
+     * no forward-scattering glow, so the review found "no sun disc, no circumsolar glow,
+     * no sun-side asymmetry — the NW sky is identical to the N sky with the key staged at
+     * azimuth 24". The sky-view LUT does carry an aureole, but it is a 200x112 texture
+     * over the whole hemisphere: the 10-degree lobe that reads as *where the sun is*
+     * lands inside two texels of it and is filtered away.
+     *
+     * Two exponentials — a tight 6-degree core and a broad 40-degree wash — reconstruct
+     * it analytically, tinted with the graded key and scaled by the same aerosol load the
+     * rest of the frame uses. This is the term that makes a sky read as "lit from over
+     * there" rather than as a gradient, and it is the only reason the sun's *bearing* is
+     * legible in a frame the disc itself never enters.
+     */
+    const glowFade = clamp01((this.sunDirection.y + 0.03) / 0.08);
+    const gk = 0.62 * glowFade * this.adaptLift * this.exposureScale * clamp01(0.45 + 0.55 * this.haze);
+    u.uSunGlowColor.value.set(sc.r * gk, sc.g * gk * 0.86, sc.b * gk * 0.62);
     /**
      * **The lunar disc rides `adaptLift` too.** It was the last term that did not, and
      * it is the one that matters most for a night frame: the exposure curve lifts the
@@ -1540,7 +1658,21 @@ class Sky {
     cpuTransmittance(GROUND_R + 0.0082, this.sunDirection.y, _trB);
     const cirrusFade = clamp01((this.sunDirection.y + 0.10) / 0.09);
     const cirrusK = 2.1 * cirrusFade * this.adaptLift;
-    u.uCirrusSunColor.value.set(_trB[0] * cirrusK, _trB[1] * cirrusK, _trB[2] * cirrusK);
+    /* The cirrus is lit by the same sun as everything else, so it takes the same grade:
+       hue lerped towards the key, magnitude kept at the physical 8.2 km transmittance. */
+    {
+      const gw = this.gradeWeight || 0;
+      const pk = Math.max(_trB[0], _trB[1], _trB[2], 1e-6);
+      const nr = _trB[0] / pk;
+      const ng = _trB[1] / pk;
+      const nb = _trB[2] / pk;
+      const k = cirrusK * pk;
+      u.uCirrusSunColor.value.set(
+        (nr + (sc.r - nr) * gw) * k,
+        (ng + (sc.g - ng) * gw) * k,
+        (nb + (sc.b - nb) * gw) * k
+      );
+    }
     u.uCirrusAmbient.value.set(
       this.ambientColor.r * 0.55,
       this.ambientColor.g * 0.55,
@@ -1557,10 +1689,20 @@ class Sky {
     const kc = useMoon ? this.moonColor : this.sunColor;
     c.uCloudSunColor.value.set(kc.r * ki, kc.g * ki, kc.b * ki);
     c.uCloudSkyTop.value.set(this.zenithColor.r * 0.8, this.zenithColor.g * 0.8, this.zenithColor.b * 0.8);
+    /**
+     * **Cloud undersides at golden hour are not grey.** They were being fed
+     * horizon + lit ground and nothing else, which at a 15-degree sun is a pair of terms
+     * that have both already had their warmth averaged out of them — hence the review's
+     * "cloud undersides are grey at a 3300 K golden hour". The missing term is the one
+     * that dominates in reality: the low sun raking the *base* of the deck, which is why
+     * a sunset deck lights from below. It rides the same grade weight as the key, so at
+     * noon (weight 0) it contributes nothing and the deck stays neutral.
+     */
+    const under = Math.max(this.sunIntensity, 0) * 0.06 * (this.gradeWeight || 0) * clamp01(1 - this.sunDirection.y / 0.55);
     c.uCloudSkyBottom.value.set(
-      this.horizonColor.r * 0.30 + this.groundColor.r * 0.5,
-      this.horizonColor.g * 0.30 + this.groundColor.g * 0.5,
-      this.horizonColor.b * 0.30 + this.groundColor.b * 0.5
+      this.horizonColor.r * 0.30 + this.groundColor.r * 0.5 + sc.r * under,
+      this.horizonColor.g * 0.30 + this.groundColor.g * 0.5 + sc.g * under,
+      this.horizonColor.b * 0.30 + this.groundColor.b * 0.5 + sc.b * under
     );
     c.uCloudHaze.value.set(this.horizonColor.r, this.horizonColor.g, this.horizonColor.b);
     c.uCoverage.value = this.coverage;
@@ -1570,16 +1712,33 @@ class Sky {
     const hz = this.haze;
     a.uSkyBetaR.value.set(4.6e-5 * hz, 1.09e-4 * hz, 2.65e-4 * hz);
     a.uSkyBetaM.value = 1.4e-4 * hz;
-    a.uSkySunColor.value.set(
-      this.sunColor.r * this.sunIntensity * 0.09 + this.moonColor.r * this.moonIntensity * 0.5,
-      this.sunColor.g * this.sunIntensity * 0.09 + this.moonColor.g * this.moonIntensity * 0.5,
-      this.sunColor.b * this.sunIntensity * 0.09 + this.moonColor.b * this.moonIntensity * 0.5
-    );
-    a.uSkyAmbientColor.value.set(
-      this.ambientColor.r * 0.42,
-      this.ambientColor.g * 0.42,
-      this.ambientColor.b * 0.42
-    );
+    /**
+     * **Aerial perspective has to converge to the sky, or the skyline out-shines it.**
+     *
+     * `skyAerialPerspective()` evaluates `colour·T + (sunColour·weight + ambient)·(1-T)`,
+     * so the pair below *is* the colour every surface tends to at range. It was authored
+     * as two independent fudge factors (0.09 of the solar irradiance, 0.42 of the
+     * ambient) with nothing tying them to what the dome behind the same pixel is
+     * painting — and the review measured the consequence exactly: distant skyline blocks
+     * at L 143.7 with a channel spread of 4.3, "brighter AND greyer than the sky above
+     * them". A roofline that is *lighter* than the sky it is silhouetted against is the
+     * one thing aerial perspective can never physically do.
+     *
+     * So solve for it. `weight` is a normalised phase ratio that averages ~1 across the
+     * frame, so splitting the horizon radiance 38/62 between a sun-coloured term and a
+     * neutral one lands infinite distance on the horizon's own radiance, warmer towards
+     * the sun and cooler away from it — which is aerial perspective.
+     */
+    {
+      const hs = this.horizonColor;
+      const hLum = Math.max(0.2126 * hs.r + 0.7152 * hs.g + 0.0722 * hs.b, 1e-6);
+      const sLum = Math.max(0.2126 * sc.r + 0.7152 * sc.g + 0.0722 * sc.b, 1e-6);
+      const k1 = (0.38 * hLum) / sLum;
+      const k2 = 0.62;
+      const mI = this.moonIntensity * 0.5;
+      a.uSkySunColor.value.set(sc.r * k1 + this.moonColor.r * mI, sc.g * k1 + this.moonColor.g * mI, sc.b * k1 + this.moonColor.b * mI);
+      a.uSkyAmbientColor.value.set(hs.r * k2, hs.g * k2, hs.b * k2);
+    }
     a.uSkySunDir.value.copy(this.keyDirection);
 
     if (this._fog) {

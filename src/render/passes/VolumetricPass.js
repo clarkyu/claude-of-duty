@@ -291,7 +291,10 @@ export default class VolumetricPass extends Pass {
       uGroundY: { value: 0.0 },
       uAnisotropy: { value: 0.72 },
       uAmbientScatter: { value: 0.14 },
-      uMaxDistance: { value: 180.0 },
+      // The near fog only: past this the sky's own aerial perspective owns the column.
+      // See the note on `uMaxDistance` in render/Weather.js — a long march here puts a
+      // hard in-scatter step across the skyline and double-fogs distant geometry.
+      uMaxDistance: { value: 80.0 },
       uShadowBias: { value: 0.0016 },
       uHasShadow: { value: 0.0 },
       uHistoryBlend: { value: 0.9 },

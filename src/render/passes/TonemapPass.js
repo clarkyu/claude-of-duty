@@ -47,6 +47,7 @@ uniform float uSaturation;
 uniform float uVibrance;
 uniform float uShadowCrush;
 uniform float uHighlightRolloff;
+uniform vec3  uAgxLook;   // x slope, y power, z saturation — see agxLook()
 varying vec2 vUv;
 
 ${GLSL_LIB}
@@ -83,6 +84,29 @@ vec3 agxContrast( vec3 x ) {
          - 0.00232;
 }
 
+/**
+ * **The AgX "look" transform — the half everyone forgets to ship.**
+ *
+ * AgX is two pieces: a log-encoded sigmoid that rolls highlights off without clipping,
+ * and an ASC-CDL look applied *inside* the log domain that puts the chroma back. Ship
+ * only the first (which is what three.js does, and what this pass did) and the inset
+ * matrix's 11-14 % channel cross-mix is never undone, so the brightest, most saturated
+ * part of the frame is also the most desaturated part of the output.
+ *
+ * The review measured that precisely: hero R-B by luminance decile running
+ * +15.8, +41.5, +25.3 — the *top* decile turning back towards neutral — and firefight's
+ * lit plaza reading R-B +26 while its own shadow reads +76. The sunlight was the least
+ * golden thing in a golden-hour frame, which is the whole reason the set reads beige.
+ *
+ * Saturation here is applied around the luminance of the log-encoded value, so it only
+ * rotates chroma and cannot change exposure or re-introduce clipping.
+ */
+vec3 agxLook( vec3 c ) {
+  float l = luma( c );
+  c = pow( max( c * uAgxLook.x, vec3( 0.0 ) ), vec3( uAgxLook.y ) );
+  return max( vec3( l ) + uAgxLook.z * ( c - vec3( l ) ), vec3( 0.0 ) );
+}
+
 vec3 tonemapAgX( vec3 color ) {
   color = LINEAR_SRGB_TO_LINEAR_REC2020 * max( color, vec3( 0.0 ) );
   color = AgXInsetMatrix * color;
@@ -91,6 +115,7 @@ vec3 tonemapAgX( vec3 color ) {
   color = ( color - AgxMinEv ) / ( AgxMaxEv - AgxMinEv );
   color = clamp( color, 0.0, 1.0 );
   color = agxContrast( color );
+  color = agxLook( color );
   color = AgXOutsetMatrix * color;
   color = pow( max( color, vec3( 0.0 ) ), vec3( 2.2 ) );
   color = LINEAR_REC2020_TO_LINEAR_SRGB * color;
@@ -238,6 +263,13 @@ export default class TonemapPass extends Pass {
       vibrance: 0.09,
       shadowCrush: 0.1,
       highlightRolloff: 0.12,
+      /**
+       * AgX look: slope, power, saturation — see `agxLook()`. 1.26 is a shade under
+       * Blender's "Punchy" (1.3) and is the term that stops the key desaturating exactly
+       * where it is strongest. Slope and power stay at unity: the sigmoid already owns
+       * the contrast, and this must not become a second grade.
+       */
+      agxLook: new THREE.Vector3(1.0, 1.0, 1.26),
     };
 
     /**
@@ -245,7 +277,20 @@ export default class TonemapPass extends Pass {
      * `grade.whiteBalance` alone, 1 would render open shade perfectly neutral (and
      * take all the gold out of the key with it). See syncWhiteBalance().
      */
-    this.balanceStrength = 0.42;
+    /**
+     * Trimmed from 0.42 now that the *key* is graded at source.
+     *
+     * The balance was doing two jobs: neutralising a violently blue open shade, and
+     * buying the warmth that a physically-honest 4900 K sun would not give. It bought
+     * the second by taking 18 % out of blue and adding 22 % to red across the entire
+     * frame — including the sky, which is the one surface in an exterior that is
+     * *supposed* to be blue, and which the review measured at a channel spread of 2
+     * parts in 255. `render/Sky.js` now grades the sun itself on an altitude curve, so
+     * the warmth arrives as light rather than as a global channel tilt, and the shade is
+     * warmed by a measured facade bounce rather than by pretending the film is tungsten.
+     * What is left here is an ordinary partial shade balance.
+     */
+    this.balanceStrength = 0.24;
 
     this.uniforms = {
       tColor: { value: null },
@@ -271,6 +316,7 @@ export default class TonemapPass extends Pass {
       uVibrance: { value: this.grade.vibrance },
       uShadowCrush: { value: this.grade.shadowCrush },
       uHighlightRolloff: { value: this.grade.highlightRolloff },
+      uAgxLook: { value: this.grade.agxLook },
     };
     this.material = this.own(
       postMaterial('tonemap', TONEMAP_FRAG, this.uniforms, { defines: { TONEMAP_ACES: 0 } })

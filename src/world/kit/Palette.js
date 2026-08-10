@@ -180,7 +180,14 @@ export const PALETTE = {
 
   /* ── water & signage ────────────────────────────────────────────────── */
   'water.pool': { m: 'water_pool', o: {} },
-  'sign.lit': { m: 'sign_emissive', o: {}, k: { emissiveIntensity: 1.5 } },
+  /**
+   * Lamp bowls and lit signs. 1.5 put the glazed underside of a street luminaire below
+   * the pavement it was lighting on the night frame — the review read the fittings as
+   * "black boxes with no emissive". A sodium lamp's own lens is the brightest thing on a
+   * night street by an order of magnitude, and 2.8 is still under the bloom threshold
+   * for anything but the fitting itself.
+   */
+  'sign.lit': { m: 'sign_emissive', o: {}, k: { emissiveIntensity: 2.8 } },
   /**
    * Lettered sign faces. The building-mounted fascia boards used to be an emissive
    * blank rectangle — a glowing panel with nothing written on it, which is worse than

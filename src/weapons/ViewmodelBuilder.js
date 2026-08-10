@@ -1205,7 +1205,7 @@ const MATSPEC = {
   /* Hard anodising is an aluminium-oxide layer: a matte dark dielectric at roughly 5 %
    * reflectance, cool and slightly blue. Not 1 %, which is what it used to be authored
    * at and which left the surface with no diffuse term for the specular to sit on. */
-  anodised: { base: 'brushed_aluminium', color: 0x464c55, rough: [0.80, 0.94], metal: [0.0, 0.10], uv: 62, det: 0.006, nrm: 0.9, env: 0.26, grime: 0.9 },
+  anodised: { base: 'brushed_aluminium', color: 0x4b515b, rough: [0.86, 0.98], metal: [0.0, 0.08], uv: 62, det: 0.006, nrm: 0.9, env: 0.22, grime: 0.9 },
   /* The rail is its own surface.
    *
    * After the edge palette was fixed the one hot spot left anywhere on the weapon was a
@@ -1215,12 +1215,12 @@ const MATSPEC = {
    * lobe along its entire length; it is also the part that every mount, sling, torch and
    * doorframe has scrubbed, and a scrubbed rail is *matte*. Rougher and with a third of
    * the environment weight, the same highlight is a soft sheen instead of a blown edge. */
-  railBody: { base: 'brushed_aluminium', color: 0x40464e, rough: [0.88, 1.0], metal: [0.0, 0.06], uv: 62, det: 0.006, nrm: 0.85, env: 0.08, grime: 1.0 },
+  railBody: { base: 'brushed_aluminium', color: 0x454b54, rough: [0.94, 1.0], metal: [0.0, 0.05], uv: 62, det: 0.006, nrm: 0.85, env: 0.06, grime: 1.0 },
   /* The rail's own chamfer shade — see buildUpper. */
-  railEdge: { base: 'brushed_aluminium', color: 0x4a5058, rough: [0.90, 1.0], metal: [0.0, 0.05], uv: 78, det: 0.004, nrm: 0.24, env: 0.07, grime: 0.9 },
+  railEdge: { base: 'brushed_aluminium', color: 0x4e545d, rough: [0.95, 1.0], metal: [0.0, 0.04], uv: 78, det: 0.004, nrm: 0.24, env: 0.06, grime: 0.9 },
   /* The default chamfer: a machined bevel in the same anodising, 1.33:1 on the flank and
    * a shade *rougher* than it, never smoother. NOT rub-through — see the note above. */
-  anodisedEdge: { base: 'brushed_aluminium', color: 0x5d6571, rough: [0.82, 0.95], metal: [0.02, 0.10], uv: 78, det: 0.004, nrm: 0.26, env: 0.18, grime: 0.7 },
+  anodisedEdge: { base: 'brushed_aluminium', color: 0x646c79, rough: [0.88, 1.0], metal: [0.02, 0.08], uv: 78, det: 0.004, nrm: 0.26, env: 0.15, grime: 0.7 },
   /* Optic bodies are their own substance. A sight housing is a smooth turned cylinder
    * lying along the bore, so unlike the flat-sided receiver it always presents a broad
    * band to the key light at a grazing angle, and it sits proud of everything so the
@@ -1229,35 +1229,35 @@ const MATSPEC = {
    * are bead-blasted before anodising and they are among the *darkest* things on a
    * weapon, so this is darker than the receiver and its environment weight is halved
    * again on top of that. */
-  opticBody: { base: 'brushed_aluminium', color: 0x383d45, rough: [0.86, 0.99], metal: [0.0, 0.06], uv: 70, det: 0.005, nrm: 0.85, env: 0.06, grime: 0.95 },
+  opticBody: { base: 'brushed_aluminium', color: 0x3c414a, rough: [0.90, 1.0], metal: [0.0, 0.05], uv: 70, det: 0.005, nrm: 0.85, env: 0.05, grime: 0.95 },
   /* ...and so are its chamfers, of which a sight is nearly half made. 1.33:1 on the
    * housing and rougher than it. A sight is a sealed unit nobody handles once it is
    * zeroed: its edges are machined, not burnished. */
-  opticEdge: { base: 'brushed_aluminium', color: 0x4a515b, rough: [0.88, 1.0], metal: [0.02, 0.10], uv: 78, det: 0.004, nrm: 0.3, env: 0.07, grime: 0.85 },
+  opticEdge: { base: 'brushed_aluminium', color: 0x4f5661, rough: [0.92, 1.0], metal: [0.02, 0.08], uv: 78, det: 0.004, nrm: 0.3, env: 0.06, grime: 0.85 },
   /* ── manganese phosphate: barrel, gas block, controls, small steel ─────── */
   /* Phosphate is a porous conversion coating — it is measurably rougher than hard
    * anodising and it has to *look* it, or the barrel and the receiver read as one
    * substance in two colours. The four families are deliberately spread across the
    * roughness range: anodising 0.54-0.74, phosphate 0.68-0.9, polymer 0.74-0.94,
    * rubber 0.9-1.0. */
-  phosphate: { base: 'painted_steel_chipped', color: 0x3b3a37, rough: [0.86, 0.99], metal: [0.0, 0.10], uv: 66, det: 0.006, nrm: 1.05, env: 0.18, grime: 1.05 },
+  phosphate: { base: 'painted_steel_chipped', color: 0x3f3e3a, rough: [0.90, 1.0], metal: [0.0, 0.08], uv: 66, det: 0.006, nrm: 1.05, env: 0.15, grime: 1.05 },
   /* 1.33:1 on phosphate, and warm where the anodising is cool: the two families have to
    * separate in hue as well as in value or a 3300 K key lands them both on mid-grey. */
-  phosphateEdge: { base: 'brushed_aluminium', color: 0x4e4d49, rough: [0.88, 1.0], metal: [0.02, 0.12], uv: 78, det: 0.004, nrm: 0.28, env: 0.16, grime: 0.7 },
+  phosphateEdge: { base: 'brushed_aluminium', color: 0x53524d, rough: [0.92, 1.0], metal: [0.02, 0.10], uv: 78, det: 0.004, nrm: 0.28, env: 0.13, grime: 0.7 },
   /* ── bare aluminium worn through the finish at handling points ─────────── */
   /* 1.7:1 on the receiver, and SPARSE: charging handle, selector, mag catch, bolt
    * catch, trigger shoe, magwell flare, port surround, takedown pins. Everything that
    * is merely a cut edge takes `anodisedEdge`. Worn anodising is matte grey aluminium
    * oxide, so this is a *rougher* surface than the coating it wore off, not a polished
    * one — a glossy wear shade is what turned the rail teeth into white noise. */
-  wearBright: { base: 'brushed_aluminium', color: 0x767e8b, rough: [0.70, 0.86], metal: [0.06, 0.20], uv: 86, det: 0.003, nrm: 0.24, env: 0.18, grime: 0.5 },
+  wearBright: { base: 'brushed_aluminium', color: 0x7a828f, rough: [0.80, 0.94], metal: [0.05, 0.16], uv: 86, det: 0.003, nrm: 0.24, env: 0.15, grime: 0.5 },
   /* 1.8:1, and only ever on hardware you could count: cross-bolts, ring screws, pins,
    * the gas tube. It keeps a real metal fraction because a screw head genuinely is bare
    * steel, but both the metal fraction and the environment weight are low enough that
    * it cannot mirror the sky. */
-  steelBright: { base: 'brushed_aluminium', color: 0x7b8391, rough: [0.60, 0.76], metal: [0.15, 0.32], uv: 82, det: 0.004, nrm: 0.5, env: 0.18, grime: 0.8 },
+  steelBright: { base: 'brushed_aluminium', color: 0x7f8795, rough: [0.70, 0.86], metal: [0.12, 0.26], uv: 82, det: 0.004, nrm: 0.5, env: 0.15, grime: 0.8 },
   /* parkerised steel — dark, matte, and emphatically not a mirror */
-  steelDark: { base: 'galvanised_metal', color: 0x323438, rough: [0.80, 0.94], metal: [0.0, 0.14], uv: 64, det: 0.005, nrm: 0.8, env: 0.14, grime: 1.1 },
+  steelDark: { base: 'galvanised_metal', color: 0x36383d, rough: [0.86, 0.98], metal: [0.0, 0.10], uv: 64, det: 0.005, nrm: 0.8, env: 0.11, grime: 1.1 },
   /* ── the inside of anything: bores, slots, recesses, the ejection port ─── */
   /* Stays the darkest thing in the model by a wide margin: it is the backdrop the optic
    * element is read against, and every engraved stroke and coin slot on the weapon. */
@@ -1267,12 +1267,12 @@ const MATSPEC = {
    * in value and roughness and still read as one substance, because under a 3300 K key
    * a desaturated olive and a desaturated blue-grey both land on warm mid-grey. The
    * separation has to be in hue as well as in value to survive the light. */
-  polymer: { base: 'rubber_tyre', color: 0x333f24, rough: [0.88, 1.0], metal: [0.0, 0.03], uv: 96, det: 0.0032, nrm: 1.2, env: 0.16, grime: 0.9 },
+  polymer: { base: 'rubber_tyre', color: 0x374327, rough: [0.90, 1.0], metal: [0.0, 0.03], uv: 96, det: 0.0032, nrm: 1.2, env: 0.13, grime: 0.9 },
   /* Polymer does not polish, it *scuffs*: the pigment goes chalky along a moulded edge.
    * 1.33:1 on the body and matter than it — it used to be 2.4:1 and glossier, which is
    * what put the hard clipped specular on the top edge of the stock. */
-  polymerEdge: { base: 'rubber_tyre', color: 0x44532f, rough: [0.86, 0.98], metal: [0.0, 0.03], uv: 104, det: 0.0028, nrm: 0.8, env: 0.16, grime: 0.7 },
-  rubber: { base: 'rubber_tyre', color: 0x101216, rough: [0.94, 1.0], metal: [0.0, 0.02], uv: 44, det: 0.0068, nrm: 1.6, env: 0.09, grime: 1.0 },
+  polymerEdge: { base: 'rubber_tyre', color: 0x485834, rough: [0.88, 1.0], metal: [0.0, 0.03], uv: 104, det: 0.0028, nrm: 0.8, env: 0.13, grime: 0.7 },
+  rubber: { base: 'rubber_tyre', color: 0x121418, rough: [0.96, 1.0], metal: [0.0, 0.02], uv: 44, det: 0.0068, nrm: 1.6, env: 0.07, grime: 1.0 },
   /* Ejected cases only: they are in frame for four frames at a time and they are
    * genuinely polished brass. */
   brass: { base: 'brushed_aluminium', color: 0x8f7130, rough: [0.36, 0.58], metal: [0.82, 0.96], uv: 96, det: 0.003, nrm: 0.5, env: 0.5, grime: 0.6 },
@@ -3470,7 +3470,7 @@ export function buildRedDot(ctx, mats, o = {}) {
   gmat.uniforms.uTint.value.setRGB(0.028, 0.145, 0.125);
   gmat.uniforms.uTintMid.value.setRGB(0.038, 0.17, 0.36);
   gmat.uniforms.uTintEdge.value.setRGB(0.27, 0.11, 0.38);
-  gmat.uniforms.uBase.value = 0.022;
+  gmat.uniforms.uBase.value = 0.030;
   gmat.uniforms.uFresnel.value = 0.78;
   gmat.uniforms.uCoat.value = 1.0;
   gmat.side = THREE.FrontSide;
@@ -3482,7 +3482,7 @@ export function buildRedDot(ctx, mats, o = {}) {
   const rearMat = gmat.clone();
   rearMat.uniforms = THREE.UniformsUtils.clone(gmat.uniforms);
   // Ocular: a warmer, weaker stack, so the two elements do not read as one sheet.
-  rearMat.uniforms.uBase.value = 0.015;
+  rearMat.uniforms.uBase.value = 0.020;
   rearMat.uniforms.uFresnel.value = 0.56;
   rearMat.uniforms.uCoat.value = 0.78;
   rearMat.uniforms.uTint.value.setRGB(0.055, 0.095, 0.185);

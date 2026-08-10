@@ -162,6 +162,14 @@ export default function createLevel(ctx) {
     navRegions: null,
     pointsOfInterest: [],
     reflectionProbes: PROBES.map((p) => ({ position: p.position.slice(), size: p.size.slice() })),
+    /**
+     * Every window, door and arch the wall kit authored, in world space, as
+     * `{x, y, z, nx, nz, hw, hh, type, glazed}`. `render/Lighting.js` turns the ones
+     * near the camera into rectangular area lights so an interior is lit by its
+     * apertures rather than only by whatever beam happens to reach the floor.
+     * See kit/Walls.js WALL_OPENINGS.
+     */
+    portals: [],
     probes: PROBES,
     data: DATA,
     tiers: TIERS,
@@ -1471,6 +1479,70 @@ export default function createLevel(ctx) {
     api.navRegions = nav;
   }
 
+  /* ═══════════════════════════════════════════════════════════════ portals ══ */
+
+  /**
+   * **Publish the apertures, and work out which way is indoors.**
+   *
+   * The wall kit records every opening it authors (kit/Walls.js `WALL_OPENINGS`) with
+   * the wall's *outward* normal, which is a geometric fact about the footprint winding
+   * and not necessarily the direction a room is in — a courtyard wall's "outward" face
+   * is inside the block. So each aperture is probed: step half a metre to either side
+   * and cast straight up. The side that is roofed is the room; the side that sees sky
+   * is the street.
+   *
+   * Apertures with sky on both sides (a garden gate, a freestanding arch) are dropped —
+   * they have no interior to light and would only add cost. Apertures with a roof on
+   * both sides keep the side further from the play space as the source.
+   *
+   * Costs two raycasts per opening, once, at build time.
+   */
+  function collectPortals() {
+    const out = [];
+    const phys = ctx.physics;
+    const up = { x: 0, y: 1, z: 0 };
+    const MASK = 1 | 8; // WORLD | PROP
+    const probeUp = (x, y, z) => {
+      if (!phys?.raycast) return false;
+      try {
+        return !!phys.raycast({ x, y, z }, up, 26, MASK);
+      } catch {
+        return false;
+      }
+    };
+    for (const op of WALL_OPENINGS) {
+      // Ignore anything too small to matter as a light source, and anything above the
+      // top storey where nothing the player stands in can see it.
+      const area = 4 * op.hw * op.hh;
+      if (area < 0.55 || op.y > 26) continue;
+      const step = 0.75;
+      const ax = op.x + op.nx * step;
+      const az = op.z + op.nz * step;
+      const bx = op.x - op.nx * step;
+      const bz = op.z - op.nz * step;
+      const y = Math.max(op.y, 0.4);
+      const roofA = probeUp(ax, y, az);
+      const roofB = probeUp(bx, y, bz);
+      if (roofA === roofB) continue; // both open, or both enclosed: no aperture story
+      // The inward normal points at the roofed side.
+      const s = roofA ? 1 : -1;
+      out.push({
+        x: op.x,
+        y: op.y,
+        z: op.z,
+        // inward = towards the room
+        nx: op.nx * s,
+        nz: op.nz * s,
+        hw: op.hw,
+        hh: op.hh,
+        type: op.type,
+        glazed: !!op.glazed,
+      });
+    }
+    api.portals = out;
+    api.stats.portals = out.length;
+  }
+
   /* ═══════════════════════════════════════════════════════════════ utilities ══ */
 
   api.raycast = function raycast(origin, dir, maxDist = 200, mask = 0xffff) {
@@ -1505,6 +1577,7 @@ export default function createLevel(ctx) {
       ctx.level = api;
       palette = new Palette(ctx);
       field = new OcclusionField({ cell: 4, maxDist: 2.7 });
+      resetWallOpenings();
 
       try {
         authorTerrain();
@@ -1560,6 +1633,11 @@ export default function createLevel(ctx) {
         authorLights();
       } catch (err) {
         warn('lights failed', err);
+      }
+      try {
+        collectPortals();
+      } catch (err) {
+        warn('portal collection failed', err);
       }
 
       api.stats.buildMs = Math.round(now() - t0);

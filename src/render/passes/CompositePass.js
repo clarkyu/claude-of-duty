@@ -118,7 +118,14 @@ export default class CompositePass extends Pass {
       uUseAO: { value: 0 },
       uUseSSR: { value: 0 },
       uUseVolume: { value: 0 },
-      uAOStrength: { value: 0.95 },
+      /**
+       * The material now applies its own occlusion to the *indirect* term, floored and
+       * tinted towards the measured facade bounce (see render/Lighting.js, the
+       * `COD_CONTACT` block). This pass multiplies the finished pixel on top of that, so
+       * at full strength the same geometry is occluded twice — which is most of how
+       * 32-59 % of pixels ended up under L 32. Keep it as an edge-detail term.
+       */
+      uAOStrength: { value: 0.8 },
       uAODirectProtect: { value: 0.85 },
       // SSR is additive on top of whatever specular the forward pass already produced,
       // so it is deliberately under unity to avoid double-counting the environment.

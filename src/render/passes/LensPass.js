@@ -60,7 +60,7 @@ void main() {
 
   // --- transverse chromatic aberration -------------------------------------
   vec3 color;
-  float amount = uAberration * smoothstep( 0.12, 1.0, r2 );
+  float amount = uAberration * smoothstep( 0.34, 1.15, r2 );
   if ( amount > 1e-6 ) {
     vec2 off = radial * amount;
     // Three samples along the radius smears the fringe instead of ghosting it.
@@ -193,7 +193,17 @@ export default class LensPass extends Pass {
     shared.tDirt.value = this.dirt;
 
     this.settings = {
-      aberration: 0.0016,   // fraction of the frame at the corners
+      /**
+       * Transverse CA, as a fraction of the frame at the corners.
+       *
+       * 0.0016 is ~3 px of R/B separation at 1280 wide, which on the high-contrast
+       * silhouettes this map is full of (a dark crate against a lit pavement, a barrel
+       * rim, the edge of the viewmodel) reads as a coloured fringe rather than as glass:
+       * the review found rainbows on the frame edges of five captures out of eight. A
+       * real cine prime at these focal lengths puts under a pixel of lateral colour at
+       * the corner, and it starts further out than a third of the way to the edge.
+       */
+      aberration: 0.0006,   // fraction of the frame at the corners
       distortion: 0.0,      // Brown-Conrady k1; off by default
       /**
        * 0.55 multiplied the bottom third of the frame by 0.67 — and the bottom third
@@ -203,7 +213,14 @@ export default class LensPass extends Pass {
        * 0.44 keeps the cos^4 falloff clearly present at the corners (0.75 at the
        * bottom edge, 0.70 in the corners) without taxing the foreground for it.
        */
-      vignette: 0.44,
+      /**
+       * At 0.44 the cos^4 term takes 27 % off the bottom-centre of a 78-degree frame and
+       * over 40 % out of the corners — and the bottom-centre of every one of these poses
+       * is the near foreground, which the review measured as the darkest region in eight
+       * frames out of eight. Some of that darkness was the lens, not the lighting. 0.30
+       * keeps the frame from looking flat-fielded without the optics doing the crushing.
+       */
+      vignette: 0.3,
       vignetteRoundness: 0.65,
       // Display-space amplitudes now (see the grain block in the shader): 0.010 is
       // ±2.5/255, which reads as a sensor at 1:1 and disappears at viewing distance,

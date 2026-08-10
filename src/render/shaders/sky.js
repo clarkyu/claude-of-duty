@@ -654,6 +654,8 @@ uniform float uHasClouds;
 uniform vec3  uSunDirection;
 uniform vec3  uMoonDirection;
 uniform vec3  uSunDiscRadiance;
+uniform vec3  uSunGlowColor;
+uniform vec2  uSkyChroma;   // x saturation restore, y zenith-blue bias
 uniform vec3  uMoonDiscRadiance;
 uniform vec3  uMoonGlowColor;
 uniform vec3  uNightSkyColor;
@@ -820,6 +822,26 @@ void main() {
   vec3 sky = texture2D( tSkyView, svUv ).rgb * uSkyScale;
   vec3 viewTr = atmoSampleLut( tTransmittance, viewPos, dir );
 
+  /**
+   * **Give the zenith its blue back.**
+   *
+   * The scattering integral is right, but two things downstream flatten it before
+   * anybody sees it: the sky-view LUT is 200x112 for a whole hemisphere (so the Rayleigh
+   * gradient is carried by a handful of texels and bilinear filtering averages the
+   * chroma out of it), and AgX's inset matrix mixes 11-14 % of each channel into its
+   * neighbours on the way through the tonemapper. Both are luminance-preserving losses
+   * of *saturation*, so the correction is a luminance-preserving restore of saturation,
+   * applied here where the sky is still scene-referred and nothing else has been mixed
+   * into it. The zenith bias then leans the top of the dome further towards blue, which
+   * is where single scattering is strongest and where the filtering loss is worst.
+   */
+  {
+    float skyL = dot( sky, vec3( 0.2126, 0.7152, 0.0722 ) );
+    sky = max( mix( vec3( skyL ), sky, uSkyChroma.x ), vec3( 0.0 ) );
+    float up = sat1( dir.y );
+    sky *= mix( vec3( 1.0 ), vec3( 0.86, 0.97, 1.20 ), up * up * uSkyChroma.y );
+  }
+
   /* --- ground / distant terrain haze below the horizon ---------------------- */
   if ( dir.y < 0.0 ) {
     float gd = max( uCameraPos.y, 1.0 ) / max( -dir.y, 1e-3 );
@@ -839,6 +861,16 @@ void main() {
                      vec3( 0.0 ) );
     sun = uSunDiscRadiance * limb * sunEdge;
   }
+
+  /**
+   * Circumsolar aureole: forward-scattered sunlight off aerosols. Two lobes — a tight
+   * one that reads as "the sun is *there*" and a broad one that warms the whole sun-side
+   * quarter of the dome. Extinguished by the view transmittance like the disc, and cut
+   * below the horizon so the glow does not survive into the ground blend.
+   */
+  vec3 aureole = uSunGlowColor *
+    ( 0.85 * exp( -sunAng * 9.5 ) + 0.34 * exp( -sunAng * 2.3 ) ) *
+    sat1( dir.y * 5.0 + 0.55 );
 
   float moonAng = safeacos( dot( dir, uMoonDirection ) );
   float moonMask;
@@ -901,7 +933,7 @@ void main() {
   vec3 color = behind * cirrusT * cloudT
              + cirrusScatter * cloudT
              + cloudScatter
-             + sky * mix( 0.30, 1.0, cloudT );
+             + ( sky + aureole * viewTr ) * mix( 0.30, 1.0, cloudT );
 
   gl_FragColor = vec4( max( color, vec3( 0.0 ) ), 1.0 );
 }

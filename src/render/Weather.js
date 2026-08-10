@@ -682,7 +682,23 @@ class Weather {
           u.uFogColor.value.set(c[0], c[1], c[2]);
           // A dust storm scatters light from every direction, not just the sun.
           u.uAmbientScatter.value = 0.12 + 0.34 * clamp01(s.dust);
-          u.uMaxDistance.value = clamp(s.visibility * 1.4, 60, 260);
+          /**
+           * **The march is the *near* fog. Anything past it belongs to the sky.**
+           *
+           * At `visibility * 1.4` the clear preset marched 260 m, and the marcher clamps
+           * a sky ray to exactly that figure while a ray that hits a building stops at
+           * the building — so the skyline was a step from ~90 m of in-scatter to 260 m
+           * of it, which is the hard horizontal seam the review found across the vista
+           * frame at y ≈ 0.30. Worse, every one of those metres is *also* being fogged
+           * by `ctx.sky.applyAerialPerspective()` inside the material, so distant blocks
+           * were double-hazed and came out brighter than the sky behind them.
+           *
+           * Capping the march near the far end of the play space fixes both: geometry
+           * beyond the cap and the sky itself now integrate the identical column, so
+           * there is no step at the roofline, and the long range is owned by the one
+           * model that also paints the dome.
+           */
+          u.uMaxDistance.value = clamp(s.visibility * 0.14, 32, 85);
         }
         const g = pipeline.grade;
         const base = this._gradeBase;

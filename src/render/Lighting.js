@@ -538,8 +538,19 @@ class LightManager {
 
   setQuality(tier, headless) {
     const t = POOL_TIERS[tier] || POOL_TIERS.high;
+    /**
+     * Headless keeps a smaller pool, but not as small as it was. At four points the
+     * eight interior practicals and every prop-mounted stall lamp on the map were
+     * competing for four slots against each other, and the screen-space score is
+     * `power / d²` — so a 42 W street lamp twenty metres away beat the two market-stall
+     * lamps four metres in front of the hero camera, which is the "motivated fill is
+     * not measurable" the review measured under the awning. Six points and three spots
+     * is two more `#if NUM_POINT_LIGHTS` iterations per fragment; it is the cheapest
+     * light in the frame and it is aimed at the part of the frame the review calls the
+     * darkest region in eight frames out of eight.
+     */
     this.target = headless
-      ? { points: Math.min(t.points, 4), spots: Math.min(t.spots, 2), shadowSpots: 0 }
+      ? { points: Math.min(t.points, 6), spots: Math.min(t.spots, 3), shadowSpots: 0 }
       : { ...t };
     this.shadowResolution = headless ? 512 : tier === 'ultra' ? 1024 : 768;
     // Never shrink an existing pool: that would recompile every material mid-game.
@@ -958,6 +969,26 @@ class Lighting {
     this.exposureCompensation = 1;
     this.localLightScale = 1;
 
+    /**
+     * How far the screen-space AO is allowed to close the indirect term, and what it
+     * closes *towards*. See the `COD_CONTACT` block in `_glsl()`.
+     *
+     * The review measured a vertical profile down the hero wall into the awning falling
+     * from L 128 to RGB [1, 6, 19] in 25 pixels, with a third of the frame under L 32.
+     * A multiply-to-zero is the wrong model: an occluder is a surface, and the surfaces
+     * doing the occluding on this map are ochre plaster, pavement and canvas.
+     */
+    this.aoFloor = 0.34;
+    this.bounceGain = 0.9;
+    /** Aperture area lights — see `_updatePortals`. */
+    this.portalsEnabled = true;
+    this.portalGain = 1.5;
+    this.portalSunGain = 1.0;
+    this.portalCount = 0;
+    this._portalTimer = 0;
+    this._portalReady = false;
+    this._portalAnchor = new THREE.Vector3(1e9, 1e9, 1e9);
+
     this.sunDirection = new THREE.Vector3(0.35, 0.72, 0.6).normalize();
     this.sunColor = new THREE.Color(1, 0.94, 0.86);
     this.sunIntensity = 8;
@@ -1128,6 +1159,34 @@ class Lighting {
         this._warn('staging', 'pose key staging failed', err);
       }
     });
+    /**
+     * **The muzzle flash has to light something.**
+     *
+     * `fx` draws a 248-peak sprite at the muzzle and the review's note is exactly right:
+     * it lights nothing — no bounce off the barrel, no rim on the shooter, nothing on the
+     * cover a metre in front. A flash is roughly a megacandela for two milliseconds; the
+     * one thing it definitely does is illuminate its own surroundings.
+     *
+     * A pooled transient point light on `weapon:fire` is the cheapest honest fix and it
+     * lives here because the light pool lives here. `daylight: true` opts it out of the
+     * practicals dimmer — a muzzle flash reads in full sun, that is the point of it.
+     * It decays over ~55 ms, which at 1/60 s is one to four frames, so a still captured
+     * mid-burst catches it and a still captured between shots does not.
+     */
+    on('weapon:fire', (e) => {
+      try {
+        this._flash(e);
+      } catch (err) {
+        this._warn('flash', 'muzzle flash light failed', err);
+      }
+    });
+    on('explosion', (e) => {
+      try {
+        this._flash({ origin: e?.point, intensity: 320, radius: Math.max(e?.radius ?? 6, 6), life: 0.16, kelvin: 2200 });
+      } catch (err) {
+        this._warn('flash', 'explosion light failed', err);
+      }
+    });
     on('lighting:stageSun', (o) => {
       try {
         this.setSunStaging(o);
@@ -1248,6 +1307,9 @@ class Lighting {
 
     if (rescan) {
       this._scanFrame = -999;
+      // Other modules re-run their own castShadow pass on `quality:changed`; re-audit
+      // rather than trust the memo, or a tier change silently empties the caster set.
+      this._audited = new WeakSet();
       if (dirty) this._invalidateShaders();
     }
   }
@@ -1356,7 +1418,10 @@ class Lighting {
     if (s.azimuth !== null) s.azimuth = ((s.azimuth % 360) + 360) % 360;
 
     try {
-      this.ctx.sky?.setSunStaging?.({ azimuth: s.azimuth, altitude: s.altitude });
+      // Kelvin goes across too: the sky module owns the grade now (see Sky._gradeSun),
+      // so the clouds, the cirrus, the aerial perspective and the disc are warmed by the
+      // same curve as the key instead of only the key being warmed after the fact.
+      this.ctx.sky?.setSunStaging?.({ azimuth: s.azimuth, altitude: s.altitude, kelvin: s.kelvin });
     } catch (err) {
       this._warn('staging', 'sky.setSunStaging failed', err);
     }
@@ -2062,6 +2127,240 @@ class Lighting {
     return new THREE.Color(r, g, b);
   }
 
+  /* ─────────────────────────────────────────────────────── transient flashes */
+
+  /**
+   * Fire a short-lived point light. Pooled: one handle is reused for the muzzle, so a
+   * held trigger re-arms it rather than filling the request list.
+   * @param {{origin?:any, point?:any, dir?:any, intensity?:number, radius?:number,
+   *          life?:number, kelvin?:number}} e
+   */
+  _flash(e) {
+    const src = e?.origin || e?.point || e?.position;
+    if (!src) return;
+    const isBlast = (e?.life ?? 0) > 0.1;
+    const slot = isBlast ? '_blastLight' : '_muzzleLight';
+    let h = this[slot];
+    if (!h) {
+      h = this[slot] = this.lights.addLight({
+        type: 'point',
+        intensity: 0,
+        radius: 8,
+        kelvin: e?.kelvin ?? 3600,
+        priority: 6,
+        daylight: true,
+        enabled: false,
+      });
+    }
+    const x = src.x ?? src[0] ?? 0;
+    const y = src.y ?? src[1] ?? 0;
+    const z = src.z ?? src[2] ?? 0;
+    h.position.set(x, y, z);
+    // Push it a little along the barrel so the flash is in front of the muzzle device
+    // rather than inside it, or the first thing it lights is the suppressor's own back.
+    const d = e?.dir;
+    if (d) {
+      const dx = d.x ?? d[0] ?? 0;
+      const dy = d.y ?? d[1] ?? 0;
+      const dz = d.z ?? d[2] ?? 0;
+      const l = Math.hypot(dx, dy, dz) || 1;
+      h.position.set(x + (dx / l) * 0.22, y + (dy / l) * 0.22, z + (dz / l) * 0.22);
+    }
+    if (Number.isFinite(e?.kelvin)) kelvinToLinearRGB(e.kelvin, h.color);
+    h.radius = e?.radius ?? 8;
+    /**
+     * Intensity is in the same units as the practicals and rides `localLightScale`, so
+     * it is a *ratio* to whatever the frame is exposed for: 190 at radius 8 puts about
+     * 3 units of irradiance on a wall a metre and a half away, which is a couple of
+     * stops over a sunlit facade — bright, and not a white hole.
+     */
+    h._flashPeak = e?.intensity ?? 190;
+    h.intensity = h._flashPeak;
+    h.enabled = true;
+    h._flashLife = e?.life ?? 0.055;
+    h._flashAge = 0;
+  }
+
+  /** Decay whatever `_flash` armed. Called once per frame from update(). */
+  _tickFlashes(dt) {
+    for (const slot of ['_muzzleLight', '_blastLight']) {
+      const h = this[slot];
+      if (!h || !h.enabled) continue;
+      h._flashAge += dt;
+      const t = clamp01(1 - h._flashAge / Math.max(h._flashLife, 1e-3));
+      if (t <= 0) {
+        h.enabled = false;
+        h.intensity = 0;
+      } else {
+        // Quadratic decay: a flash is over long before its afterglow is.
+        h.intensity = (h._flashPeak ?? 190) * t * t;
+      }
+    }
+  }
+
+  /* ──────────────────────────────────────────────── bounce floor & portals */
+
+  /**
+   * **What the ambient occlusion occludes towards.**
+   *
+   * The horizon probe already measures, per compass bearing, the one-bounce radiance of
+   * whatever masonry is standing in that direction, plus the radiance of the ground it
+   * is standing on. That is exactly the light a screen-space AO tap is blocking when it
+   * says "occluded": not the sky, the *wall*. Average it (weighted towards the ground,
+   * because near-field occluders — a kerb, a crate, a counter, an awning post — are more
+   * often below the shading point than beside it), multiply by pi to turn radiance into
+   * the irradiance of a fully enclosing hemisphere, and hand it to the shader.
+   *
+   * Without a physics world there is no probe, so fall back to the SH's own DC term at a
+   * plausible albedo — still coloured, still not zero.
+   */
+  _updateBounce() {
+    const u = this.uniforms.uCodBounce.value;
+    const hz = this._hz;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    if (hz) {
+      for (let i = 0; i < HZ_BINS; i++) {
+        r += hz.r[i];
+        g += hz.g[i];
+        b += hz.b[i];
+      }
+      const inv = 1 / HZ_BINS;
+      r = r * inv * 0.45 + hz.ground[0] * 0.55;
+      g = g * inv * 0.45 + hz.ground[1] * 0.55;
+      b = b * inv * 0.45 + hz.ground[2] * 0.55;
+    } else if (this._shValid) {
+      const c = this.sh.coefficients[0];
+      // Y00 = 0.2820948; irradiance of the DC term is 0.886227 * c0 * Y00-ish. Take a
+      // conservative tenth of it as "what a nearby surface bounces back".
+      r = Math.max(c.x, 0) * 0.0282;
+      g = Math.max(c.y, 0) * 0.0282;
+      b = Math.max(c.z, 0) * 0.0282;
+    }
+    u.set(Math.max(r, 0) * Math.PI, Math.max(g, 0) * Math.PI, Math.max(b, 0) * Math.PI, this.bounceGain);
+    this.uniforms.uCodAoFloor.value.x = this.aoFloor;
+  }
+
+  /**
+   * **Aperture area lights.** See the `codPortalIrradiance` GLSL for the shading model
+   * and `world/Level.js collectPortals()` for where the rectangles come from.
+   *
+   * This runs on the CPU a couple of times a second, not per frame: the selection only
+   * changes when the camera moves, and the radiance only when the sun does.
+   *
+   * Radiance of an opening, looking out of it:
+   *   • the sky in that bearing, from the same scattering model everything else uses;
+   *   • the sunlit ground and facade outside, from the horizon probe;
+   *   • plus, when the sun can actually see the aperture, the solar irradiance it
+   *     transmits, spread Lambertian over the opening — which is what makes a window
+   *     on the sun side a hard warm source and one in shade a soft blue one.
+   * Glazing takes ~18 % off, because it does.
+   */
+  _updatePortals(dt) {
+    const uP = this.uniforms.uCodPortalP.value;
+    const uN = this.uniforms.uCodPortalN.value;
+    const uC = this.uniforms.uCodPortalC.value;
+    const cam = this.ctx.camera;
+    const list = this.ctx.level?.portals;
+    const off = () => {
+      for (let i = 0; i < PORTAL_SLOTS; i++) uC[i].w = 0;
+      this.portalCount = 0;
+    };
+    if (!cam || !this.portalsEnabled || !Array.isArray(list) || !list.length) return off();
+
+    this._portalTimer += dt;
+    const moved = this._portalAnchor.distanceToSquared(cam.position) > 0.9;
+    if (!moved && this._portalTimer < 0.4 && this._portalReady) return;
+    this._portalTimer = 0;
+    this._portalAnchor.copy(cam.position);
+    this._portalReady = true;
+
+    const RANGE = 17;
+    const cands = this._portalCands || (this._portalCands = []);
+    cands.length = 0;
+    const cp = cam.position;
+    for (const p of list) {
+      const dx = p.x - cp.x;
+      const dy = p.y - cp.y;
+      const dz = p.z - cp.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > RANGE * RANGE) continue;
+      // The camera has to be on the room side, or this is somebody else's window.
+      if (dx * p.nx + dz * p.nz > -0.25) continue;
+      const area = 4 * p.hw * p.hh;
+      cands.push({ p, d2, score: area / Math.max(d2, 1) });
+    }
+    if (!cands.length) return off();
+    cands.sort((a, b) => b.score - a.score);
+
+    const sky = this.ctx.sky;
+    const phys = this.ctx.physics;
+    const hz = this._hz;
+    const n = Math.min(PORTAL_SLOTS, cands.length);
+    for (let i = 0; i < n; i++) {
+      const p = cands[i].p;
+      // Outward, tilted up: a window mostly sees sky above the block opposite.
+      _hzD.set(-p.nx * 0.72, 0.5, -p.nz * 0.72).normalize();
+      let sr = 0;
+      let sg = 0;
+      let sb = 0;
+      if (sky?.sampleSky) {
+        try {
+          sky.sampleSky(_hzD, _color);
+          sr = Math.max(_color.r, 0);
+          sg = Math.max(_color.g, 0);
+          sb = Math.max(_color.b, 0);
+        } catch {
+          /* the fallback below still lights the room */
+        }
+      }
+      if (sr + sg + sb < 1e-5 && sky?.horizonColor) {
+        sr = sky.horizonColor.r;
+        sg = sky.horizonColor.g;
+        sb = sky.horizonColor.b;
+      }
+      let r = sr * 0.55;
+      let g = sg * 0.55;
+      let b = sb * 0.55;
+      if (hz) {
+        r += hz.ground[0] * 1.1;
+        g += hz.ground[1] * 1.1;
+        b += hz.ground[2] * 1.1;
+      }
+      // Direct sun arriving at the outside face.
+      const sd = this.sunDirection;
+      const cosOut = -(p.nx * sd.x + p.nz * sd.z) * Math.sqrt(Math.max(1 - sd.y * sd.y, 0)) + 0;
+      const face = -(p.nx * sd.x + p.nz * sd.z);
+      if (face > 0.02 && this.sunIntensity > 1e-3 && sd.y > 0) {
+        let vis = 1;
+        if (phys?.raycast) {
+          _hzP.set(p.x - p.nx * 0.5, p.y, p.z - p.nz * 0.5);
+          try {
+            vis = phys.raycast(_hzP, sd, 140, 1 | 8) ? 0 : 1;
+          } catch {
+            vis = 0;
+          }
+        }
+        if (vis > 0) {
+          // E·cos / pi: the solar irradiance the opening transmits, re-emitted diffusely.
+          const k = (this.sunIntensity * face * this.portalSunGain) / Math.PI;
+          r += this.sunColor.r * k;
+          g += this.sunColor.g * k;
+          b += this.sunColor.b * k;
+        }
+      }
+      void cosOut;
+      const t = p.glazed ? 0.82 : 1;
+      const gain = this.portalGain * t;
+      uP[i].set(p.x, p.y, p.z, p.hw);
+      uN[i].set(p.nx, 0, p.nz, p.hh);
+      uC[i].set(r * gain, g * gain, b * gain, RANGE);
+    }
+    for (let i = n; i < PORTAL_SLOTS; i++) uC[i].w = 0;
+    this.portalCount = n;
+  }
+
   /* ─────────────────────────────────────────────── material shader patching */
 
   _shaderKeyNow() {
@@ -2138,7 +2437,7 @@ float codSpotShadow( sampler2D shadowMap, vec2 mapSize, float intensity, float b
  * divide. The +A/pi is what stops a fragment in the reveal itself going to infinity.
  *
  * Radiance, the aperture's inward-facing side, and which side of the wall is "inside"
- * are all resolved on the CPU — see `_updatePortals`.
+ * are all resolved on the CPU — see Lighting._updatePortals.
  */
 uniform vec4 uCodPortalP[ ${PORTAL_SLOTS} ];   // xyz centre (world), w half-width
 uniform vec4 uCodPortalN[ ${PORTAL_SLOTS} ];   // xyz inward normal, w half-height
@@ -2598,6 +2897,13 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
     }
     const r = geo?.boundingSphere?.radius ?? 1;
     if (!(r > 0.01) || r > 320) return;
+    /**
+     * Foliage is the one family where the owning module's "no" is worth keeping for the
+     * small end of the range: a grass card is an alpha-tested plane whose depth
+     * footprint at 2 cm texels is noise, and there are thousands of them. Trees, shrubs
+     * and planted beds are objects and cast like objects.
+     */
+    if (obj.userData?.foliage && r < 0.5) return;
 
     obj.castShadow = true;
     this._casterFlips++;
@@ -2646,6 +2952,11 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
 
     const viewer = this.ctx.camera?.position;
     try {
+      this._tickFlashes(d);
+    } catch (err) {
+      this._warn('flashtick', 'flash decay failed', err);
+    }
+    try {
       this.lights.update(d, viewer, this.localLightScale);
     } catch (err) {
       this._warn('lights', 'local light update failed', err);
@@ -2680,6 +2991,13 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
     cs.y = this.contact.normDist;
     cs.z = live ? this.contact.aoIndirect : 0;
     this.uniforms.uCodContactMap.value = this.contact.texture;
+
+    this._updateBounce();
+    try {
+      this._updatePortals(d);
+    } catch (err) {
+      this._warn('portals', 'aperture portal update failed', err);
+    }
 
     this._scan();
 
@@ -2904,6 +3222,9 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
       activeLights: this.lights.activeCount || 0,
       shadowLights: this.lights.shadowCount || 0,
       patchedMaterials: this._materials.size,
+      casterFlips: this._casterFlips,
+      portals: this.portalCount,
+      levelPortals: this.ctx.level?.portals?.length ?? 0,
       contact: this.contact.enabled && this.contact.valid,
       sh: this._shValid,
       openSky: this._hz ? +this._hz.openSky.toFixed(3) : null,

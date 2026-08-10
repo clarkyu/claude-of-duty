@@ -328,9 +328,9 @@ export default function createWeaponSystem(ctx) {
      * The key keeps its lobe, because a weapon with no highlight at all is a matte
      * cutout, and the rim survives at a third of its old weight to hold the silhouette
      * against a night street. */
-    lights.key = mk(0xfff0dc, 1.7, [-0.62, 0.78, 0.42]);
-    lights.rim = mk(0xdfe8f6, 0.24, [0.34, 0.52, -0.86]);
-    const hemi = new THREE.HemisphereLight(0x93aecd, 0x6a5e4c, 0.92);
+    lights.key = mk(0xfff0dc, 1.32, [-0.62, 0.78, 0.42]);
+    lights.rim = mk(0xdfe8f6, 0.16, [0.34, 0.52, -0.86]);
+    const hemi = new THREE.HemisphereLight(0x93aecd, 0x6a5e4c, 1.3);
     root.add(hemi);
     lights.fill = hemi;
     lights.bounce = null;
@@ -411,15 +411,15 @@ export default function createWeaponSystem(ctx) {
     // Key tracks the world, but with a hard floor: a COD viewmodel is always readable
     // because a camera-relative rig lights it, not the room it is standing in.
     const k = clamp(0.5 + Math.sqrt(lum) * 0.75, 0.62, 1.7);
-    if (lights.key) lights.key.intensity = 1.7 * k;
+    if (lights.key) lights.key.intensity = 1.32 * k;
     // Hemisphere: pure irradiance, so this can be generous without costing a highlight.
-    if (lights.fill) lights.fill.intensity = 0.92 * k;
+    if (lights.fill) lights.fill.intensity = 1.3 * k;
     /* Rim carries the silhouette; it is deliberately the last thing to fade at night —
      * but its night *floor* was doing real damage. At 1.45 x 0.78 it was still throwing
      * 1.13 of grazing light at a weapon standing in a courtyard whose median pixel is
      * 27, which is why the night frame measured the worst highlight ratio of the four
      * (4.1x scene at p99) despite being the darkest. */
-    if (lights.rim) lights.rim.intensity = 0.24 * clamp(k, 0.7, 1.4);
+    if (lights.rim) lights.rim.intensity = 0.16 * clamp(k, 0.7, 1.4);
     if (lights.bounce) lights.bounce.intensity = 0.3 * k;
 
     /* Night warmth.
