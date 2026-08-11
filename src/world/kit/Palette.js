@@ -61,9 +61,9 @@ export const PALETTE = {
    * Grime is dialled down with distance for the same reason — dirt does not resolve.
    */
   'far.bone': { m: 'stucco', o: { vertexColors: true, grime: 0.55, repeat: 0.8 }, tint: 0xcdc7b6 },
-  'far.dust': { m: 'stucco', o: { vertexColors: true, grime: 0.62, repeat: 0.8 }, tint: 0xb6a482 },
-  'far.rose': { m: 'stucco', o: { vertexColors: true, grime: 0.6, repeat: 0.8 }, tint: 0xb08a76 },
-  'far.slate': { m: 'stucco', o: { vertexColors: true, grime: 0.5, repeat: 0.8 }, tint: 0x99a2ab },
+  'far.dust': { m: 'stucco', o: { vertexColors: true, grime: 0.62, repeat: 0.8 }, tint: 0xb59a6c },
+  'far.rose': { m: 'stucco', o: { vertexColors: true, grime: 0.6, repeat: 0.8 }, tint: 0xb37f66 },
+  'far.slate': { m: 'stucco', o: { vertexColors: true, grime: 0.5, repeat: 0.8 }, tint: 0x8695a6 },
   'far.haze': { m: 'stucco', o: { vertexColors: true, grime: 0.3, repeat: 0.55 }, tint: 0xc6c6c0 },
   'far.hazeWarm': { m: 'stucco', o: { vertexColors: true, grime: 0.34, repeat: 0.55 }, tint: 0xcec2ac },
   'far.hazePale': { m: 'stucco', o: { vertexColors: true, grime: 0.24, repeat: 0.55 }, tint: 0xd9d6cc },
@@ -89,7 +89,7 @@ export const PALETTE = {
    * painted-metal keys — one dark, one catching the sky — give exactly that read for
    * a fraction of the cost, and they are visible, which the glass was not.
    */
-  'far.glassDark': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 0.9, repeat: 1.4 }, tint: 0x2c343e },
+  'far.glassDark': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 0.9, repeat: 1.4 }, tint: 0x1e242c },
   'far.glassLit': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 0.45, repeat: 1.4 }, tint: 0x93a4b0 },
 
   /* ── masonry ────────────────────────────────────────────────────────── */

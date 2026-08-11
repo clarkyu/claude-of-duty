@@ -534,17 +534,17 @@ export const BACKDROP = [
   { rect: [-28, -88, -4, -60], h: 27, wall: 'wall.terracotta', rank: 0 },
   { rect: [2, -96, 30, -62], h: 38, wall: 'wall.sand', rank: 0 },
   { rect: [36, -84, 66, -60], h: 23, wall: 'wall.ochre', rank: 0 },
-  { rect: [70, -70, 100, -30], h: 31, wall: 'wall.bone', rank: 0 },
-  { rect: [72, -12, 98, 30], h: 25, wall: 'wall.sand', rank: 0 },
+  { rect: [70, -70, 100, -30], h: 31, wall: 'wall.ochre', rank: 0 },
+  { rect: [72, -12, 98, 30], h: 25, wall: 'wall.terracotta', rank: 0 },
   { rect: [68, 40, 96, 76], h: 33, wall: 'wall.terracotta', rank: 0 },
-  { rect: [10, 62, 48, 92], h: 27, wall: 'wall.bone', rank: 0 },
+  { rect: [10, 62, 48, 92], h: 27, wall: 'wall.terracotta', rank: 0 },
   { rect: [-40, 60, -2, 88], h: 30, wall: 'wall.ochre', rank: 0 },
   { rect: [-92, 46, -56, 82], h: 24, wall: 'wall.sand', rank: 0 },
-  { rect: [-100, -18, -70, 30], h: 33, wall: 'wall.bone', rank: 0 },
+  { rect: [-100, -18, -70, 30], h: 33, wall: 'wall.ochre', rank: 0 },
   /* infill between the first-rank blocks, so the rank is a town and not a picket
      fence with sky between the posts */
   { rect: [-34, -74, -6, -56], h: 19, wall: 'wall.ochre', rank: 0 },
-  { rect: [30, -78, 42, -58], h: 22, wall: 'wall.bone', rank: 0 },
+  { rect: [30, -78, 42, -58], h: 22, wall: 'wall.pink', rank: 0 },
   { rect: [-70, -60, -50, -50], h: 16, wall: 'wall.terracotta', rank: 0 },
   { rect: [56, -58, 78, -44], h: 18, wall: 'wall.sand', rank: 0 },
 

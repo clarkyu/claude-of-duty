@@ -1583,7 +1583,18 @@ class Lighting {
     const altDeg = (Math.asin(clamp(this.sunDirection.y, -1, 1)) * 180) / Math.PI;
     if (altDeg <= 0) return 1;
     const t = clamp01((26 - altDeg) / 20);
-    return 1 + 0.3 * t * t * (3 - 2 * t);
+    /**
+     * 0.30 was measured and was not enough: at a 15.4 degree staged sun it lifts the key
+     * 16 %, and the brightest 5 % of the hero frame was still 55 % sky (R-B -23) against
+     * 25 % sunlit facade (R-B +80), so key/fill came back at 8.9 against the 26.7 it has
+     * to beat. The ordering is what matters, not the increment: a sunlit ochre wall at
+     * golden hour is *brighter* than the sky behind it, and until it is, the brightest
+     * part of the frame meters as sky and no amount of chroma work in the tonemapper can
+     * fix it. 0.50 (27 % at the hero altitude, 39 % at the vista's 12 degrees, nothing at
+     * all above 26) puts the lit facades above the dome; auto-exposure then takes roughly
+     * a stop-tenth back off the whole frame, so what is left is the ratio.
+     */
+    return 1 + 0.5 * t * t * (3 - 2 * t);
   }
 
   /**

@@ -1478,21 +1478,41 @@ function backdropWindows(bat, rank, rect, y0, h, seed) {
     return;
   }
 
-  /* punched openings */
-  const step = rank === 0 ? 3.6 : 4.2;
-  const ww = rank === 0 ? 1.2 : 1.3;
-  const wh = rank === 0 ? 1.6 : 1.3;
-  const floor = rank === 0 ? 3.2 : 3.0;
-  for (let y = y0 + 2.4; y < y0 + h - 1.2; y += floor) {
+  /*
+   * Punched openings.
+   *
+   * Reviewed on the vista frame the first pass read as graph paper: a perfectly even
+   * grid of identical squares over a flat wall. Three things fix that, and all three
+   * are what a real facade has — openings that are TALLER than they are wide, a bay
+   * missing here and there (a shuttered flat, a stair core, a blank party wall), and
+   * a horizontal band at every third floor so the eye has a storey rhythm to hang the
+   * grid on instead of counting squares.
+   */
+  const step = rank === 0 ? 3.5 : 4.2;
+  const ww = rank === 0 ? 1.15 : 1.25;
+  const wh = rank === 0 ? 1.9 : 1.4;
+  const floor = rank === 0 ? 3.3 : 3.0;
+  const skip = rank === 2 ? 0.28 : 0.12;
+  const band = rank === 0 ? bat.b('far.trim') : null;
+  let row = 0;
+  for (let y = y0 + 2.4; y < y0 + h - 1.4; y += floor, row++) {
     let k = 0;
-    for (let x = x0 + 2.2; x < x1 - 1.8; x += step, k++) {
-      /* Leave a hole here and there: a perfectly regular grid is a spreadsheet, and
-         a shuttered or bricked-up bay is what a real hill town is full of. */
-      const r = hash3(seed, k, Math.round(y));
-      if (rank === 2 && r < 0.28) continue;
-      const mb = r > 0.79 ? lit : dark;
+    /* Slip alternate storeys half a bay: a running bond rather than a stack bond,
+       which is the difference between a building and a spreadsheet. */
+    const off = row % 2 ? step * 0.5 : 0;
+    for (let x = x0 + 2.2 + off; x < x1 - 1.8; x += step, k++) {
+      const r = hash3(seed, k, row);
+      if (r < skip) continue;
+      const mb = r > 0.84 ? lit : dark;
       face(mb, x - ww * 0.5, x + ww * 0.5, y - wh * 0.5, y + wh * 0.5, zf, 1);
       face(mb, x - ww * 0.5, x + ww * 0.5, y - wh * 0.5, y + wh * 0.5, zb, -1);
+    }
+    /* string course every third storey — 24 triangles, and the only horizontal in
+       the whole facade */
+    if (band && row % 3 === 2 && y + floor < y0 + h - 1.4) {
+      const by = y + wh * 0.5 + (floor - wh) * 0.5;
+      band.box([(x0 + x1) * 0.5, by, z1 + 0.1], [(x1 - x0) * 0.5, 0.16, 0.12], { chamfer: 0 });
+      band.box([(x0 + x1) * 0.5, by, z0 - 0.1], [(x1 - x0) * 0.5, 0.16, 0.12], { chamfer: 0 });
     }
   }
 }
