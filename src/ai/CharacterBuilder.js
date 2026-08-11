@@ -411,7 +411,7 @@ export const VARIANTS = [
   },
   {
     id: 'coyote',
-    uniform: 0x847958, panel: 0x9d9170, webbing: 0x51493a, helmet: 0x726851,
+    uniform: 0x8d8161, panel: 0xa89b78, webbing: 0x554d3c, helmet: 0x7b7053,
     boot: 0x312b26, metalKit: 0x454039, skin: 0xb4835a, scarf: 0xb35646, grime: 0.75,
   },
   {
@@ -471,11 +471,20 @@ export default function createCharacterBuilder(ctx) {
       dust: 0.12,
       wet: 0.45,
       grime: 0.85,
-      // Crevice dirt doubles as the AO tint — see bakeVertexAO(). The library
-      // default (0x4a4239, linear 0.07) multiplies albedo by fourteen and takes a
-      // shaded soldier to solid black; this is a stop and a half, which darkens a
-      // seam without deleting it.
-      grimeColor: 0x6a6055,
+      /*
+       * Crevice dirt doubles as the AO tint — see bakeVertexAO().
+       *
+       * Round two raised every authored albedo by ~1.75x and the rendered soldier
+       * moved 71.8 -> 78.2 against a background that moved further, i.e. almost not
+       * at all. The reason is here rather than in the palette: the grime mask runs
+       * 0.3-1.0 over the whole kit and multiplies albedo *towards this colour*, so
+       * whatever the tint says, most of the model is rendering some blend of
+       * 0x6a6055 (linear 0.14). Raising the tint the mask blends to is a far more
+       * direct lever on the shaded value than raising the tint it blends from, and
+       * it keeps the mask — so seams still darken, they just darken to a value the
+       * eye can still see into.
+       */
+      grimeColor: 0x8c8377,
       // Let occlusion bite into direct light too, or every pouch reads as a decal.
       aoDirect: 0.40,
       ...(extra || {}),
@@ -505,7 +514,9 @@ export default function createCharacterBuilder(ctx) {
     if (m.sheen !== undefined) m.sheen = tune.sheen ?? 0.3;
     if (m.specularIntensity !== undefined) m.specularIntensity = tune.spec ?? 0.3;
     m.envMapIntensity = tune.env ?? 0.55;
-    m.aoMapIntensity = tune.aoInt ?? 1.35;
+    // 1.35 was compounding with the grime mask above; both were darkening the
+    // same crevices and the sum was a figure that read as a hole in the frame.
+    m.aoMapIntensity = tune.aoInt ?? 1.12;
     if (tune.rough !== undefined) m.roughness = tune.rough;
     if (tune.metal !== undefined) m.metalness = tune.metal;
     m.needsUpdate = true;

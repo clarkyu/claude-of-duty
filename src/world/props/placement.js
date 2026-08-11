@@ -342,8 +342,8 @@ const PEOPLE = [
   /* ── Souk Street north of the plaza: depth for hero / ads ──────────────── */
   /* behind the level's stall at (2.4, -3.6) yaw -1.57 */
   { t: 'vendor', x: 3.35, z: -3.63, f: -1.57, o: { headwear: 'skull' } },
-  { t: 'civilian', x: 2.2, z: -2.4, f: 0.1, o: { pose: 'walk', carry: 'bag' } },
-  { t: 'civilian', x: 8.4, z: -8.6, f: 3.1, o: { pose: 'stand', headwear: 'keffiyeh' } },
+  { t: 'civilian', x: 2.6, z: -9.4, f: 0.1, o: { pose: 'walk', carry: 'bag' } },
+  { t: 'civilian', x: 7.6, z: -19.5, f: 3.1, o: { pose: 'stand', headwear: 'keffiyeh' } },
   { t: 'squatter', x: 11.7, z: -12.4, f: -1.5, o: { headwear: 'cap' } },
   { t: 'porter', x: 4.6, z: -24.2, f: 0.2 },
 
