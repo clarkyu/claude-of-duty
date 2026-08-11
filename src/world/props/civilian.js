@@ -134,24 +134,36 @@ function figure(a, r, o = {}) {
     const i = Math.min(list.length - 2, Math.floor(f));
     return lerp(list[i], list[i + 1], f - i) * s;
   };
+  /*
+   * The last two rings of every torso close the shoulder down to a narrow collar.
+   * Without them `tube()`'s end cap is a 36 cm flat disc sitting on top of a
+   * cylinder, and reviewed at 3x that is exactly what it looked like: a bollard with
+   * a head balanced on it. The taper is what turns a tube into a pair of shoulders.
+   */
   if (g.robed && !sit) {
     /* a thobe: one sweep from the shoulders to the ankle — the correct shape, and
        half the triangles of a torso plus two trouser legs */
     a.add(g.top, tube([
       [0, 0.05 * s, 0],
-      [0, 0.45 * s, lean * 0.1 * s],
+      [0, 0.5 * s, lean * 0.1 * s],
       [0, hipY, lean * 0.3 * s],
       [0, shoulderY - 0.14 * s, lean * 0.7 * s],
-      [0, shoulderY + 0.03 * s, lean * s],
-    ], profile([0.238, 0.208, 0.178, 0.176, 0.196]), seg + 1), null, { grimeHeight: 0.7 * s, grime: 0.9 });
+      [0, shoulderY + 0.015 * s, lean * s],
+      [0, shoulderY + 0.075 * s, (lean + 0.01) * s],
+      [0, shoulderY + 0.115 * s, (lean + 0.012) * s],
+    ], profile([0.238, 0.208, 0.178, 0.176, 0.196, 0.148, 0.082]), seg + 1), null, {
+      grimeHeight: 0.7 * s,
+      grime: 0.9,
+    });
   } else {
     a.add(g.top, tube([
       [0, hipY - 0.07 * s, 0],
-      [0, hipY + 0.12 * s, lean * 0.25 * s],
+      [0, hipY + 0.14 * s, lean * 0.25 * s],
       [0, shoulderY - 0.2 * s, lean * 0.7 * s],
-      [0, shoulderY, lean * s],
-      [0, shoulderY + 0.045 * s, lean * s],
-    ], profile([0.152, 0.138, 0.162, 0.194, 0.178]), seg + 1), null, {
+      [0, shoulderY - 0.02 * s, lean * s],
+      [0, shoulderY + 0.05 * s, (lean + 0.01) * s],
+      [0, shoulderY + 0.095 * s, (lean + 0.012) * s],
+    ], profile([0.152, 0.138, 0.162, 0.194, 0.146, 0.078]), seg + 1), null, {
       grimeHeight: 0.5 * s,
     });
     /* a belt / sash: one dark band across the narrowest part of the figure */
@@ -594,13 +606,17 @@ export function laundryLine(a, r, o = {}) {
     const yaw = Math.atan2(-to[2], to[0]);
     const phase = r.range(0, TAU);
     /**
-     * Washing is mostly pale, and a shirt is roughly rectangular. The old garment was
-     * pinched from 35 % at the line out to 100 % at the hem, which makes a triangle,
-     * and it picked between two dark cloths — so a street full of these read as a row
-     * of dark pennants rather than as laundry. Light cloth three times in four, and a
-     * much gentler taper.
+     * Washing is mostly pale, and a shirt is roughly rectangular.
+     *
+     * Round two picked light *colours* — `signWhite` three times in five — and the
+     * street still read as a row of dark pennants, because the problem was never the
+     * colour, it was the material: `signWhite` is painted steel and `card` is plywood,
+     * neither of which passes any light. A shirt on a line with the sun behind it is
+     * lit THROUGH, and an opaque sheet backlit renders as its own silhouette. Every
+     * garment is now a cloth-tag material with translucency and sheen — see `washing`
+     * in props/materials.js.
      */
-    a.add(r.pick(['signWhite', 'signWhite', 'canvas', 'card', 'tarp']), sheet(5, 6, (u, v) => {
+    a.add(r.pick(['washing', 'washing', 'washing', 'canvas', 'tarp']), sheet(5, 6, (u, v) => {
       // pinched at the shoulders, hanging almost straight below
       const pinch = 0.78 + 0.22 * v;
       const swayX = Math.sin(v * 3.1 + phase) * 0.05 * v;

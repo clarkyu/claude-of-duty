@@ -529,11 +529,11 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
      * spheroids of visibly different sizes, and they are heaped in a mound (dense and
      * high in the middle, thinning to the rim) rather than sprinkled on a grid.
      */
-    const produceMats = ['veg.citrus', 'veg.tomato', 'veg.green'];
+    const produceMats = ['veg.citrus', 'veg.tomato', 'veg.green', 'veg.dark'];
     for (let i = 0; i < trays; i++) {
       const tx = lerp(-w * 0.5 + 0.36, w * 0.5 - 0.36, trays === 1 ? 0.5 : i / (trays - 1));
       const tw = w / trays - 0.1;
-      const dom = (i * 2 + goods) % 3;
+      const dom = (i * 2 + goods) % 4;
       /* A spheroid is 48 triangles against a 7-gon cylinder's 24, so the count comes
          down to pay for the shape. Fewer, bigger, rounder, in three colours reads as
          more produce than twice as many blocks did. */
@@ -545,17 +545,17 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
         const rad = Math.pow(rn(60 + i * 11 + k), 0.62);
         const ox = Math.cos(ang) * rad * tw * 0.44;
         const oz = Math.sin(ang) * rad * 0.19;
-        const rr = 0.044 + rn(40 + i * 9 + k) * 0.042;
+        const rr = 0.036 + Math.pow(rn(40 + i * 9 + k), 1.6) * 0.075;
         const oy = 1.015 + rr * 0.85 + (1 - rad * rad) * 0.055;
         /* one item in four is a different crop — a real tray is never monochrome */
-        const which = rn(160 + i * 17 + k) < 0.74 ? dom : (dom + 1 + ((rn(170 + k) * 2) | 0)) % 3;
+        const which = rn(160 + i * 17 + k) < 0.7 ? dom : (dom + 1 + ((rn(170 + k) * 3) | 0)) % 4;
         ball(bat.b(produceMats[which]), tx + ox, oy, d * 0.24 + oz, rr, 0.14 + rn(180 + k) * 0.14);
       }
       /* a second heap on the raked back tier, which is the one the eye reads first */
       for (let k = 0; k < 4; k++) {
         const rr = 0.048 + rn(120 + i * 7 + k) * 0.036;
         const ox = (rn(140 + i * 5 + k) - 0.5) * (tw * 0.72);
-        const which = rn(150 + i * 13 + k) < 0.7 ? (dom + 1) % 3 : dom;
+        const which = rn(150 + i * 13 + k) < 0.7 ? (dom + 1) % 4 : dom;
         ball(bat.b(produceMats[which]), tx + ox, 1.1 + rr * 0.7, -d * 0.06 + (rn(190 + k) - 0.5) * 0.08, rr, 0.16);
       }
     }
@@ -570,7 +570,7 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
       sm.cylinder([sx2, sh * 0.62, sz2], [sx2, sh, sz2], 0.17, 9, { radius2: 0.13 });
       sm.cylinder([sx2, sh, sz2], [sx2, sh + 0.07, sz2], 0.15, 9, { radius2: 0.16 });
       /* what is in it, proud of the mouth */
-      bat.b(produceMats[(i + goods + 1) % 3]).cylinder([sx2, sh + 0.05, sz2], [sx2, sh + 0.12, sz2], 0.13, 8, { radius2: 0.05 });
+      bat.b(produceMats[(i + goods + 1) % 4]).cylinder([sx2, sh + 0.05, sz2], [sx2, sh + 0.12, sz2], 0.13, 8, { radius2: 0.05 });
     }
     /* textiles hanging off the front rail — the strongest vertical a stall has */
     if (goods % 2 === 1) {
@@ -613,25 +613,31 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
     const bz = d * 0.16;
     const dy = frontH - 0.44; // dial centre
     /* hanger */
-    bm.cylinder([bx, frontH - 0.06, bz], [bx, dy + 0.14, bz], 0.006, 4);
-    bm.cylinder([bx, dy + 0.16, bz], [bx, dy + 0.12, bz], 0.028, 6);
-    /* the dial: a 22 cm drum lying in the XY plane, so its face looks down the aisle */
-    bm.cylinder([bx, dy, bz - 0.032], [bx, dy, bz + 0.032], 0.112, 12);
-    bat.b('metal.paintCream').cylinder([bx, dy, bz + 0.033], [bx, dy, bz + 0.042], 0.098, 12);
+    bm.cylinder([bx, frontH - 0.06, bz], [bx, dy + 0.11, bz], 0.006, 4);
+    bm.cylinder([bx, dy + 0.13, bz], [bx, dy + 0.095, bz], 0.026, 6);
+    /*
+     * The dial. Round one made this a 22 cm drum with a full-width cream face and it
+     * came back reading as a paper lantern — the pale disc was the brightest thing on
+     * the stall and it had no bezel to say "instrument". Smaller (16 cm), a dark
+     * galvanised body that stands proud of the face as a rim, and the cream only on
+     * the recessed dial inside it.
+     */
+    bm.cylinder([bx, dy, bz - 0.03], [bx, dy, bz + 0.038], 0.082, 10);
+    bat.b('metal.paintCream').cylinder([bx, dy, bz + 0.031], [bx, dy, bz + 0.036], 0.062, 10);
     /* pointer, a thin bar across the face — the one detail that says "instrument" */
-    bat.b('metal.rust').box([bx + 0.03, dy + 0.03, bz + 0.048], [0.055, 0.006, 0.004]);
+    bat.b('metal.rust').box([bx + 0.018, dy + 0.02, bz + 0.04], [0.04, 0.005, 0.003]);
     /* hook and pan */
-    bm.cylinder([bx, dy - 0.11, bz], [bx, dy - 0.19, bz], 0.007, 4);
+    bm.cylinder([bx, dy - 0.082, bz], [bx, dy - 0.16, bz], 0.007, 4);
     for (let s = 0; s < 3; s++) {
       const a = (s / 3) * TAU + 0.5;
-      bm.cylinder([bx, dy - 0.19, bz], [bx + Math.cos(a) * 0.15, dy - 0.4, bz + Math.sin(a) * 0.15], 0.0035, 4);
+      bm.cylinder([bx, dy - 0.16, bz], [bx + Math.cos(a) * 0.14, dy - 0.36, bz + Math.sin(a) * 0.14], 0.0035, 4);
     }
     /* the pan is an open dish: a rim ring plus a shallow floor, not a solid puck */
-    bm.cylinder([bx, dy - 0.415, bz], [bx, dy - 0.4, bz], 0.13, 12, { radius2: 0.155 });
-    bm.cylinder([bx, dy - 0.418, bz], [bx, dy - 0.412, bz], 0.148, 12);
+    bm.cylinder([bx, dy - 0.375, bz], [bx, dy - 0.36, bz], 0.12, 10, { radius2: 0.145 });
+    bm.cylinder([bx, dy - 0.378, bz], [bx, dy - 0.372, bz], 0.138, 10);
     /* something actually in the pan */
-    ball(bat.b(produceMats[(goods + 2) % 3]), bx - 0.04, dy - 0.36, bz + 0.02, 0.055, 0.18);
-    ball(bat.b(produceMats[goods % 3]), bx + 0.05, dy - 0.365, bz - 0.03, 0.05, 0.2);
+    ball(bat.b(produceMats[(goods + 2) % 4]), bx - 0.04, dy - 0.32, bz + 0.02, 0.05, 0.18);
+    ball(bat.b(produceMats[goods % 4]), bx + 0.05, dy - 0.325, bz - 0.03, 0.046, 0.2);
     /* chalk price board propped on the counter end */
     bat
       .b('wood.painted')

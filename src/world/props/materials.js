@@ -80,10 +80,26 @@ export const PROP_MATS = {
    * `robe` is the pale thobe / dishdasha — the single most recognisable silhouette
    * fill in a Levantine street, and near-white, which is the value the crowd needs.
    */
-  skin: { base: 'plywood_painted', tint: 0x9c6f4c, opts: { repeat: 0.9, grime: 0.5 }, rough: [0.5, 0.82] },
+  skin: { base: 'plywood_painted', tint: 0x9a7a5c, opts: { repeat: 0.9, grime: 0.5 }, rough: [0.5, 0.82] },
   /* Not double-sided: a thobe here is a closed tube, so the back faces are never
      seen and `double` is a straight doubling of its fragment cost. */
   robe: { base: 'fabric_canvas', tint: 0xc9c3b1, opts: { repeat: 1.1, grime: 0.85 } },
+
+  /**
+   * Washing.
+   *
+   * Every street pose has laundry strung across it and in every one of them the
+   * garments came out as BLACK PENNANTS against the sky — which is what a single
+   * opaque sheet does when the sun is behind it. Three of the five cloths the line
+   * picked from were `signWhite` and `card`: painted steel and plywood. They have no
+   * translucency, so a backlit shirt renders as its own shadow.
+   *
+   * `fabric_canvas` is the library's `fabric` tag, which carries sheen and
+   * translucency, so light coming through the cloth actually reaches the camera.
+   * Double-sided because a hanging sheet genuinely is, near-white because washing is,
+   * and in the CLOTH set below so it moves in the wind.
+   */
+  washing: { base: 'fabric_canvas', tint: 0xd9d4c6, opts: { repeat: 1.3, side: 'double', grime: 0.75 } },
 
   /* ── emissive lenses: built by PropPalette.lens(), listed here so surfaceTag()
         still reports glass to ballistics and FX ─────────────────────────────── */
@@ -118,7 +134,7 @@ export const MAT_ALIAS = {
 
 /** Resolves and caches the palette. One instance per Props system. */
 /** Materials that get the cloth wind displacement. */
-const CLOTH = new Set(['canvas', 'tarp']);
+const CLOTH = new Set(['canvas', 'tarp', 'washing']);
 
 // language=GLSL
 const BEGIN_VERTEX_WIND = `#include <begin_vertex>

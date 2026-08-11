@@ -203,9 +203,22 @@ export const PALETTE = {
      Same program, three clones — a heap of oranges next to a heap of greens is the
      only thing that separates a market from a row of empty trestles, and colour is
      doing almost all of that work at 8 m. */
-  'veg.citrus': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.35, repeat: 5.0 }, tint: 0xc87d22 },
-  'veg.tomato': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.35, repeat: 5.0 }, tint: 0xa8362a },
-  'veg.green': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.4, repeat: 5.0 }, tint: 0x6d7f34 },
+  /*
+   * Brightened hard, and the grime taken almost all the way off.
+   *
+   * Every stall in the map lives under an awning, so its goods are in shade — and
+   * `dry_grass_ground` is a dark albedo that the tint multiplies, so 0xa8362a
+   * tomatoes under a canopy rendered as near-black lumps. Reviewed at 3x that is
+   * still "a row of dark blocks", just with the corners knocked off. Produce is the
+   * one thing in a souk that is genuinely more saturated and more luminous than
+   * anything around it, and these values are what it takes for that to survive both
+   * the texture multiply and the shade.
+   */
+  'veg.citrus': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.12, repeat: 5.0 }, tint: 0xf0a836 },
+  'veg.tomato': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.12, repeat: 5.0 }, tint: 0xd8503c },
+  'veg.green': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.16, repeat: 5.0 }, tint: 0x9dba4e },
+  /** aubergine / dates / olives — the dark note the other three need to sit against */
+  'veg.dark': { m: 'dry_grass_ground', o: { vertexColors: true, grime: 0.2, repeat: 5.0 }, tint: 0x6b4a6e },
 
   /* ── interior ───────────────────────────────────────────────────────── */
   /**
