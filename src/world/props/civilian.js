@@ -19,6 +19,299 @@ function pickCell(r, group) {
 }
 
 /* ========================================================================== */
+/*                                   people                                   */
+/* ========================================================================== */
+
+/**
+ * ── Why there are people in a props file ────────────────────────────────────────
+ * Eight review frames of a bazaar — stalls, shutters, laundry, produce, cables — and
+ * not one human being in any of them. A market is defined by the people in it; an
+ * empty one reads as an evacuation, or as a blockout. The AI system owns *soldiers*
+ * (animated, skinned, hitboxed, expensive). Civilians are set dressing: static,
+ * merged into the district batch, no colliders that fight the player, ~450-700
+ * triangles each. That is the right tool for a figure standing behind a counter.
+ *
+ * ── How they are built to read ──────────────────────────────────────────────────
+ * A figure at 12-25 m is a silhouette and two or three values. So:
+ *   • the outline is a real outline — tapered limbs, a neck, a head that sits on
+ *     shoulders rather than in them, and headwear that widens the skull;
+ *   • the value ladder is loud and lands on BIG surfaces: a near-white thobe or a
+ *     saturated shirt over the whole torso, dark trousers, mid skin at the hands and
+ *     face, one accent at the head. Not a subtle ladder on the small parts;
+ *   • no two share a pose. `pose` swings the limbs, and the swing is what tells the
+ *     eye these are people and not mannequins.
+ */
+
+/** Skin-and-cloth palettes. Deliberately wide in value — see the note above. */
+const GARMENTS = [
+  { top: 'robe', legs: 'robe', head: 'signWhite', robed: true },
+  { top: 'robe', legs: 'robe', head: 'card', robed: true },
+  { top: 'plasticBlue', legs: 'olive', head: 'signWhite' },
+  { top: 'signWhite', legs: 'olive', head: 'signRed' },
+  { top: 'signRed', legs: 'olive', head: 'card' },
+  { top: 'olive', legs: 'card', head: 'signWhite' },
+  { top: 'canvas', legs: 'olive', head: 'plasticBlue' },
+  { top: 'card', legs: 'olive', head: 'signWhite' },
+];
+
+/**
+ * The shared body. `o.pose` shapes it; every generator below is a thin wrapper.
+ *
+ *   stand | vend | lean | sit | walk | carry
+ *
+ * Origin is between the feet, +Z is the way the figure faces.
+ */
+function figure(a, r, o = {}) {
+  const H = o.height ?? r.range(1.62, 1.83);
+  const s = H / 1.75;
+  const g = o.garment || GARMENTS[r.int(GARMENTS.length)];
+  const pose = o.pose || 'stand';
+  const sit = pose === 'sit';
+  const skin = 'skin';
+  const seg = 7;
+
+  /* joint heights (metres, at H = 1.75) */
+  const hipY = (sit ? 0.42 : 0.94) * s;
+  const shoulderY = (sit ? 1.02 : 1.44) * s;
+  const headY = (sit ? 1.2 : 1.62) * s;
+  /* unscaled: the arm block multiplies the whole offset by `s` once, below */
+  const shoulderX = 0.185;
+
+  /* ── legs ─────────────────────────────────────────────────────────────── */
+  const stride = pose === 'walk' ? r.range(0.16, 0.3) : pose === 'lean' ? 0.1 : 0.03;
+  /* A thobe reaches the ankle, so the legs under it are geometry nobody will ever
+     see. Shoes only. */
+  const hidden = g.robed && !sit;
+  for (const side of [-1, 1]) {
+    const X = side * 0.085 * s;
+    const fwd = side * stride;
+    if (hidden) {
+      a.add('tyre', chamferBox(0.09 * s, 0.06 * s, 0.24 * s, 0.02 * s),
+        xf(X, 0.032 * s, fwd * 0.95 + 0.045 * s), { grime: 1.35 });
+      continue;
+    }
+    if (sit) {
+      /* knees up, shins forward — a man squatting against a wall */
+      a.add(g.legs, tube([
+        [X, hipY, 0.02 * s],
+        [X * 1.25, hipY + 0.06 * s, 0.26 * s],
+        [X * 1.3, 0.3 * s, 0.34 * s],
+      ], (t) => (0.085 - 0.018 * t) * s, seg), null, { grimeHeight: 0.5 * s });
+      a.add(g.legs, tube([
+        [X * 1.3, 0.3 * s, 0.34 * s],
+        [X * 1.2, 0.1 * s, 0.3 * s],
+        [X * 1.15, 0.05 * s, 0.24 * s],
+      ], (t) => (0.062 - 0.008 * t) * s, seg), null, { grimeHeight: 0.4 * s });
+      a.add('tyre', chamferBox(0.088 * s, 0.055 * s, 0.2 * s, 0.02 * s), xf(X * 1.15, 0.03 * s, 0.32 * s), { grime: 1.4 });
+      continue;
+    }
+    /* thigh, calf and a foot — tapered, so the leg is a leg and not a pipe */
+    /* thigh, knee, calf, ankle — the calf is the widest thing below the hip, and a
+       leg without that swell is a pipe */
+    a.add(g.legs, tube([
+      [X, hipY + 0.04 * s, fwd * 0.15],
+      [X, 0.56 * s, fwd * 0.55],
+      [X, 0.47 * s, fwd * 0.62],
+      [X, 0.34 * s, fwd * 0.78],
+      [X, 0.1 * s, fwd * 0.95],
+      [X, 0.055 * s, fwd * 0.95],
+    ], (t) => [0.092, 0.079, 0.072, 0.078, 0.058, 0.055][Math.min(5, Math.round(t * 5))] * s, seg), null, {
+      grimeHeight: 0.55 * s,
+    });
+    a.add('tyre', chamferBox(0.09 * s, 0.06 * s, 0.24 * s, 0.02 * s),
+      xf(X, 0.032 * s, fwd * 0.95 + 0.045 * s), { grime: 1.35 });
+  }
+
+  /* ── torso ────────────────────────────────────────────────────────────────
+   * The section list is explicit rather than a formula because the ONE thing the
+   * profile has to get right is that the body is widest at the shoulders: the arms
+   * root at ±0.185 with a 0.058 sleeve, so an inner sleeve edge at 0.127 has to be
+   * comfortably inside the trunk or the arms visibly float off it.
+   */
+  const lean = pose === 'lean' ? -0.16 : pose === 'vend' ? 0.1 : 0;
+  const profile = (list) => (t) => {
+    const f = t * (list.length - 1);
+    const i = Math.min(list.length - 2, Math.floor(f));
+    return lerp(list[i], list[i + 1], f - i) * s;
+  };
+  if (g.robed && !sit) {
+    /* a thobe: one sweep from the shoulders to the ankle — the correct shape, and
+       half the triangles of a torso plus two trouser legs */
+    a.add(g.top, tube([
+      [0, 0.05 * s, 0],
+      [0, 0.45 * s, lean * 0.1 * s],
+      [0, hipY, lean * 0.3 * s],
+      [0, shoulderY - 0.14 * s, lean * 0.7 * s],
+      [0, shoulderY + 0.03 * s, lean * s],
+    ], profile([0.238, 0.208, 0.178, 0.176, 0.196]), seg + 1), null, { grimeHeight: 0.7 * s, grime: 0.9 });
+  } else {
+    a.add(g.top, tube([
+      [0, hipY - 0.07 * s, 0],
+      [0, hipY + 0.12 * s, lean * 0.25 * s],
+      [0, shoulderY - 0.2 * s, lean * 0.7 * s],
+      [0, shoulderY, lean * s],
+      [0, shoulderY + 0.045 * s, lean * s],
+    ], profile([0.152, 0.138, 0.162, 0.194, 0.178]), seg + 1), null, {
+      grimeHeight: 0.5 * s,
+    });
+    /* a belt / sash: one dark band across the narrowest part of the figure */
+    a.add('tyre', tube([[0, hipY - 0.02 * s, 0], [0, hipY + 0.03 * s, 0]], 0.144 * s, seg + 1, { cap: false }), null, { grime: 1.1 });
+  }
+
+  /* ── arms ─────────────────────────────────────────────────────────────── */
+  const armPose = (side) => {
+    if (pose === 'vend') {
+      /* one arm reaching out over the counter, the other on the hip */
+      return side > 0
+        ? [[0, -0.24, 0.1], [0.06, -0.36, 0.34], [0.04, -0.4, 0.5]]
+        : [[0, -0.26, 0.02], [0.1, -0.42, 0.06], [0.16, -0.5, 0.1]];
+    }
+    if (pose === 'carry') {
+      return side > 0
+        ? [[0, -0.18, 0.02], [0.02, -0.06, -0.08], [0.03, 0.06, -0.1]]
+        : [[0, -0.26, 0.02], [0.02, -0.46, 0.06], [0.02, -0.56, 0.1]];
+    }
+    if (sit) {
+      return [[0, -0.16, 0.06], [0.05, -0.3, 0.2], [0.02, -0.38, 0.3]];
+    }
+    if (pose === 'walk') {
+      const f = side > 0 ? 1 : -1;
+      return [[0, -0.24, 0.02 * f], [0.03, -0.44, 0.12 * f], [0.03, -0.56, 0.18 * f]];
+    }
+    if (pose === 'lean') {
+      return side > 0
+        ? [[0, -0.24, 0.0], [0.05, -0.4, -0.1], [0.08, -0.5, -0.14]]
+        : [[0, -0.24, 0.0], [0.03, -0.42, 0.08], [0.02, -0.54, 0.1]];
+    }
+    return [[0, -0.24, 0.02], [0.03, -0.44, 0.05], [0.03, -0.56, 0.07]];
+  };
+  for (const side of [-1, 1]) {
+    const p = armPose(side).map(([dx, dy, dz]) => [
+      (side * (shoulderX + dx)) * s,
+      shoulderY + dy * s,
+      (dz + lean) * s,
+    ]);
+    a.add(g.top, tube(p, (t) => (0.058 - 0.016 * t) * s, seg), null, { grimeHeight: 0.4 * s });
+    /* forearm and hand: bare skin, which is the light accent on the outline */
+    const wrist = p[p.length - 1];
+    const prev = p[p.length - 2];
+    const hand = [
+      wrist[0] + (wrist[0] - prev[0]) * 0.55,
+      wrist[1] + (wrist[1] - prev[1]) * 0.55,
+      wrist[2] + (wrist[2] - prev[2]) * 0.55,
+    ];
+    a.add(skin, tube([wrist, hand], 0.04 * s, 5), null, { grime: 0.45 });
+  }
+
+  /* ── neck, head, headwear ─────────────────────────────────────────────── */
+  a.add(skin, tube([
+    [0, shoulderY - 0.01 * s, lean * s],
+    [0, headY - 0.09 * s, (lean + 0.01) * s],
+  ], (t) => (0.05 - 0.008 * t) * s, 6), null, { grime: 0.4 });
+  a.add(skin, blob(0.165 * s, 0.215 * s, 0.185 * s, 7), xf(0, headY, (lean + 0.012) * s), { grime: 0.35 });
+
+  const head = o.headwear ?? r.pick(['keffiyeh', 'cap', 'cap', 'skull', 'scarf', 'bare']);
+  if (head === 'keffiyeh') {
+    /* cloth over the crown with a fall down the back and one shoulder — the widest,
+       most legible headwear in the set, and it gives the head a real silhouette */
+    a.add(g.head, blob(0.2 * s, 0.19 * s, 0.215 * s, 7), xf(0, headY + 0.045 * s, (lean - 0.005) * s), { grime: 0.7 });
+    a.add(g.head, tube([
+      [0, headY + 0.04 * s, (lean - 0.07) * s],
+      [0.02 * s, headY - 0.1 * s, (lean - 0.11) * s],
+      [0.04 * s, headY - 0.24 * s, (lean - 0.09) * s],
+    ], (t) => (0.115 - 0.03 * t) * s, 6), null, { grime: 0.8 });
+    a.add('tyre', tube([[0, headY + 0.11 * s, lean * s], [0, headY + 0.135 * s, lean * s]], 0.19 * s, 7, { cap: false }), null, { grime: 0.9 });
+  } else if (head === 'cap') {
+    a.add(g.head, blob(0.185 * s, 0.12 * s, 0.19 * s, 7), xf(0, headY + 0.075 * s, (lean - 0.004) * s), { grime: 0.75 });
+    a.add(g.head, chamferBox(0.16 * s, 0.016 * s, 0.09 * s, 0.008 * s),
+      xf(0, headY + 0.06 * s, (lean + 0.15) * s, -0.12, 0, 0), { grime: 0.9 });
+  } else if (head === 'skull') {
+    a.add(g.head, blob(0.15 * s, 0.09 * s, 0.155 * s, 7), xf(0, headY + 0.105 * s, lean * s), { grime: 0.7 });
+  } else if (head === 'scarf') {
+    /* a hijab / head shawl: cloth over the crown and round the jaw */
+    a.add(g.head, blob(0.205 * s, 0.235 * s, 0.215 * s, 7), xf(0, headY + 0.015 * s, (lean - 0.012) * s), { grime: 0.65 });
+    a.add(g.head, tube([
+      [0, headY - 0.02 * s, (lean - 0.06) * s],
+      [0, headY - 0.22 * s, (lean - 0.05) * s],
+    ], (t) => (0.135 - 0.02 * t) * s, 7), null, { grime: 0.8 });
+    a.add(skin, blob(0.1 * s, 0.13 * s, 0.06 * s, 6), xf(0, headY - 0.01 * s, (lean + 0.15) * s), { grime: 0.3 });
+  }
+
+  return { skinKey: skin, s, H, shoulderY, lean };
+}
+
+/**
+ * A trader behind a stall: standing, one hand out over the counter, apron, and a
+ * money pouch. Faces +Z, so the caller yaws them at the aisle.
+ */
+export function vendor(a, r, o = {}) {
+  const f = figure(a, r, { ...o, pose: o.pose || 'vend' });
+  const s = f.s;
+  /* Apron — a big flat value change across the front of the torso. Stood off far
+     enough to clear the trunk: at 0.13 it was buried inside a 0.19 chest. */
+  if (r.chance(0.7)) {
+    a.add(r.pick(['canvas', 'sacking', 'signWhite']), sheet(4, 5, (u, v) => [
+      (u - 0.5) * 0.34 * s * (1 + v * 0.35),
+      f.shoulderY - 0.22 * s - v * 0.66 * s,
+      (0.16 + Math.sin(u * Math.PI) * 0.055 - v * 0.03) * s,
+    ]), null, { grime: 1.15 });
+  }
+  return { colliders: [], height: f.H, radius: 0.34 * s, tall: true };
+}
+
+/** Someone standing in the street: shopping, waiting, watching. */
+export function civilianStanding(a, r, o = {}) {
+  const pose = o.pose || r.pick(['stand', 'stand', 'lean', 'walk']);
+  const f = figure(a, r, { ...o, pose });
+  const s = f.s;
+  /* something in one hand: a bag, a crate, a bundle */
+  const carry = o.carry ?? r.pick(['bag', 'bag', 'none', 'bundle']);
+  if (carry === 'bag') {
+    a.add(r.pick(['card', 'signWhite', 'plasticBlue']), sheet(4, 4, (u, v) => [
+      (0.25 + (u - 0.5) * 0.16) * s,
+      (0.86 - v * 0.3) * s,
+      (0.06 + Math.sin(u * Math.PI) * 0.06 * (0.3 + v)) * s,
+    ]), null, { grime: 1.0 });
+    a.add(r.pick(['card', 'signWhite', 'plasticBlue']), sheet(4, 4, (u, v) => [
+      (0.25 + (u - 0.5) * 0.16) * s,
+      (0.86 - v * 0.3) * s,
+      (-0.06 - Math.sin(u * Math.PI) * 0.06 * (0.3 + v)) * s,
+    ]), null, { grime: 1.0 });
+  } else if (carry === 'bundle') {
+    a.add('sacking', blob(0.28 * s, 0.24 * s, 0.22 * s, 8, (dx, dy) => 1 + 0.12 * Math.sin(dx * 6 + dy * 4)),
+      xf(0.06 * s, f.shoulderY + 0.16 * s, -0.02 * s), { grime: 1.25 });
+  }
+  return { colliders: [], height: f.H, radius: 0.36 * s, tall: true };
+}
+
+/**
+ * A man sat on his heels against a wall — the single most common silhouette on a
+ * street like this, and the one that makes a corner look lived in rather than swept.
+ */
+export function squatter(a, r, o = {}) {
+  const f = figure(a, r, { ...o, pose: 'sit' });
+  const s = f.s;
+  /* a glass of tea or a folded paper on the ground beside him. Opaque: see the note
+     on the litter bottle for why nothing this small is worth the glass shader. */
+  if (r.chance(0.6)) {
+    a.add('signWhite', cyl(0.032 * s, 0.075 * s, 8, { chamfer: 0.004 }), xf(-0.3 * s, 0.038 * s, 0.14 * s), { grime: 0.5 });
+  }
+  if (r.chance(0.45)) {
+    a.add('card', chamferBox(0.3 * s, 0.02 * s, 0.22 * s, 0.006 * s), xf(0.32 * s, 0.012 * s, 0.1 * s, 0, r.jitter(0.6), 0), { grime: 1.4 });
+  }
+  return { colliders: [], height: 1.25 * s, radius: 0.42 * s };
+}
+
+/** A porter with a sack across his shoulders — the market's traffic. */
+export function porter(a, r, o = {}) {
+  const f = figure(a, r, { ...o, pose: 'carry' });
+  const s = f.s;
+  a.add('sacking', blob(0.5 * s, 0.3 * s, 0.32 * s, 9, (dx, dy, dz) => 1 + 0.14 * Math.sin(dx * 5 + dz * 4 + dy * 3)),
+    xf(0.06 * s, f.shoulderY + 0.19 * s, -0.1 * s, 0.12, r.jitter(0.3), 0.1), { grime: 1.3 });
+  return { colliders: [], height: f.H + 0.2 * s, radius: 0.4 * s, tall: true };
+}
+
+/* ========================================================================== */
 /*                                market stall                                */
 /* ========================================================================== */
 
@@ -707,8 +1000,15 @@ export function litter(a, r, o = {}) {
       a.add('alu', cyl(0.033, crushed ? 0.055 : 0.115, 9, { chamfer: 0.006 }),
         xf(px, crushed ? 0.028 : 0.033, pz, crushed ? r.range(1.2, 1.6) : Math.PI / 2, r.range(0, TAU), 0), { grime: 1.2 });
     } else if (kind < 0.74) {
-      /* plastic bottle on its side */
-      a.add('glass', revolve([[0, 0], [0.032, 0], [0.034, 0.02], [0.034, 0.13], [0.02, 0.16], [0.014, 0.19], [0.016, 0.21], [0, 0.21]], 9),
+      /*
+       * Plastic bottle on its side. `signWhite`, not `glass`: the glass key resolves
+       * to a transparent, depth-write-off, double-sided MeshPhysical, which is the
+       * most expensive material in the library — and a litter cluster puts a dozen of
+       * them in every gutter on the map, in the transparent pass, sorted, with no
+       * depth rejection, for a 20 cm object. A scuffed white PET bottle is what is
+       * actually lying there and it is an opaque painted-plastic surface.
+       */
+      a.add('signWhite', revolve([[0, 0], [0.032, 0], [0.034, 0.02], [0.034, 0.13], [0.02, 0.16], [0.014, 0.19], [0.016, 0.21], [0, 0.21]], 9),
         xf(px, 0.034, pz, Math.PI / 2, r.range(0, TAU), 0), { grime: 0.9 });
     } else if (kind < 0.88) {
       /* a rag / plastic sheet caught on the ground */
@@ -825,6 +1125,10 @@ export function gasCylinder(a, r, o = {}) {
 }
 
 export default {
+  vendor,
+  civilianStanding,
+  squatter,
+  porter,
   marketStall,
   produceCrate,
   plasticChair,

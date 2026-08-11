@@ -993,7 +993,11 @@ class Lighting {
     this.bounceGain = 0.9;
     /** Aperture area lights — see `_updatePortals`. */
     this.portalsEnabled = true;
-    this.portalGain = 1.5;
+    // The portal term is occluded now (screen-space AO *and* its own visibility march —
+    // see the `codPortalVisibility` block), so the same gain buys a smaller, brighter
+    // pool instead of a room-wide wash. A little of what the occlusion takes off goes
+    // back in so the pool under an opening still reads as a pool.
+    this.portalGain = 1.8;
     this.portalSunGain = 1.0;
     this.portalCount = 0;
     this._portalTimer = 0;
@@ -1003,6 +1007,8 @@ class Lighting {
     this.sunDirection = new THREE.Vector3(0.35, 0.72, 0.6).normalize();
     this.sunColor = new THREE.Color(1, 0.94, 0.86);
     this.sunIntensity = 8;
+    /** Key intensity as the sky published it, before `_lowSunKeyGain()`. */
+    this._keyBase = 8;
     /** Art-direction override for the key. See setSunStaging(). */
     this.sunStaging = { azimuth: null, altitude: null, kelvin: null };
     /** 0 at night, 1 in full sun — gates practicals. */
@@ -1551,6 +1557,36 @@ class Lighting {
   }
 
   /**
+   * **Key-to-sky ratio at a low sun.**
+   *
+   * Two terms upstream move energy out of the beam and into the dome as the sun drops:
+   * the sky model's `ms` multiple-scattering lift, which scales the dome and the ambient
+   * but not the disc, and the aureole blend in `_recomputeLighting`, which is a *colour*
+   * mix but is applied to a disc whose transmittance has already been reddened. The
+   * result, measured on the hero frame: the sky is the brightest large area in the
+   * image and the sunlit ochre facade — the subject — sits under it. The brightest 5 %
+   * of the frame then meters as sky rather than as sunlight, which is the mechanism
+   * behind "the brightest luminance decile is the least golden part of a golden-hour
+   * frame". A low sun in clear air does not look like that; the lit wall is the bright
+   * thing and the sky behind it is a stop or two down.
+   *
+   * So the key gets a gain that fades in below ~26 degrees. It does not touch the dome,
+   * so what it actually changes is the *ratio* — and the auto-exposure then gives most
+   * of the absolute brightness back, leaving the sunlit surfaces up and the sky down,
+   * which is the whole point. It also feeds the lit/shadow contrast the review has twice
+   * measured as unchanged, because only the lit half of the ground moves.
+   */
+  _lowSunKeyGain() {
+    const sky = this.ctx.sky;
+    // The moon is a key too, and grading it as a golden hour would be a bug, not a look.
+    if (sky && (sky.moonIntensity ?? 0) > (sky.sunIntensity ?? 0)) return 1;
+    const altDeg = (Math.asin(clamp(this.sunDirection.y, -1, 1)) * 180) / Math.PI;
+    if (altDeg <= 0) return 1;
+    const t = clamp01((26 - altDeg) / 20);
+    return 1 + 0.3 * t * t * (3 - 2 * t);
+  }
+
+  /**
    * Pull the key light out of the sky model. The sky already returns a physically
    * scaled intensity (its own exposure adaptation included), so noon and dusk differ
    * by the right *ratio* and the pipeline's auto-exposure does the rest.
@@ -1567,7 +1603,8 @@ class Lighting {
           : 8;
       this.sunDirection.copy(_dir);
       this.sunColor.copy(col);
-      this.sunIntensity = inten * this.exposureCompensation;
+      this._keyBase = inten * this.exposureCompensation;
+      this.sunIntensity = this._keyBase;
       // The sky compresses six decades of daylight into ~1.5 on screen. Practicals
       // have to follow that compression or a street lamp at midnight arrives four
       // orders of magnitude above the sky and bleaches the frame — but following it
@@ -1581,13 +1618,16 @@ class Lighting {
       const h = this.timeOfDay;
       const alt = Math.sin(((h - 6) / 12) * Math.PI);
       this.sunDirection.set(Math.cos((h / 24) * Math.PI * 2) * 0.6, Math.max(alt, -0.2), -0.6).normalize();
-      this.sunIntensity = Math.max(0, alt) * 10 * this.exposureCompensation + 0.15;
+      this._keyBase = Math.max(0, alt) * 10 * this.exposureCompensation + 0.15;
+      this.sunIntensity = this._keyBase;
       kelvinToLinearRGB(4200 + 2000 * clamp01(alt), this.sunColor);
       this.localLightScale = this.exposureCompensation;
     }
 
     this._applyStaging();
     this._gradeKey();
+    // Applied after staging, because the staged altitude is the one the shot is lit at.
+    if (Number.isFinite(this._keyBase)) this.sunIntensity = this._keyBase * this._lowSunKeyGain();
 
     /**
      * **How much daylight is *here*, not how far the sun is above the horizon.**
@@ -2497,6 +2537,7 @@ float codSpotShadow( sampler2D shadowMap, vec2 mapSize, float intensity, float b
  * Radiance, the aperture's inward-facing side, and which side of the wall is "inside"
  * are all resolved on the CPU — see Lighting._updatePortals.
  */
+#define COD_PORTAL_STEPS ${this.headless || this.tier === 'low' ? 5 : 8}
 uniform vec4 uCodPortalP[ ${PORTAL_SLOTS} ];   // xyz centre (world), w half-width
 uniform vec4 uCodPortalN[ ${PORTAL_SLOTS} ];   // xyz inward normal, w half-height
 uniform vec4 uCodPortalC[ ${PORTAL_SLOTS} ];   // rgb radiance, w range (m); w<=0 = unused
@@ -2504,8 +2545,11 @@ uniform mat4 uCodInvView;
 uniform vec4 uCodBounce;    // rgb measured one-bounce irradiance of the surroundings, w gain
 uniform vec2 uCodAoFloor;   // x: how far the indirect AO is allowed to close
 
-vec3 codPortalIrradiance( vec3 wp, vec3 wn ) {
+vec3 codPortalIrradiance( vec3 wp, vec3 wn, out vec4 aim ) {
 	vec3 sum = vec3( 0.0 );
+	vec3 aimAcc = vec3( 0.0 );
+	float aimW = 0.0;
+	float aimD = 0.0;
 	for ( int i = 0; i < ${PORTAL_SLOTS}; i ++ ) {
 		vec4 C = uCodPortalC[ i ];
 		if ( C.w <= 0.0 ) continue;
@@ -2530,7 +2574,19 @@ vec3 codPortalIrradiance( vec3 wp, vec3 wn ) {
 		float e = area * facing * ndl / ( dist2 + area * 0.3183099 );
 		// Smooth range cut so a portal never pops as the camera walks past its radius.
 		float fade = 1.0 - dist2 / rng2;
-		sum += C.rgb * ( e * fade * fade );
+		vec3 contrib = C.rgb * ( e * fade * fade );
+		sum += contrib;
+		// Track the irradiance-weighted bearing, so one visibility march can stand in
+		// for all four apertures instead of four marches.
+		float w = dot( contrib, vec3( 0.2126, 0.7152, 0.0722 ) );
+		aimAcc += l * w;
+		aimD += sqrt( dist2 ) * w;
+		aimW += w;
+	}
+	if ( aimW > 1e-6 ) {
+		aim = vec4( normalize( aimAcc + 1e-8 ), aimD / aimW );
+	} else {
+		aim = vec4( 0.0, 1.0, 0.0, 0.0 );
 	}
 	return sum;
 }
@@ -2599,6 +2655,48 @@ float codContactShadow( vec3 viewPos ) {
 float codContactAO( vec3 viewPos ) {
 	if ( uCodContactParams.z <= 0.0 ) return 1.0;
 	return mix( 1.0, codContactSample( viewPos ).y, uCodContactParams.z );
+}
+
+/**
+ * **Can this fragment actually see the aperture?**
+ *
+ * The portal term was a pure analytic form factor with no visibility term of any kind,
+ * so a window lit straight through the columns, the stalls and the counter in front of
+ * it: a wash across the whole room instead of a pool under the opening. Measured, the
+ * arch read 1.47 against the plaster beside it and the floor *at* the arch was 0.91 of
+ * the floor in the far corner — i.e. the aperture was, if anything, an anti-light.
+ *
+ * The contact buffer already stores linear view distance in its g/b channels, so the
+ * room's depth is available inside the material and a short march along the bearing of
+ * the (irradiance-weighted) aperture answers the question directly. Two rules keep a
+ * screen-space test honest:
+ *
+ *   • only a *thin* depth difference counts. If the ray has passed far behind something
+ *     the camera can see, that is a hole in the depth buffer's knowledge, not an
+ *     occluder, and reading it as one paints black bars behind every foreground object.
+ *   • leaving the screen, or landing on sky, returns "visible". The test may only ever
+ *     remove light that it has positively found an occluder for.
+ */
+float codPortalVisibility( vec3 viewPos, vec3 dirView, float dist ) {
+	if ( uCodContactParams.z <= 0.0 || dist <= 0.15 ) return 1.0;
+	float march = min( dist - 0.1, 10.0 );
+	if ( march <= 0.05 ) return 1.0;
+	vec3 stepV = dirView * ( march / float( COD_PORTAL_STEPS ) );
+	vec3 p = viewPos + stepV * 0.55;
+	float hit = 0.0;
+	for ( int k = 0; k < COD_PORTAL_STEPS; k ++ ) {
+		vec4 c = uCodContactMtx * vec4( p, 1.0 );
+		p += stepV;
+		if ( c.w <= 0.0 ) break;
+		vec2 uv = c.xy / c.w * 0.5 + 0.5;
+		if ( uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 ) break;
+		vec4 t = texture2D( uCodContactMap, uv );
+		float stored = ( t.g + t.b * ( 1.0 / 255.0 ) ) * uCodContactParams.y;
+		float diff = c.w - stored;
+		float thick = 0.55 + 0.11 * c.w;
+		if ( stored > 0.02 && diff > 0.06 && diff < thick ) hit += 1.0;
+	}
+	return clamp( 1.0 - hit * ( ${(1.7).toFixed(2)} / float( COD_PORTAL_STEPS ) ), 0.10, 1.0 );
 }
 `;
     }
@@ -2724,6 +2822,35 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
         );
       }
     }
+    /**
+     * ---- aperture portals: an opening lights the room it opens into ----
+     *
+     * **This has to happen before the occlusion, not after it.** It used to be appended
+     * at the very end of the chunk, after `iblIrradiance *= codAo`, so the one term in
+     * the rig with no visibility test of its own was also the one term nothing else was
+     * allowed to occlude: an aperture radiated straight through columns, stalls and
+     * counters and the result was a flat wash over the whole room. Adding it here puts
+     * it inside both the screen-space AO *and* its own march (`codPortalVisibility`),
+     * which is what turns a wash into a pool.
+     */
+    mapsChunk += `
+#if defined( RE_IndirectDiffuse )
+	{
+		vec3 codPw = ( uCodInvView * vec4( geometryPosition, 1.0 ) ).xyz;
+		vec3 codNw = transformNormalByInverseViewMatrix( geometryNormal, viewMatrix );
+		vec4 codAim;
+		vec3 codPortal = codPortalIrradiance( codPw, codNw, codAim );
+		#if defined( COD_CONTACT )
+			if ( codAim.w > 0.0 ) {
+				vec3 codAimV = ( viewMatrix * vec4( codAim.xyz, 0.0 ) ).xyz;
+				codPortal *= codPortalVisibility( geometryPosition, codAimV, codAim.w );
+			}
+		#endif
+		iblIrradiance += codPortal;
+	}
+#endif
+`;
+
     if (useContact) {
       /**
        * Occlude the indirect term. This is the half of "grounding" that the pipeline's
@@ -2767,17 +2894,6 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
 #endif
 `;
     }
-
-    /* ---- aperture portals: an opening lights the room it opens into ---- */
-    mapsChunk += `
-#if defined( RE_IndirectDiffuse )
-	{
-		vec3 codPw = ( uCodInvView * vec4( geometryPosition, 1.0 ) ).xyz;
-		vec3 codNw = transformNormalByInverseViewMatrix( geometryNormal, viewMatrix );
-		iblIrradiance += codPortalIrradiance( codPw, codNw );
-	}
-#endif
-`;
 
     this._glslCache = {
       pars,
@@ -3150,11 +3266,23 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
    */
   getVolumetricShadow() {
     if (this.broken || !this.shadowsEnabled || !this.csm.enabled) return null;
-    const params = this.csm.uniforms.uCsmParams.value;
-    let pick = 0;
+    /**
+     * Pick on the cascade's **range**, not on its ortho size. The ortho size is a
+     * resolution figure that moves whenever the split scheme or the fit changes — it
+     * was 63.6 m for the mid cascade under a lambda-0.9 four-way split and 21.7 m
+     * under a three-way one, so the same `>= 30 m` test silently selected cascade 2
+     * in one round and cascade 1 in the other and took the shaft lookup from 42 mm
+     * per texel to 62. What the march actually needs is a cascade that still covers
+     * the ray where the eye reads a shaft — call that fifteen metres — at the finest
+     * texel that satisfies it, which is the *first* cascade reaching that far.
+     */
+    const splits = this.csm.uniforms.uCsmSplits.value;
+    let pick = this.csm.count - 1;
     for (let i = 0; i < this.csm.count; i++) {
-      pick = i;
-      if ((params[i]?.w ?? 0) >= 30) break; // uCsmParams.w is the ortho size, in metres
+      if ((splits[i]?.y ?? 0) >= 15) {
+        pick = i;
+        break;
+      }
     }
     const light = this.csm.lights[pick];
     const shadow = light?.shadow;

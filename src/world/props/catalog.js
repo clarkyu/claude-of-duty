@@ -22,6 +22,11 @@ export const CATALOG = {
   lamp_post: { gen: street.lampPost, kind: 'static', tall: true },
   bollard: { gen: street.bollard, kind: 'static' },
   kerb_run: { gen: street.kerbRun, kind: 'static', lod: false },
+  /* ground structure at 1-3 m — see the note above roadPatch() in street.js */
+  road_patch: { gen: street.roadPatch, kind: 'flat', lod: false },
+  pothole: { gen: street.pothole, kind: 'flat', lod: false },
+  sand_drift: { gen: street.sandDrift, kind: 'flat', lod: false },
+  gutter_run: { gen: street.gutterRun, kind: 'flat', lod: false },
   drain_grate: { gen: street.drainGrate, kind: 'flat', lod: false },
   manhole: { gen: street.manholeCover, kind: 'flat', lod: false },
   traffic_sign: { gen: street.trafficSign, kind: 'static', tall: true },
@@ -53,6 +58,20 @@ export const CATALOG = {
   tyre_stack: { gen: military.tyreStack, kind: 'static' },
   tyre: { gen: military.tyre, kind: 'dynamic', mass: 8 },
   cable_spool: { gen: military.cableSpool, kind: 'static' },
+
+  /* ── people ──────────────────────────────────────────────────────────────
+   * Static, merged into the district batch, no colliders: these are set dressing,
+   * not actors — the AI system owns anything that has to be shot at. `attach` (not
+   * `flat`) because they must cast shadows and must live in a real district so they
+   * cull: `flat` sends geometry to the shared detail bucket, which never casts and is
+   * dropped wholesale on the low tier. `lod: false` skips the box-shell — a
+   * person-shaped box is worse than nothing. Callers pass `force: true`, because a
+   * vendor standing BEHIND a counter is the entire point and the overlap grid would
+   * reject every one of them. See props/civilian.js. */
+  vendor: { gen: civilian.vendor, kind: 'attach', lod: false },
+  civilian: { gen: civilian.civilianStanding, kind: 'attach', lod: false },
+  squatter: { gen: civilian.squatter, kind: 'attach', lod: false },
+  porter: { gen: civilian.porter, kind: 'attach', lod: false },
 
   /* ── civilian life ───────────────────────────────────────────────────── */
   market_stall: { gen: civilian.marketStall, kind: 'static' },

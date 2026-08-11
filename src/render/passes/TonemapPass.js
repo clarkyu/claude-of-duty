@@ -48,6 +48,7 @@ uniform float uVibrance;
 uniform float uShadowCrush;
 uniform float uHighlightRolloff;
 uniform vec3  uAgxLook;   // x slope, y power, z saturation — see agxLook()
+uniform float uAgxHiSat;  // extra chroma restored in the top of the range
 varying vec2 vUv;
 
 ${GLSL_LIB}
@@ -104,7 +105,30 @@ vec3 agxContrast( vec3 x ) {
 vec3 agxLook( vec3 c ) {
   float l = luma( c );
   c = pow( max( c * uAgxLook.x, vec3( 0.0 ) ), vec3( uAgxLook.y ) );
-  return max( vec3( l ) + uAgxLook.z * ( c - vec3( l ) ), vec3( 0.0 ) );
+  /**
+   * The inset cross-mix is a fixed matrix, but the sigmoid compresses the top of the
+   * range hardest, so a *constant* saturation leaves the brightest part of the frame
+   * the flattest part of the output. Measured on the hero pose after the look transform
+   * shipped: R-B by luminance decile ... 23.3, 44.8, **30.4** — the top decile turning
+   * back towards neutral while the one below it is fully golden. The sun is still the
+   * least golden thing in a golden-hour frame, just less so than before.
+   *
+   * Ramping the restoration with the log-encoded luminance gives the highlights back
+   * the share the inset took from them. It is a rotation about the luminance, so it
+   * cannot change exposure and cannot re-introduce clipping.
+   *
+   * **Weighted by how warm the pixel already is, and that part is not optional.**
+   * Measured with a flat ramp: on the hero pose the top-centre sky went from R-B +8 to
+   * -31 and, being the brightest large area in the frame, took over the brightest-5 %
+   * population outright — key/fill separation fell from 26.7 to -2.9. "Put back the
+   * chroma the sigmoid compressed" is the right instruction for the *key*; applied to
+   * the sky as well it just swaps which end of the frame is over-saturated. With the
+   * weight, a sunlit facade at R/B 2.5:1 gets about half the boost and 4:1 gets all of
+   * it, while anything neutral or cool keeps the 1.26 the rest of the frame gets.
+   */
+  float warm = clamp( ( c.r - c.b ) * 7.0, 0.0, 1.0 );
+  float sat = uAgxLook.z * ( 1.0 + uAgxHiSat * smoothstep( 0.52, 0.93, l ) * warm );
+  return max( vec3( l ) + sat * ( c - vec3( l ) ), vec3( 0.0 ) );
 }
 
 vec3 tonemapAgX( vec3 color ) {
@@ -261,16 +285,42 @@ export default class TonemapPass extends Pass {
        * cool shadow, and still enough separation from 0 to keep the toe from looking
        * digital, but roughly a fifth of the tint.
        */
-      lift: new THREE.Vector3(0.0012, 0.0016, 0.0028),
+      /**
+       * **Corrected once more: (0, 5, 20) was not a black point, it was no black point.**
+       *
+       * Taking the teal cast out was right, but it was taken out by very nearly deleting
+       * the toe altogether, and the set-level measurement caught the cost: the fraction
+       * of the frame under L 32 went from 30.1 % to 39.7 % across eight poses, with the
+       * three sky-dominated frames — night 49 -> 79, vista 12.7 -> 35.4, weapon 55 -> 64 —
+       * carrying most of it. A film stock does not resolve below its base density; a
+       * digital zero reads as a hole and it is the single biggest contributor to the
+       * "crushed" finding.
+       *
+       * These land the black point at roughly sRGB (6, 10, 18) — L 9.7 against the
+       * previous 5.0 and the round-2 teal's 16.2. Still recognisably a cool near-black,
+       * still a third of the tint that was doing the damage, and it costs nothing
+       * anywhere else in the range because `lift` decays as `1 - c`.
+       */
+      lift: new THREE.Vector3(0.003, 0.0032, 0.0042),
       gamma: new THREE.Vector3(1.0, 1.0, 1.005),
       gain: new THREE.Vector3(1.005, 1.0, 0.994),
-      shadowTint: new THREE.Vector3(-0.0015, 0.0, 0.0035),
-      highlightTint: new THREE.Vector3(0.014, 0.006, -0.008),
+      shadowTint: new THREE.Vector3(-0.001, 0.0, 0.0022),
+      // A touch more warmth where the key lands: the highlight end is the half of the
+      // golden-hour contrast the set has never actually had. See `agxHiSat` below.
+      highlightTint: new THREE.Vector3(0.019, 0.008, -0.011),
       splitBalance: 0.35,
       saturation: 1.02,
       vibrance: 0.09,
-      shadowCrush: 0.1,
-      highlightRolloff: 0.12,
+      // The toe crush is a second deduction on top of the black point, applied to the
+      // same pixels; with the black point back it is no longer needed at full strength.
+      shadowCrush: 0.07,
+      /**
+       * The rolloff pushes the top of the range towards 1 in every channel at once, so
+       * every stop it adds is a stop of channel separation taken *out* of the brightest
+       * part of the frame — which is exactly where the review measures the key as least
+       * golden. Halved; the AgX shoulder is already doing the real highlight work.
+       */
+      highlightRolloff: 0.06,
       /**
        * AgX look: slope, power, saturation — see `agxLook()`. 1.26 is a shade under
        * Blender's "Punchy" (1.3) and is the term that stops the key desaturating exactly
@@ -278,6 +328,12 @@ export default class TonemapPass extends Pass {
        * the contrast, and this must not become a second grade.
        */
       agxLook: new THREE.Vector3(1.0, 1.0, 1.26),
+      /**
+       * Extra saturation blended into the *warm* top of the log range — see `agxLook()`.
+       * 0.30 takes a strongly golden highlight to about 1.49 while leaving the mids, and
+       * everything neutral or cool at any brightness, on the 1.26 the review credited.
+       */
+      agxHiSat: 0.3,
     };
 
     /**
@@ -325,6 +381,7 @@ export default class TonemapPass extends Pass {
       uShadowCrush: { value: this.grade.shadowCrush },
       uHighlightRolloff: { value: this.grade.highlightRolloff },
       uAgxLook: { value: this.grade.agxLook },
+      uAgxHiSat: { value: this.grade.agxHiSat },
     };
     this.material = this.own(
       postMaterial('tonemap', TONEMAP_FRAG, this.uniforms, { defines: { TONEMAP_ACES: 0 } })
@@ -411,6 +468,7 @@ export default class TonemapPass extends Pass {
     u.uVibrance.value = g.vibrance;
     u.uShadowCrush.value = g.shadowCrush;
     u.uHighlightRolloff.value = g.highlightRolloff;
+    u.uAgxHiSat.value = g.agxHiSat;
   }
 
   render(renderer, source, target, bloomEnabled) {

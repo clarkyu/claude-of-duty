@@ -23,6 +23,45 @@ const _up = new THREE.Vector3(0, 1, 0);
 const SIGN_LAYOUT = signageLayout();
 const SIGN_FASCIA = SIGN_LAYOUT.groups.fascia;
 
+/**
+ * A rough spheroid, six sides and three rings — a fruit, a melon, a bundle.
+ *
+ * Reviewed at 13 m the produce heaps read as "twelve identical maroon blocks in a row
+ * that look like bricks", and that is exactly what they were: short 7-gon cylinders
+ * with flat caps and a hard silhouette, laid out on an even pitch. Nothing about the
+ * material was wrong; a cylinder seen end-on is a rectangle. 42 triangles buys an
+ * actual round thing, and `wob` breaks each one so no two are the same shape.
+ */
+function ball(mb, x, y, z, r, wob = 0, seg = 6) {
+  const rings = [
+    [-1.0, 0.0],
+    [-0.62, 0.72],
+    [0.0, 1.0],
+    [0.62, 0.74],
+    [1.0, 0.0],
+  ];
+  const pt = (ri, i) => {
+    const a = (i / seg) * TAU;
+    const k = 1 + wob * Math.sin(a * 3 + ri * 2.1);
+    return [x + Math.cos(a) * r * rings[ri][1] * k, y + rings[ri][0] * r * (1 + wob * 0.4), z + Math.sin(a) * r * rings[ri][1] * k];
+  };
+  for (let ri = 0; ri < rings.length - 1; ri++) {
+    for (let i = 0; i < seg; i++) {
+      const j = (i + 1) % seg;
+      const a = pt(ri, i);
+      const b = pt(ri, j);
+      const c = pt(ri + 1, j);
+      const d = pt(ri + 1, i);
+      const nx = (a[0] + b[0] + c[0] + d[0]) * 0.25 - x;
+      const ny = (a[1] + b[1] + c[1] + d[1]) * 0.25 - y;
+      const nz = (a[2] + b[2] + c[2] + d[2]) * 0.25 - z;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      mb.quad(a, b, c, d, [nx / l, ny / l, nz / l]);
+    }
+  }
+  return mb;
+}
+
 /** Build a local-space geometry once, for InstancedMesh use. */
 export function localGeometry(fn) {
   const mb = new MeshBuilder('inst');
@@ -479,34 +518,45 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
       for (const sz of [-1, 1]) tm.box([tx, 0.985, d * 0.24 + sz * 0.2], [tw * 0.46, 0.055, 0.014], { chamfer: 0.005 });
       for (const sx of [-1, 1]) tm.box([tx + sx * tw * 0.46, 0.985, d * 0.24], [0.014, 0.055, 0.2], { chamfer: 0.005 });
     }
-    /* the heaps themselves: three colours of produce, one mound per tray */
+    /*
+     * The heaps themselves.
+     *
+     * Three things were wrong and all three were about *shape*, not colour: every
+     * item was a flat-capped cylinder (a rectangle in silhouette), every tray held
+     * one colour, and the pitch was even — so a stall front resolved as a row of
+     * identical maroon blocks that read as brickwork. Now each tray gets a dominant
+     * colour with a scatter of a second and a third through it, the items are rough
+     * spheroids of visibly different sizes, and they are heaped in a mound (dense and
+     * high in the middle, thinning to the rim) rather than sprinkled on a grid.
+     */
     const produceMats = ['veg.citrus', 'veg.tomato', 'veg.green'];
     for (let i = 0; i < trays; i++) {
       const tx = lerp(-w * 0.5 + 0.36, w * 0.5 - 0.36, trays === 1 ? 0.5 : i / (trays - 1));
       const tw = w / trays - 0.1;
-      const pm = bat.b(produceMats[(i + goods) % produceMats.length]);
-      /* Bigger than life. Measured on the interior capture: 4 cm fruit on a 0.95 m
-         counter, seen from 9 m, is three pixels and reads as noise on the timber —
-         which is indistinguishable from an empty stall. 6-9 cm heaped proud of the
-         tray is what says "there are goods here" at the distance the room is
-         actually photographed from. */
-      const per = 8 + ((rn(30 + i) * 5) | 0);
+      const dom = (i * 2 + goods) % 3;
+      /* A spheroid is 48 triangles against a 7-gon cylinder's 24, so the count comes
+         down to pay for the shape. Fewer, bigger, rounder, in three colours reads as
+         more produce than twice as many blocks did. */
+      const per = 7 + ((rn(30 + i) * 4) | 0);
       for (let k = 0; k < per; k++) {
-        const rr = 0.052 + rn(40 + i * 9 + k) * 0.034;
-        const ox = (rn(60 + i * 11 + k) - 0.5) * (tw * 0.82);
-        const oz = (rn(80 + i * 13 + k) - 0.5) * 0.28;
-        const oy = 1.02 + rr * (0.8 + rn(90 + k) * 1.0);
-        pm.cylinder([tx + ox, oy - rr * 0.55, d * 0.24 + oz], [tx + ox, oy + rr * 0.55, d * 0.24 + oz], rr, 7, { radius2: rr * 0.82 });
+        /* Radial mound: r^0.65 biases the scatter outward but the *height* falls off
+           with radius, so the pile has a crown. */
+        const ang = rn(200 + i * 31 + k) * TAU;
+        const rad = Math.pow(rn(60 + i * 11 + k), 0.62);
+        const ox = Math.cos(ang) * rad * tw * 0.44;
+        const oz = Math.sin(ang) * rad * 0.19;
+        const rr = 0.044 + rn(40 + i * 9 + k) * 0.042;
+        const oy = 1.015 + rr * 0.85 + (1 - rad * rad) * 0.055;
+        /* one item in four is a different crop — a real tray is never monochrome */
+        const which = rn(160 + i * 17 + k) < 0.74 ? dom : (dom + 1 + ((rn(170 + k) * 2) | 0)) % 3;
+        ball(bat.b(produceMats[which]), tx + ox, oy, d * 0.24 + oz, rr, 0.14 + rn(180 + k) * 0.14);
       }
       /* a second heap on the raked back tier, which is the one the eye reads first */
       for (let k = 0; k < 4; k++) {
-        const rr = 0.05 + rn(120 + i * 7 + k) * 0.03;
-        const ox = (rn(140 + i * 5 + k) - 0.5) * (tw * 0.7);
-        pm.cylinder(
-          [tx + ox, 1.09 + rr * 0.2, -d * 0.06],
-          [tx + ox, 1.09 + rr * 1.1, -d * 0.06],
-          rr, 7, { radius2: rr * 0.8 }
-        );
+        const rr = 0.048 + rn(120 + i * 7 + k) * 0.036;
+        const ox = (rn(140 + i * 5 + k) - 0.5) * (tw * 0.72);
+        const which = rn(150 + i * 13 + k) < 0.7 ? (dom + 1) % 3 : dom;
+        ball(bat.b(produceMats[which]), tx + ox, 1.1 + rr * 0.7, -d * 0.06 + (rn(190 + k) - 0.5) * 0.08, rr, 0.16);
       }
     }
     /* hessian sacks slumped at the foot of the counter, mouths rolled open */
@@ -551,21 +601,37 @@ export function marketStall(bat, x, y, z, yaw, opts = {}) {
         }
       }
     }
-    /* hanging balance on a chain over one end of the counter */
+    /*
+     * Hanging balance. The old one was a cone sitting on a disc, which is a lampshade
+     * — the shape that identifies a souk scale is the *dial*: a flat drum hung face-on
+     * to the aisle, with a hook under it and a shallow pan on three chains. So build
+     * that: hanger rod, dial body, a pale face plate on the front of it, the hook, and
+     * a pan that is a rim rather than a plate.
+     */
     const bm = bat.b('metal.galv');
     const bx = w * (goods % 2 ? -0.34 : 0.34);
-    bm.cylinder([bx, frontH - 0.06, d * 0.16], [bx, frontH - 0.52, d * 0.16], 0.006, 4);
-    bm.cylinder([bx, frontH - 0.56, d * 0.16], [bx, frontH - 0.62, d * 0.16], 0.075, 10, { radius2: 0.03 });
+    const bz = d * 0.16;
+    const dy = frontH - 0.44; // dial centre
+    /* hanger */
+    bm.cylinder([bx, frontH - 0.06, bz], [bx, dy + 0.14, bz], 0.006, 4);
+    bm.cylinder([bx, dy + 0.16, bz], [bx, dy + 0.12, bz], 0.028, 6);
+    /* the dial: a 22 cm drum lying in the XY plane, so its face looks down the aisle */
+    bm.cylinder([bx, dy, bz - 0.032], [bx, dy, bz + 0.032], 0.112, 12);
+    bat.b('metal.paintCream').cylinder([bx, dy, bz + 0.033], [bx, dy, bz + 0.042], 0.098, 12);
+    /* pointer, a thin bar across the face — the one detail that says "instrument" */
+    bat.b('metal.rust').box([bx + 0.03, dy + 0.03, bz + 0.048], [0.055, 0.006, 0.004]);
+    /* hook and pan */
+    bm.cylinder([bx, dy - 0.11, bz], [bx, dy - 0.19, bz], 0.007, 4);
     for (let s = 0; s < 3; s++) {
-      const a = (s / 3) * TAU;
-      bm.cylinder(
-        [bx, frontH - 0.62, d * 0.16],
-        [bx + Math.cos(a) * 0.13, frontH - 0.82, d * 0.16 + Math.sin(a) * 0.13],
-        0.004,
-        4
-      );
+      const a = (s / 3) * TAU + 0.5;
+      bm.cylinder([bx, dy - 0.19, bz], [bx + Math.cos(a) * 0.15, dy - 0.4, bz + Math.sin(a) * 0.15], 0.0035, 4);
     }
-    bm.cylinder([bx, frontH - 0.84, d * 0.16], [bx, frontH - 0.87, d * 0.16], 0.14, 12);
+    /* the pan is an open dish: a rim ring plus a shallow floor, not a solid puck */
+    bm.cylinder([bx, dy - 0.415, bz], [bx, dy - 0.4, bz], 0.13, 12, { radius2: 0.155 });
+    bm.cylinder([bx, dy - 0.418, bz], [bx, dy - 0.412, bz], 0.148, 12);
+    /* something actually in the pan */
+    ball(bat.b(produceMats[(goods + 2) % 3]), bx - 0.04, dy - 0.36, bz + 0.02, 0.055, 0.18);
+    ball(bat.b(produceMats[goods % 3]), bx + 0.05, dy - 0.365, bz - 0.03, 0.05, 0.2);
     /* chalk price board propped on the counter end */
     bat
       .b('wood.painted')

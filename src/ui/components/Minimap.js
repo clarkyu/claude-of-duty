@@ -15,10 +15,71 @@
  *   • footprints are solid, not outlines, so solid and walkable are distinguishable
  *     at a glance rather than by inference.
  *
+ * ── Exposure ────────────────────────────────────────────────────────────────────
+ * The plate is a fixed set of sRGB values, so it is the same brightness whatever the
+ * world is doing. Measured across the review set, that put it at mean luminance 123.7
+ * in BOTH the hero frame and the night frame while the scene itself fell from 53.8 to
+ * 17.7 — i.e. at night the minimap was seven times brighter than the game and the
+ * brightest object on the screen, which is exactly backwards for a peripheral widget.
+ * `_exposure()` reads the key light and multiplies the plate down to sit just above
+ * the scene. Blips are NOT dimmed: symbols have to stay readable, and they are a few
+ * dozen pixels, not half the widget.
+ *
+ * ── The value ladder ────────────────────────────────────────────────────────────
+ * Six tones spanning nearly the whole range, with hue separating the pairs that sit
+ * next to each other. The previous five all lived inside one blue-grey band between
+ * #101820 and #94a3b0, which is a 55-unit spread carrying five levels of meaning —
+ * so none of them read and the map answered no questions at all.
+ *
  * API: new Minimap(root, ctx) → { bake(), update(dt), setContacts(list),
- *                                 setZones(list), setUav(bool), dispose() }
+ *                                 setFriends(list), setZones(list), setUav(bool),
+ *                                 dispose() }
  */
 import { div, setClass, clamp01 } from './dom.js';
+
+/**
+ * The plate palette. Values, then hues.
+ *
+ *   oob       0.02  near-black, hatched — "there is nothing there"
+ *   solid     0.09  in bounds, not walkable, not a known building
+ *   mass      0.17  building footprint: the thing you cannot walk through
+ *   interior  0.40  a floor you CAN walk on but which is inside — one glance
+ *                   separates it from the street now instead of by inference
+ *   street    0.80  the lightest large area, faintly warm so it reads as ground
+ *   edge      1.00  walls and cover, bright, drawn over everything
+ *
+ * Warm street against cool interior is doing as much work as the value gap: two
+ * greys 0.4 apart still merge under a night grade, two different hues do not.
+ */
+const TONE = {
+  oob: '#04070b',
+  solid: '#0d141b',
+  mass: '#1a2530',
+  interior: '#4d5c6b',
+  street: '#c4c0b4',
+  /**
+   * Walls and cover are DARK, not bright.
+   *
+   * The old plate had a dark street, so bright white edges were the only thing that
+   * could read on it. Now the street is the lightest thing on the map — which is what
+   * lets "outside" and "inside" separate at a glance — and a white line on a
+   * near-white street is invisible. A near-black edge reads on the street, reads
+   * against the mid interior floor, and is still a step darker than the building
+   * mass, so the ladder stays monotonic all the way down.
+   */
+  edge: 'rgba(7,11,16,0.94)',
+  cover: 'rgba(58,72,86,0.8)',
+};
+
+/** Blip colours. Player white, friendlies cyan, hostiles pure red — three hues, not
+ *  two neighbouring warms. Enemy red used to be #ff4433 against a player at #ffb648,
+ *  which under a bloom-lit night frame is the same mark twice. */
+const BLIP = {
+  player: '#ffffff',
+  playerRing: '#ffb648',
+  friend: '#57c9ff',
+  foe: '#ff2020',
+};
 
 const BAKE = 700; // px across the playable span of the level bake
 const VIEW_M = 62; // metres visible across the widget
@@ -47,9 +108,13 @@ export class Minimap {
     this.pad = 0;
     this.bounds = { minX: -60, maxX: 60, minZ: -60, maxZ: 60 };
     this.contacts = [];
+    this.friends = [];
     this.zones = [];
     this.uav = false;
     this.sweep = 0;
+    /** plate brightness, 0..1, tracking the scene's key light — see _exposure() */
+    this.exposure = 1;
+    this._expShown = -1;
     this._acc = 0;
     this._size = 0;
     this._dpr = 1;
@@ -95,7 +160,7 @@ export class Minimap {
 
       // Out of bounds: a dark hatched apron, so leaving the map reads as "there is
       // nothing there" rather than as a rendering hole.
-      g.fillStyle = '#05070a';
+      g.fillStyle = TONE.oob;
       g.fillRect(0, 0, size, size);
       this._drawHatch(g, size);
 
@@ -105,24 +170,10 @@ export class Minimap {
       g.beginPath();
       g.rect(ix0, iz0, ix1 - ix0, iz1 - iz0);
       g.clip();
-      /*
-       * ── The fill hierarchy ──────────────────────────────────────────────
-       * A minimap answers exactly one question: am I in the open or am I inside
-       * something. The previous bake could not answer it — building interiors are
-       * walkable, so they took the same light plate as the street and the only
-       * thing separating "inside a building" from "road" was a dashed white wall
-       * outline. Four tones, darkest to lightest:
-       *
-       *   out of bounds   near-black hatch
-       *   solid mass      #101820   (in bounds, not walkable, not a building)
-       *   building        #1a222b   solid footprint, then its walkable rooms at
-       *   interior floor  #3f4c58   — clearly darker than the street
-       *   street          #94a3b0   the lightest thing on the plate
-       *   walls           #f2f7fc   bright edges over all of it
-       */
-      g.fillStyle = '#101820';
+      /* Fill hierarchy: see TONE at the top of the file. */
+      g.fillStyle = TONE.solid;
       g.fillRect(ix0, iz0, ix1 - ix0, iz1 - iz0);
-      const walk = this._drawWalkable(g, level, '#94a3b0');
+      const walk = this._drawWalkable(g, level, TONE.street);
       this._drawBuildings(g, level, walk);
       this._drawColliders(g, level);
       g.restore();
@@ -180,20 +231,20 @@ export class Minimap {
     for (const [x0, z0, x1, z1] of rects) {
       const [ax, az] = this._toPx(x0, z0);
       const [bx, bz] = this._toPx(x1, z1);
-      g.fillStyle = '#1a222b';
+      g.fillStyle = TONE.mass;
       g.fillRect(ax, az, bx - ax, bz - az);
       if (walk) {
         g.save();
         g.beginPath();
         g.rect(ax, az, bx - ax, bz - az);
         g.clip();
-        g.fillStyle = '#3f4c58';
+        g.fillStyle = TONE.interior;
         g.fill(walk);
         g.restore();
       }
       /* a hairline round the footprint so two adjoining blocks stay separable */
-      g.strokeStyle = 'rgba(10,14,18,0.85)';
-      g.lineWidth = Math.max(1, this.pxPerM * 0.09);
+      g.strokeStyle = 'rgba(4,7,11,0.9)';
+      g.lineWidth = Math.max(1, this.pxPerM * 0.11);
       g.strokeRect(ax, az, bx - ax, bz - az);
     }
   }
@@ -266,7 +317,7 @@ export class Minimap {
         // structure, not the thing that carries the solid-vs-walkable read. Low
         // cover is drawn light-on-dark rather than dark-on-dark, or it vanishes
         // into the building mass it usually stands next to.
-        g.fillStyle = f.tall ? 'rgba(242,247,252,0.92)' : 'rgba(150,166,180,0.5)';
+        g.fillStyle = f.tall ? TONE.edge : TONE.cover;
         g.fillRect(-w / 2, -d / 2, w, d);
         g.restore();
       }
@@ -286,6 +337,40 @@ export class Minimap {
   setContacts(list) {
     this.contacts = Array.isArray(list) ? list : [];
     this._drawnOnce = false;
+  }
+
+  /** Friendly markers. HUD supplies them so the widget stays agnostic about rosters. */
+  setFriends(list) {
+    this.friends = Array.isArray(list) ? list : [];
+    this._drawnOnce = false;
+  }
+
+  /**
+   * Plate brightness for the current lighting.
+   *
+   * Driven off the key light rather than off the tonemapped frame, because the frame
+   * lives on the GPU and reading it back would stall the pipeline for a widget. The
+   * sun runs ~8-12 at noon and collapses to near zero after dusk, so a smoothstep
+   * over 0.3-4.5 tracks the transition the eye actually sees.
+   *
+   * The two end points are set from measurement, not taste. Undimmed, the plate means
+   * ~140 on an 8-bit frame; the review captures put the scene at 66 (hero) and 17
+   * (night). A peripheral readout wants to sit a little ABOVE the world — call it
+   * 1.3x in daylight and about 2x at night, since a night map still has to be legible
+   * — which is 0.63 and 0.27. Before this, it was a flat 1.0 in both, i.e. 1.9x the
+   * hero scene and SEVEN times the night scene, and the brightest object on the
+   * screen in a frame whose subject is a dark street.
+   */
+  _exposure() {
+    const L = this.ctx.lighting;
+    let sun = L?.sunIntensity;
+    if (!Number.isFinite(sun)) {
+      const t = L?.timeOfDay;
+      sun = Number.isFinite(t) ? (t > 6.4 && t < 19.2 ? 8 : 0.05) : 8;
+    }
+    const x = clamp01((sun - 0.3) / 4.2);
+    const day = x * x * (3 - 2 * x);
+    return 0.27 + 0.36 * day;
   }
 
   setZones(list) {
@@ -326,6 +411,10 @@ export class Minimap {
     const px = this.ctx.player?.position?.x ?? this.ctx.camera?.position?.x ?? 0;
     const pz = this.ctx.player?.position?.z ?? this.ctx.camera?.position?.z ?? 0;
     const yaw = this.ctx.player?.yaw ?? this.ctx.camera?.rotation?.y ?? 0;
+    /* Eye adaptation for the plate. Damped rather than snapped, so a flare or a
+       sunset does not step the widget; 4/s converges inside the review warm-up. */
+    const target = this._exposure();
+    this.exposure += (target - this.exposure) * Math.min(1, step * 4);
     // Standing still with no live contacts means the last frame is still correct;
     // a rotated blit of a 700 px bake is by far the most expensive thing the HUD
     // does, so it is worth not doing.
@@ -336,8 +425,10 @@ export class Minimap {
       Math.abs(px - this._px) < 0.04 &&
       Math.abs(pz - this._pz) < 0.04 &&
       Math.abs(yaw - this._yaw) < 0.004 &&
+      Math.abs(this.exposure - this._expShown) < 0.004 &&
       this._drawnOnce;
     if (still) return;
+    this._expShown = this.exposure;
     this._px = px;
     this._pz = pz;
     this._yaw = yaw;
@@ -376,17 +467,32 @@ export class Minimap {
       g.arc(zx, zz, r, 0, Math.PI * 2);
       g.fillStyle =
         z.owner === 'own'
-          ? 'rgba(207,230,242,0.16)'
+          ? 'rgba(87,201,255,0.18)'
           : z.owner === 'foe'
-            ? 'rgba(255,68,51,0.16)'
-            : 'rgba(255,182,72,0.13)';
+            ? 'rgba(255,32,32,0.18)'
+            : 'rgba(255,182,72,0.14)';
       g.fill();
       g.lineWidth = 2 / scale;
-      g.strokeStyle =
-        z.owner === 'own' ? '#cfe6f2' : z.owner === 'foe' ? '#ff4433' : '#ffb648';
+      g.strokeStyle = z.owner === 'own' ? BLIP.friend : z.owner === 'foe' ? BLIP.foe : '#ffb648';
       g.stroke();
     }
     g.restore();
+
+    /*
+     * Scene exposure. A flat black wash at (1 - k) over the plate is an exact
+     * multiply by k, which scales the whole ladder without touching its ratios —
+     * so the hierarchy survives the dim instead of collapsing into the floor. It
+     * lands here, after the plate and BEFORE the blips: the map answers "what is
+     * around me" and dims with the world; the symbols answer "who is around me"
+     * and must not.
+     */
+    if (this.exposure < 0.995) {
+      g.save();
+      g.globalCompositeOperation = 'source-over';
+      g.fillStyle = `rgba(3,5,8,${(1 - this.exposure).toFixed(3)})`;
+      g.fillRect(0, 0, size, size);
+      g.restore();
+    }
 
     // Blips are drawn unrotated so the icons stay upright.
     const world2px = (wx, wz) => {
@@ -407,20 +513,26 @@ export class Minimap {
       if (x < -20 || y < -20 || x > size + 20 || y > size + 20) continue;
       g.fillStyle = '#0a0b0d';
       g.fillText(z.label || '?', x + 1, y + 1);
-      g.fillStyle =
-        z.owner === 'own' ? '#cfe6f2' : z.owner === 'foe' ? '#ff4433' : '#ffb648';
+      g.fillStyle = z.owner === 'own' ? BLIP.friend : z.owner === 'foe' ? BLIP.foe : '#ffb648';
       g.fillText(z.label || '?', x, y);
     }
     g.restore();
 
-    // Teammates.
+    /*
+     * Teammates. `setFriends()` wins when the HUD has supplied a list (it knows
+     * about the review seed); otherwise fall back to the live roster. A minimap
+     * with no blue on it does not read as a team game — measured on the review set,
+     * there was not one friendly marker in eight frames.
+     */
     const local = this.ctx.game?.localPlayer;
-    const mates = this.ctx.game?.playersOfTeam?.(local?.team) || [];
+    const mates = this.friends.length ? this.friends : this.ctx.game?.playersOfTeam?.(local?.team) || [];
     for (const m of mates) {
-      if (!m || m === local || !m.alive || !m.position) continue;
-      const [x, y] = world2px(m.position.x, m.position.z);
+      if (!m || m === local) continue;
+      const mp = m.position || m;
+      if (m.alive === false || !Number.isFinite(mp.x)) continue;
+      const [x, y] = world2px(mp.x, mp.z);
       if (x < -8 || y < -8 || x > size + 8 || y > size + 8) continue;
-      chevron(g, x, y, yaw - (m.yaw || 0), 4.4 * this._dpr, '#cfe6f2', 0.9);
+      chevron(g, x, y, yaw - (m.yaw || 0), 4.6 * this._dpr, BLIP.friend, 0.95);
     }
 
     // Enemy contacts (UAV sweep, or gunfire pings pushed in by the HUD).
@@ -430,7 +542,7 @@ export class Minimap {
       const [x, y] = world2px(c.x, c.z);
       if (x < -8 || y < -8 || x > size + 8 || y > size + 8) continue;
       const fade = c.until ? clamp01((c.until - now) / 1.5) : 1;
-      chevron(g, x, y, yaw - (c.yaw || 0), 4.6 * this._dpr, '#ff4433', 0.55 + 0.45 * fade);
+      chevron(g, x, y, yaw - (c.yaw || 0), 4.8 * this._dpr, BLIP.foe, 0.6 + 0.4 * fade);
     }
 
     // UAV sweep arm.
@@ -459,10 +571,8 @@ export class Minimap {
       g.restore();
     }
 
-    // Player: always dead centre, always facing up.
-    chevron(g, size / 2, size / 2, 0, 6.4 * this._dpr, '#ffb648', 1, true);
-
-    // Field-of-view cone.
+    /* Field-of-view cone. Under the player marker, so the marker stays the
+       brightest thing in the middle of the widget. */
     g.save();
     g.translate(size / 2, size / 2);
     g.beginPath();
@@ -474,11 +584,16 @@ export class Minimap {
     g.lineTo(Math.sin(halfH) * L, -Math.cos(halfH) * L);
     g.closePath();
     const cone = g.createLinearGradient(0, 0, 0, -L);
-    cone.addColorStop(0, 'rgba(255,182,72,0.20)');
-    cone.addColorStop(1, 'rgba(255,182,72,0)');
+    cone.addColorStop(0, 'rgba(255,255,255,0.16)');
+    cone.addColorStop(1, 'rgba(255,255,255,0)');
     g.fillStyle = cone;
     g.fill();
     g.restore();
+
+    /* Player: always dead centre, always facing up. White with an amber ring, so
+       "me" is a different hue from both the cyan team and the red contacts rather
+       than a neighbouring warm of the latter. */
+    chevron(g, size / 2, size / 2, 0, 6.6 * this._dpr, BLIP.player, 1, BLIP.playerRing);
 
     this._drawNorth(g, size, yaw);
   }
@@ -535,9 +650,9 @@ function chevron(g, x, y, rot, r, colour, alpha, ring) {
   g.fill();
   if (ring) {
     g.shadowBlur = 0;
-    g.globalAlpha = alpha * 0.5;
-    g.strokeStyle = colour;
-    g.lineWidth = 1;
+    g.globalAlpha = alpha * 0.7;
+    g.strokeStyle = typeof ring === 'string' ? ring : colour;
+    g.lineWidth = 1.4;
     g.beginPath();
     g.arc(0, 0, r * 1.9, 0, Math.PI * 2);
     g.stroke();

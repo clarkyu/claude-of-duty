@@ -22,13 +22,38 @@ export class Vitals {
     this.flash = div('cod-flash', this.layer);
     this.dead = div('cod-dead', this.layer);
 
-    // Shared gradient used by every damage wedge.
+    /*
+     * ── Why the wedge is built out of a gradient AND a mask ─────────────────────
+     * The first version was a 74° annular sector filled with a radial gradient that
+     * reached 0.92 alpha at its outer edge, held at 0.9 opacity for review capture.
+     * Reviewed, it read as "a large opaque red arc floating off-centre over a
+     * building — a glitch", and that is a fair description of what it is: a hard
+     * geometric edge at every boundary (two radial cuts and a near-solid outer arc)
+     * in one saturated hue, over a photographic frame.
+     *
+     * A damage indicator has to be unmistakably a *glow from a direction*. That means
+     * soft on all four sides. The radial gradient feathers the two radial edges; the
+     * `codDmgFade` mask feathers the two angular ones, in the wedge's own coordinate
+     * space so it rotates with it. Peak alpha is down from 0.92 to 0.52, the band is
+     * thinner and further out, and it now sits behind a dark rim so it survives being
+     * drawn over a blown sky as well as over a brick wall.
+     */
     const defsSvg = svg('svg', { width: 0, height: 0, style: 'position:absolute' }, this.layer);
     const defs = svg('defs', {}, defsSvg);
     const grad = svg('radialGradient', { id: 'codDmgGrad', cx: '50%', cy: '50%', r: '50%' }, defs);
-    svg('stop', { offset: '52%', 'stop-color': '#ff2f1e', 'stop-opacity': '0' }, grad);
-    svg('stop', { offset: '78%', 'stop-color': '#ff3a24', 'stop-opacity': '0.55' }, grad);
-    svg('stop', { offset: '100%', 'stop-color': '#c0140a', 'stop-opacity': '0.92' }, grad);
+    svg('stop', { offset: '58%', 'stop-color': '#ff5a3c', 'stop-opacity': '0' }, grad);
+    svg('stop', { offset: '76%', 'stop-color': '#ff3a24', 'stop-opacity': '0.34' }, grad);
+    svg('stop', { offset: '92%', 'stop-color': '#e8241a', 'stop-opacity': '0.52' }, grad);
+    svg('stop', { offset: '100%', 'stop-color': '#8e0c06', 'stop-opacity': '0' }, grad);
+    /* angular feather: white in the middle of the sweep, transparent at both ends */
+    const mask = svg('mask', { id: 'codDmgFade', maskUnits: 'userSpaceOnUse', x: '-160', y: '-160', width: '320', height: '320' }, defs);
+    const mgrad = svg('linearGradient', { id: 'codDmgFadeG', x1: '-150', y1: '0', x2: '150', y2: '0', gradientUnits: 'userSpaceOnUse' }, defs);
+    svg('stop', { offset: '0%', 'stop-color': '#000' }, mgrad);
+    svg('stop', { offset: '26%', 'stop-color': '#888' }, mgrad);
+    svg('stop', { offset: '50%', 'stop-color': '#fff' }, mgrad);
+    svg('stop', { offset: '74%', 'stop-color': '#888' }, mgrad);
+    svg('stop', { offset: '100%', 'stop-color': '#000' }, mgrad);
+    svg('rect', { x: '-160', y: '-160', width: '320', height: '320', fill: 'url(#codDmgFadeG)' }, mask);
 
     this.dmgWrap = div('cod-dmg-wrap', this.layer);
     this.pool = new NodePool(this.dmgWrap, () => makeWedge(), 6);
@@ -69,8 +94,8 @@ export class Vitals {
     it.node.style.transform = `rotate(${deg.toFixed(1)}deg)`;
     const wedge = it.node.__wedge;
     if (wedge) {
-      wedge.setAttribute('opacity', (0.5 + 0.5 * mag).toFixed(2));
-      wedge.setAttribute('transform', `scale(${(0.82 + 0.3 * mag).toFixed(2)})`);
+      wedge.setAttribute('opacity', (0.44 + 0.42 * mag).toFixed(2));
+      wedge.setAttribute('transform', `scale(${(0.9 + 0.16 * mag).toFixed(2)})`);
     }
     if (p.hold) {
       // Headless review capture: the CSS keyframe runs on the wall clock and one
@@ -172,11 +197,14 @@ function makeWedge() {
   const n = document.createElement('div');
   n.className = 'cod-dmg';
   const s = svg('svg', { viewBox: '-150 -150 300 300' }, n);
-  // A 74° arc opening upward (screen-forward is up before rotation).
+  const gp = svg('g', { mask: 'url(#codDmgFade)' }, s);
+  // A 62° arc opening upward (screen-forward is up before rotation), further out
+  // and thinner than it was: at 96-148 px it crossed the middle third of a 720 px
+  // frame, which is where the thing the player is being shot by actually is.
   const path = svg('path', {
     class: 'wedge',
-    d: arcWedge(0, 74, 96, 148),
-  }, s);
+    d: arcWedge(0, 62, 118, 154),
+  }, gp);
   n.__wedge = path;
   return n;
 }

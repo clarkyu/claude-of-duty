@@ -206,22 +206,40 @@ const ANCHORS = [
  */
 const PHASES = {
   anchors: 0.30,
+  /**
+   * People. Spent second, straight after the curated anchors, because a market with
+   * nobody in it is not a market and this is the one slice that must never be the
+   * thing the budget runs out on.
+   *
+   * Sized from the actual cost, not from a guess: a figure is 500-750 triangles
+   * (legs, torso, two arms, neck, head, headwear, and whatever they are carrying) and
+   * there are about thirty of them, so 5 % of a 150 k medium budget bought eleven
+   * people and then silently stopped — which would have put traders in the hero frame
+   * and left the market hall empty. It comes out of the rooflines and the wall lines,
+   * which are dressing on things nobody is looking at in a frame that has a person in
+   * it.
+   */
+  people: 0.13,
   foreground: 0.07,
   /**
-   * Language. Two triangles per glyph panel, so this buys the single loudest missing
-   * cue in the package for almost nothing — but it is spent early, because "cheap"
-   * only helps if the budget has not already gone.
+   * Language, and the ground under the player's feet.
+   *
+   * Two triangles per glyph panel, so the written world buys the loudest missing cue
+   * in the package for almost nothing. The rest of this slice is `GROUND_STRUCTURE` —
+   * kerb-line gutters, tar patches, potholes and wind drifts. It is here rather than
+   * in `wallLines` because near-camera ground is the largest continuous area in every
+   * frame in the set, and a slice spent eighth is a slice that does not exist.
    */
-  markings: 0.03,
+  markings: 0.08,
   drainage: 0.02,
-  wallLines: 0.19,
-  facades: 0.19,
+  wallLines: 0.14,
+  facades: 0.15,
   /**
    * Rooflines. Was 0.12 spread over a whole city and spent sixth, which bought a
    * dozen tanks nobody could see. The roof set is now sorted towards the review
    * sightlines by Props.js, so this slice lands on the skyline the cameras read.
    */
-  roofs: 0.18,
+  roofs: 0.09,
   perimeter: 0.02,
 };
 
@@ -239,7 +257,11 @@ export function composeScene(P) {
     P.spawn(an.t, { x: an.x, z: an.z, yaw: an.yaw ?? r.range(0, TAU), ...(an.o || {}) });
   }
 
-  /* ---- 2. near-field composition: things that hang INTO the review frames  */
+  /* ---- 2. the people who live here --------------------------------------- */
+  P.phase(slice('people'));
+  dressPeople(P, r);
+
+  /* ---- 3. near-field composition: things that hang INTO the review frames  */
   P.phase(slice('foreground'));
   dressForeground(P, r);
 
@@ -266,6 +288,106 @@ export function composeScene(P) {
   /* ---- 8. perimeter fencing: razor wire on top of the existing fences ---- */
   P.phase(slice('perimeter'));
   dressPerimeter(P, r);
+}
+
+/* ========================================================================== */
+/*                                   people                                   */
+/* ========================================================================== */
+
+/**
+ * Everyone in the map, placed by hand against the review sightlines.
+ *
+ * ── Placement rules ─────────────────────────────────────────────────────────────
+ *   • A vendor stands BEHIND his counter, 0.85-1.0 m back along the stall's -Z, and
+ *     faces the same way the stall does. Getting that wrong puts a man standing in
+ *     his own produce, which is worse than an empty stall.
+ *   • Nobody stands in a firing lane the review frames shoot down: figures go on the
+ *     pavement, in a doorway, against a wall, behind cover. That is both how a real
+ *     street works and how a game street has to work.
+ *   • Poses never repeat next to each other. Two identical standing figures side by
+ *     side is the one arrangement that reads as "asset placed twice".
+ *   • `force` on every one, because these deliberately overlap the stall footprints
+ *     the grid is protecting.
+ *
+ * `f` is the facing yaw. `p` overrides the pose; `hw` the headwear.
+ */
+const PEOPLE = [
+  /*
+   * ── The hero foreground ──────────────────────────────────────────────────
+   * The two stalls the hero frame actually opens on are the LEVEL's stalls at
+   * (4.2, 17.5) and (9.3, 17.8) — 5-7 m from the lens — not the prop stalls out on
+   * the plaza. Both face +Z in their own space, so the trader stands ~1 m back along
+   * their -Z and shares their yaw.
+   */
+  { t: 'vendor', x: 4.15, z: 16.5, f: 0.05, o: { headwear: 'keffiyeh', height: 1.79 } },
+  { t: 'civilian', x: 9.34, z: 16.8, f: 3.1, o: { pose: 'stand', headwear: 'cap', carry: 'bag' } },
+  { t: 'squatter', x: 1.6, z: 19.4, f: -1.35, o: { headwear: 'skull' } },
+
+  /* ── the plaza market row: the hero frame's midground ──────────────────── */
+  /* behind the stall at (3.0, 8.4) yaw -1.57 (faces -X) */
+  { t: 'vendor', x: 3.92, z: 8.3, f: -1.57, o: { headwear: 'keffiyeh' } },
+  /* behind the stall at (8.9, 11.0) yaw 1.57 (faces +X) */
+  { t: 'vendor', x: 8.02, z: 11.15, f: 1.57, o: { headwear: 'cap' } },
+  /* customers at the counter, on the aisle side, facing the stalls */
+  { t: 'civilian', x: 2.05, z: 8.9, f: 1.5, o: { pose: 'stand', headwear: 'scarf', carry: 'bag' } },
+  { t: 'civilian', x: 9.9, z: 10.4, f: -1.6, o: { pose: 'lean', headwear: 'cap', carry: 'none' } },
+  /* two men sat against the plaza upstand on the left, out of the lane */
+  { t: 'squatter', x: 1.35, z: 12.6, f: -1.2, o: { headwear: 'keffiyeh' } },
+  { t: 'squatter', x: 1.5, z: 13.6, f: -0.9, o: { headwear: 'skull' } },
+  /* a porter crossing the plaza and someone walking out of frame right */
+  { t: 'porter', x: 6.3, z: 14.4, f: 2.5 },
+  { t: 'civilian', x: 10.2, z: 15.2, f: 3.0, o: { pose: 'walk', carry: 'bundle' } },
+  { t: 'civilian', x: 4.4, z: 4.9, f: 0.35, o: { pose: 'walk', carry: 'bag' } },
+
+  /* ── Souk Street north of the plaza: depth for hero / ads ──────────────── */
+  /* behind the level's stall at (2.4, -3.6) yaw -1.57 */
+  { t: 'vendor', x: 3.35, z: -3.63, f: -1.57, o: { headwear: 'skull' } },
+  { t: 'civilian', x: 2.2, z: -2.4, f: 0.1, o: { pose: 'walk', carry: 'bag' } },
+  { t: 'civilian', x: 8.4, z: -8.6, f: 3.1, o: { pose: 'stand', headwear: 'keffiyeh' } },
+  { t: 'squatter', x: 11.7, z: -12.4, f: -1.5, o: { headwear: 'cap' } },
+  { t: 'porter', x: 4.6, z: -24.2, f: 0.2 },
+
+  /* ── the market hall interior: the `interior` pose stands at (-14.4, -3.2) ── */
+  /* behind the stall at (-8.4, -8.6) yaw 0.1 (faces +Z) */
+  { t: 'vendor', x: -8.49, z: -9.5, f: 0.1, o: { headwear: 'cap' } },
+  /* behind (-12.4, -6.4) yaw -1.5 (faces -X) */
+  { t: 'vendor', x: -11.5, z: -6.46, f: -1.5, o: { headwear: 'skull' } },
+  /* behind (-14.6, -9.4) yaw 3.2 (faces -Z) */
+  { t: 'vendor', x: -14.55, z: -8.5, f: 3.2, o: { headwear: 'keffiyeh' } },
+  { t: 'civilian', x: -10.4, z: -4.2, f: 2.6, o: { pose: 'stand', headwear: 'scarf', carry: 'bag' } },
+  { t: 'civilian', x: -16.6, z: -9.0, f: 1.4, o: { pose: 'walk', carry: 'bundle' } },
+  { t: 'squatter', x: -18.9, z: -5.0, f: 1.3, o: { headwear: 'keffiyeh' } },
+  { t: 'porter', x: -6.9, z: -12.8, f: 2.2 },
+
+  /* ── the blue shophouse the `weapon` pose stands in ────────────────────── */
+  /* behind the stall at (-11.6, 11.2) yaw 1.5 (faces +X) */
+  { t: 'vendor', x: -12.49, z: 11.14, f: 1.5, o: { headwear: 'cap' } },
+  { t: 'civilian', x: -6.4, z: 8.2, f: -0.4, o: { pose: 'lean', headwear: 'skull', carry: 'none' } },
+
+  /* ── south end: hotel front, read by the vista frame ───────────────────── */
+  { t: 'civilian', x: 5.6, z: 27.9, f: 1.5, o: { pose: 'walk', carry: 'bag' } },
+  { t: 'civilian', x: -3.2, z: 30.4, f: -1.4, o: { pose: 'stand', headwear: 'scarf' } },
+
+  /* ── west alley kiosks ─────────────────────────────────────────────────── */
+  /* behind the stall at (-46.2, 39.2) yaw 1.57 (faces +X) */
+  { t: 'vendor', x: -47.1, z: 39.2, f: 1.57, o: { headwear: 'keffiyeh' } },
+];
+
+function dressPeople(P, r) {
+  for (const an of PEOPLE) {
+    if (P.budget <= 0) return;
+    P.spawn(an.t, {
+      x: an.x,
+      z: an.z,
+      yaw: an.f ?? r.range(0, TAU),
+      force: true,
+      /* Feet on the ground, not sunk: the default 15 mm sink is right for a crate
+         with a flat bottom and wrong for a boot. */
+      sink: 0.004,
+      height: r.range(1.6, 1.84),
+      ...(an.o || {}),
+    });
+  }
 }
 
 /* ========================================================================== */
@@ -327,7 +449,67 @@ const GROUND_GRIME = [
   ['crack_a', 7.6, 20.4], ['skid', 3.2, 21.5], ['stain', 9.4, 16.6], ['crack_b', 1.4, 22.6],
 ];
 
+/**
+ * Ground structure, in metres rather than in texels.
+ *
+ * `[type, x, z, yaw, opts]`. Concentrated on the two or three metres of ground each
+ * review camera opens on — that is the largest continuous area in the frame and it
+ * was, measurably, one tiled speckle. See the note above `roadPatch()`.
+ */
+const GROUND_STRUCTURE = [
+  /* ── the hero / night foreground: camera at (8.5, 22) ────────────────── */
+  ['road_patch', 7.2, 19.4, 0.08, { w: 2.3, d: 1.7 }],
+  ['road_patch', 3.6, 17.6, -0.2, { w: 1.6, d: 2.4, mat: 'paving' }],
+  ['pothole', 5.6, 18.9, 0, { radius: 0.5, depth: 0.07 }],
+  ['pothole', 9.4, 20.6, 0, { radius: 0.36, depth: 0.05 }],
+  ['pothole', 6.9, 15.2, 0, { radius: 0.44 }],
+  ['gutter_run', 2.0, 18.0, Math.PI / 2, { length: 6.0 }],
+  ['gutter_run', 11.4, 17.5, Math.PI / 2, { length: 5.5 }],
+  /* silt banked against the plaza upstand and the shop fronts */
+  ['sand_drift', 11.9, 20.0, Math.PI, { length: 4.4, reach: 0.8, rise: 0.11 }],
+  ['sand_drift', 1.1, 16.0, 0, { length: 5.0, reach: 0.7 }],
+  ['sand_drift', 12.0, 12.0, Math.PI, { length: 4.0, reach: 0.6 }],
+
+  /* ── ads / firefight: down the Souk from (2, 10) and (10, -6) ────────── */
+  ['road_patch', 4.2, 4.4, 0.05, { w: 2.8, d: 1.9 }],
+  ['pothole', 7.8, 1.2, 0, { radius: 0.55, depth: 0.08 }],
+  ['pothole', 2.4, -4.6, 0, { radius: 0.42 }],
+  ['road_patch', 8.6, -9.2, -0.1, { w: 2.0, d: 2.6, mat: 'paving' }],
+  ['gutter_run', 0.6, -6.0, Math.PI / 2, { length: 6.5 }],
+  ['gutter_run', 11.8, -11.0, Math.PI / 2, { length: 6.0 }],
+  ['sand_drift', 12.1, -3.0, Math.PI, { length: 5.0, reach: 0.85, rise: 0.12 }],
+  ['sand_drift', -0.9, -14.0, 0, { length: 4.6, reach: 0.7 }],
+  ['pothole', 5.2, -16.4, 0, { radius: 0.6, depth: 0.075 }],
+  ['road_patch', 3.0, -22.0, 0.12, { w: 2.4, d: 2.0 }],
+
+  /* ── mid cross, where the `materials` close-up stands ─────────────────── */
+  ['road_patch', -4.4, 1.6, Math.PI / 2, { w: 2.2, d: 1.5, mat: 'concrete' }],
+  ['pothole', -1.4, 2.2, 0, { radius: 0.34, depth: 0.05 }],
+  ['sand_drift', -6.0, 3.6, Math.PI, { length: 3.4, reach: 0.55 }],
+
+  /* ── market hall floor and its threshold, for the `interior` pose ─────── */
+  ['road_patch', -10.6, -8.2, 0.04, { w: 2.6, d: 2.2, mat: 'concrete' }],
+  ['sand_drift', -19.4, -8.0, 0, { length: 4.2, reach: 0.6, rise: 0.07 }],
+  ['gutter_run', -13.0, -13.4, 0, { length: 5.0 }],
+
+  /* ── canal road and the north cross, seen from the vista frame ────────── */
+  ['road_patch', 32.5, -12.0, 0, { w: 2.6, d: 2.0 }],
+  ['pothole', 43.2, 3.4, 0, { radius: 0.5 }],
+  ['road_patch', -14.0, -36.0, Math.PI / 2, { w: 2.8, d: 2.2 }],
+  ['pothole', 2.0, -34.5, 0, { radius: 0.55, depth: 0.07 }],
+  ['sand_drift', -50.2, 12.0, 0, { length: 5.5, reach: 0.8, rise: 0.13 }],
+  ['sand_drift', 6.0, 28.6, 0, { length: 4.0, reach: 0.65 }],
+];
+
+function dressGroundStructure(P, r) {
+  for (const [t, x, z, yaw, o] of GROUND_STRUCTURE) {
+    if (P.budget <= 0) return;
+    P.spawn(t, { x, z, yaw: yaw ?? r.range(0, TAU), force: true, sink: 0, ...(o || {}) });
+  }
+}
+
 function dressMarkings(P, r) {
+  dressGroundStructure(P, r);
   for (const [cell, x, z, yaw, w, len] of ROAD_PAINT) {
     if (P.budget <= 0) return;
     P.spawn('road_mark', { x, z, yaw, cell, w, len, group: 'road', force: true, sink: 0 });

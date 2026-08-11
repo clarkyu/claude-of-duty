@@ -21,6 +21,7 @@
  */
 import * as THREE from 'three';
 import { clamp, hash2, hash3, lerp } from './kit/geom.js';
+import { ridgeAt } from './LevelData.js';
 import { wallRun, addPillar, addDownpipe, lowWall } from './kit/Walls.js';
 import { stairs, railing, ladder, crate, crateStack } from './kit/Stairs.js';
 import { roofDeck, parapet, pitchedRoof, balcony, awning, canopy, roofClutter } from './kit/Roofs.js';
@@ -1278,103 +1279,225 @@ export function buildFuelStation(bat, f, rng) {
   bat.lod = 0;
 }
 
-/** A distant silhouette block: shell + parapet only, authored straight into LOD 2. */
+/**
+ * A distant block, authored straight into LOD 2.
+ *
+ * ── What went wrong before, and what the rule is now ────────────────────────────
+ * The previous version gave the `far` rank *nothing*: no windows, no ribs, no roof
+ * plant, on the argument that none of it resolves past 200 m. That argument is only
+ * true for a block that is a hundred pixels tall. The hill town was thirty-five
+ * blocks 300 m out and, because their bases were authored in the sky rather than on
+ * the ridge, each one was two hundred pixels of untextured stucco filling the upper
+ * half of the establishing shot. They were the LARGEST objects in that frame.
+ *
+ * So the rank is now a quality dial, not an on/off switch:
+ *
+ *   rank 0 (60-110 m)   punched windows on a 3.6 m grid, pilaster ribs, roof plant,
+ *                       setback tower, near-playspace stucco at ~1:1 UVs
+ *   rank 1 (110-190 m)  ribbon glazing (one banded quad per floor per face, broken
+ *                       into bays), stepped parapet, setback + stair housing, tanks
+ *   rank 2 (230-360 m)  small punched windows 2-3 per face per floor, a flat or
+ *                       pitched roof, a parapet band, a stair box — enough that the
+ *                       terrace has an internal read and a serrated top edge
+ *
+ * Every rank gets its roof cap in `far.deck` (dark) and its parapet in `far.trim`
+ * (light) so no block tops out flat and pale into the sky.
+ *
+ * A window here is two triangles. The whole three-rank set costs well under 30 k.
+ */
 export function buildBackdrop(bat, def) {
   const [x0, z0, x1, z1] = def.rect;
+  const y0 = def.base ?? 0;
   const h = def.h;
+  const top = y0 + h;
   const cx = (x0 + x1) * 0.5;
   const cz = (z0 + z1) * 0.5;
   const hx = (x1 - x0) * 0.5;
   const hz = (z1 - z0) * 0.5;
   const seed = Math.round(x0 * 0.37 + z0 * 0.71);
+  const rank = def.rank ?? (def.far ? 2 : 0);
   bat.lod = 0;
-  // These blocks are 60-140 m out and 30 m wide. At 1:1 metre UVs the stucco tile
-  // repeats every ~2.5 m across that face and reads as patterned wallpaper, which is
-  // exactly what the eye picks up on a distant flat plane. Stretching the texture 3x
-  // costs nothing here — none of that detail is resolvable at this range.
-  bat.uvScale = 0.32;
+  /*
+   * UV scale by rank. 0.32 across the board was the bug the review named: it stretched
+   * one stucco tile over eight metres, so the near rank had no surface at all and read
+   * as painted card. A tile lands at ~2.5 m at scale 1; at 80 m that is 8 px, which is
+   * exactly the size detail should be. Only the hill town, where a tile would be under
+   * a pixel and would alias, still gets stretched.
+   */
+  bat.uvScale = rank === 0 ? 1.0 : rank === 1 ? 0.72 : 0.45;
   bat.uvOffset = [seed * 1.7, seed * 0.9];
 
-  bat.b(def.wall).box([cx, h * 0.5, cz], [hx, h * 0.5, hz], { chamfer: 0.08 });
-  bat.b('struct.concreteClean').box([cx, h + 0.35, cz], [hx + 0.12, 0.35, hz + 0.12], { chamfer: 0.05 });
-
-  /**
-   * `far` blocks are the hill town at 230-360 m. A setback tower still reads at that
-   * range (it is silhouette); windows, ribs and water tanks do not resolve at all and
-   * are a third of the backdrop's triangles, so they stop here.
-   */
-  if (def.far) {
-    const s1 = hash2(seed, 3);
-    if (s1 > 0.4) {
-      const sh = h * (0.2 + s1 * 0.3);
-      const sx = hx * 0.5;
-      const sz = hz * 0.5;
-      bat.b(def.wall).box([cx + (hash2(seed + 5, 9) - 0.5) * hx, h + sh * 0.5, cz], [sx, sh * 0.5, sz], { chamfer: 0.08 });
-    }
-    bat.uvScale = 1;
-    bat.uvOffset = [0, 0];
-    return;
-  }
-
-  // A skyline is silhouette, and a row of identical rectangles is the one shape that
-  // reads as scenery. Each block gets a setback tower, a stair housing and a couple
-  // of tanks, all authored straight into the far LOD — a handful of boxes each, and
-  // it is the difference between "a city behind the map" and "grey cardboard".
   const t1 = hash2(seed, 3);
   const t2 = hash2(seed + 11, 7);
   const t3 = hash2(seed + 23, 13);
-  if (t1 > 0.28) {
-    const sh = h * (0.22 + t1 * 0.38);
-    const sx = hx * (0.42 + t2 * 0.26);
-    const sz = hz * (0.42 + t3 * 0.26);
-    const ox = (t2 - 0.5) * (hx - sx) * 1.4;
-    const oz = (t3 - 0.5) * (hz - sz) * 1.4;
-    bat.b(def.wall).box([cx + ox, h + sh * 0.5, cz + oz], [sx, sh * 0.5, sz], { chamfer: 0.08 });
-    bat.b('struct.concreteClean').box([cx + ox, h + sh + 0.3, cz + oz], [sx + 0.14, 0.3, sz + 0.14], { chamfer: 0.05 });
-  }
-  // Stair / lift housing and water tanks on the main deck.
-  bat.b('struct.concrete').box([cx - hx * 0.55, h + 1.5, cz + hz * 0.4], [1.9, 1.5, 1.8], { chamfer: 0.06 });
-  const tk = bat.b('metal.galv');
-  for (let i = 0; i < 3; i++) {
-    const f = (i + 0.6) / 3.6;
-    const tx = lerp(x0 + 2.5, x1 - 2.5, hash3(seed, i, 5));
-    const tz = lerp(z0 + 2.5, z1 - 2.5, f);
-    tk.cylinder([tx, h + 0.7, tz], [tx, h + 2.7, tz], 0.85 + hash3(seed, i, 9) * 0.4, 8);
-    tk.box([tx, h + 0.35, tz], [1.0, 0.35, 1.0], { chamfer: 0.05 });
-  }
-  // Shallow pilaster ribs break the flat wall without costing a texture lookup.
-  const rb = bat.b('struct.concreteClean');
-  for (let x = x0 + 4; x < x1 - 2; x += 7.5) {
-    rb.box([x, h * 0.5, z1 + 0.14], [0.5, h * 0.5, 0.16], { chamfer: 0.05 });
-    rb.box([x, h * 0.5, z0 - 0.14], [0.5, h * 0.5, 0.16], { chamfer: 0.05 });
+  const t4 = hash2(seed + 41, 17);
+
+  /* ── the mass ─────────────────────────────────────────────────────────── */
+  bat.b(def.wall).box([cx, y0 + h * 0.5, cz], [hx, h * 0.5, hz], { chamfer: 0.08 });
+  /*
+   * Roof deck (dark) inside a parapet RING (light). A solid cap would be cheaper by
+   * three boxes and would hide the deck, the stair housing and the tanks behind one
+   * pale slab — which is the flat top edge this whole pass exists to get rid of. The
+   * ring is four unchamfered walls: forty-eight triangles for a roof you can see
+   * into, and two values where the block meets the sky.
+   */
+  /* `chamfer: 0` throughout the roof furniture: MeshBuilder chamfers by default and a
+     chamfered box is 44 triangles against 12, for a 2 cm bevel on something 60-360 m
+     away. Five boxes per block over sixty-six blocks is ten thousand triangles of
+     invisible edge treatment. */
+  bat.b('far.deck').box([cx, top + 0.1, cz], [hx - 0.18, 0.12, hz - 0.18], { chamfer: 0 });
+  {
+    const ph = rank === 2 ? 0.55 : 0.85;
+    const pt = 0.34;
+    const tr = bat.b('far.trim');
+    tr.box([cx, top + ph * 0.5, cz - hz + pt * 0.5], [hx + 0.1, ph * 0.5, pt * 0.5], { chamfer: 0 });
+    tr.box([cx, top + ph * 0.5, cz + hz - pt * 0.5], [hx + 0.1, ph * 0.5, pt * 0.5], { chamfer: 0 });
+    tr.box([cx - hx + pt * 0.5, top + ph * 0.5, cz], [pt * 0.5, ph * 0.5, hz + 0.1], { chamfer: 0 });
+    tr.box([cx + hx - pt * 0.5, top + ph * 0.5, cz], [pt * 0.5, ph * 0.5, hz + 0.1], { chamfer: 0 });
   }
 
-  // Window rhythm as flat quads only — these blocks are 60-140 m out, where two
-  // triangles per window is already more than the silhouette can resolve.
-  const mb = bat.b('glass.window');
-  for (let y = 2.6; y < h - 1.4; y += 3.2) {
-    for (let x = x0 + 2.4; x < x1 - 1.8; x += 3.6) {
-      mb.quad([x - 0.6, y - 0.8, z1 + 0.04], [x + 0.6, y - 0.8, z1 + 0.04], [x + 0.6, y + 0.8, z1 + 0.04], [x - 0.6, y + 0.8, z1 + 0.04], [0, 0, 1]);
-      mb.quad([x - 0.6, y - 0.8, z0 - 0.04], [x - 0.6, y + 0.8, z0 - 0.04], [x + 0.6, y + 0.8, z0 - 0.04], [x + 0.6, y - 0.8, z0 - 0.04], [0, 0, -1]);
+  /* ── silhouette ───────────────────────────────────────────────────────── */
+  if (rank === 2) {
+    /*
+     * Hill town. Small houses: a stair box on one corner, and one house in three gets
+     * a shallow pitched roof rather than a deck, which is what makes a terrace of
+     * these read as a *town* rather than as a row of dominoes.
+     */
+    if (t1 > 0.62) {
+      const rh = 1.1 + t2 * 1.7;
+      const rm = bat.b(t3 > 0.5 ? 'roof.shingle' : 'far.deck');
+      /* two slopes meeting on a ridge running along the longer axis */
+      if (hx >= hz) {
+        rm.prism(
+          [[x0, top + 0.7, z0], [x1, top + 0.7, z0], [x1, top + 0.7, cz], [x0, top + 0.7, cz]],
+          [[x0, top + 0.7, z0], [x1, top + 0.7, z0], [x1, top + 0.7 + rh, cz], [x0, top + 0.7 + rh, cz]]
+        );
+        rm.prism(
+          [[x0, top + 0.7, cz], [x1, top + 0.7, cz], [x1, top + 0.7, z1], [x0, top + 0.7, z1]],
+          [[x0, top + 0.7 + rh, cz], [x1, top + 0.7 + rh, cz], [x1, top + 0.7, z1], [x0, top + 0.7, z1]]
+        );
+      } else {
+        rm.prism(
+          [[x0, top + 0.7, z0], [cx, top + 0.7, z0], [cx, top + 0.7, z1], [x0, top + 0.7, z1]],
+          [[x0, top + 0.7, z0], [cx, top + 0.7 + rh, z0], [cx, top + 0.7 + rh, z1], [x0, top + 0.7, z1]]
+        );
+        rm.prism(
+          [[cx, top + 0.7, z0], [x1, top + 0.7, z0], [x1, top + 0.7, z1], [cx, top + 0.7, z1]],
+          [[cx, top + 0.7 + rh, z0], [x1, top + 0.7, z0], [x1, top + 0.7, z1], [cx, top + 0.7 + rh, z1]]
+        );
+      }
+    } else if (t1 > 0.3) {
+      /* upper storey set back off one edge — the classic hillside step */
+      const sh = 2.6 + t2 * 4.2;
+      const sx = hx * (0.5 + t3 * 0.24);
+      const sz = hz * (0.5 + t4 * 0.24);
+      bat.b(def.wall).box([cx + (t2 - 0.5) * (hx - sx) * 1.5, top + 1.0 + sh * 0.5, cz + (t3 - 0.5) * (hz - sz) * 1.5], [sx, sh * 0.5, sz], {
+        chamfer: 0.06,
+      });
+    }
+    /* stair box + a single tank: two boxes, and the top edge stops being a ruler */
+    bat.b('far.deck').box([cx + hx * 0.5, top + 1.5, cz - hz * 0.42], [1.5, 1.3, 1.4], { chamfer: 0 });
+    if (t4 > 0.45) bat.b('metal.galv').cylinder([cx - hx * 0.4, top + 0.9, cz + hz * 0.3], [cx - hx * 0.4, top + 2.2, cz + hz * 0.3], 0.75, 6);
+  } else {
+    /* setback tower on most blocks, with its own cap */
+    if (t1 > 0.28) {
+      const sh = h * (rank === 1 ? 0.18 + t1 * 0.3 : 0.22 + t1 * 0.38);
+      const sx = hx * (0.42 + t2 * 0.26);
+      const sz = hz * (0.42 + t3 * 0.26);
+      const ox = (t2 - 0.5) * (hx - sx) * 1.4;
+      const oz = (t3 - 0.5) * (hz - sz) * 1.4;
+      bat.b(def.wall).box([cx + ox, top + sh * 0.5, cz + oz], [sx, sh * 0.5, sz], { chamfer: 0.08 });
+      bat.b('far.trim').box([cx + ox, top + sh + 0.3, cz + oz], [sx + 0.14, 0.3, sz + 0.14], { chamfer: 0.05 });
+      backdropWindows(bat, rank, [cx - sx, cz - sz, cx + sx, cz + sz], top, sh, seed + 7);
+    }
+    // Stair / lift housing and water tanks on the main deck.
+    bat.b('far.deck').box([cx - hx * 0.55, top + 1.5, cz + hz * 0.4], [1.9, 1.5, 1.8], { chamfer: 0 });
+    const tk = bat.b('metal.galv');
+    const tanks = rank === 0 ? 3 : 2;
+    for (let i = 0; i < tanks; i++) {
+      const f = (i + 0.6) / (tanks + 0.6);
+      const tx = lerp(x0 + 2.5, x1 - 2.5, hash3(seed, i, 5));
+      const tz = lerp(z0 + 2.5, z1 - 2.5, f);
+      tk.cylinder([tx, top + 0.7, tz], [tx, top + 2.7, tz], 0.85 + hash3(seed, i, 9) * 0.4, 6);
+    }
+    if (rank === 0) {
+      /* Shallow pilaster ribs, on the two faces that point at the playspace only.
+         Unchamfered: a chamfered rib is 30 triangles and half a pixel of highlight. */
+      const rb = bat.b('far.trim');
+      for (let x = x0 + 4; x < x1 - 2; x += 7.5) {
+        rb.box([x, y0 + h * 0.5, z1 + 0.14], [0.5, h * 0.5, 0.16], { chamfer: 0 });
+        rb.box([x, y0 + h * 0.5, z0 - 0.14], [0.5, h * 0.5, 0.16], { chamfer: 0 });
+      }
     }
   }
+
+  backdropWindows(bat, rank, def.rect, y0, h, seed);
   bat.uvScale = 1;
   bat.uvOffset = [0, 0];
 }
 
-/* ------------------------------------------------------- the far distance */
+/**
+ * Fenestration for a backdrop block, on the two faces that look at the map (+Z/-Z).
+ *
+ * Rank 0 and 2 punch individual openings; rank 1 draws ribbon glazing, one bay-broken
+ * band per floor, which is both what a 1970s concrete slab actually looks like and a
+ * tenth of the triangles of a punched grid on a 45 m tower.
+ */
+function backdropWindows(bat, rank, rect, y0, h, seed) {
+  const [x0, z0, x1, z1] = rect;
+  if (h < 4) return;
+  /* Opaque glazing, dark and light — see `far.glassDark` in kit/Palette.js for why
+     this is not the glass key. Roughly one pane in five catches the sky. */
+  const dark = bat.b('far.glassDark');
+  const lit = bat.b('far.glassLit');
+  const face = (mb, xa, xb, ya, yb, z, s) => {
+    if (s > 0) mb.quad([xa, ya, z], [xb, ya, z], [xb, yb, z], [xa, yb, z], [0, 0, 1]);
+    else mb.quad([xa, ya, z], [xa, yb, z], [xb, yb, z], [xb, ya, z], [0, 0, -1]);
+  };
+  const zf = z1 + 0.05;
+  const zb = z0 - 0.05;
 
-/** Periodic ridge profile — integer harmonics so the ring closes cleanly at theta 0. */
-function ridgeAt(theta, base, bands) {
-  let h = base;
-  for (let i = 0; i < bands.length; i++) {
-    const amp = bands[i][0];
-    const f = Math.max(1, Math.round(bands[i][1]));
-    h += amp * 0.62 * Math.sin(theta * f + i * 2.399 + 0.7);
-    h += amp * 0.38 * Math.sin(theta * (f * 2 + 1) + i * 1.137);
+  if (rank === 1) {
+    /* ribbon glazing: one band per floor, split into 2-4 bays with solid piers */
+    const floor = 3.4;
+    const bays = 2 + (Math.round(hash2(seed, 5) * 2) % 3);
+    const inset = 1.8;
+    const span = x1 - x0 - inset * 2;
+    if (span < 3) return;
+    const bayW = span / bays;
+    let k = 0;
+    for (let y = y0 + 2.6; y < y0 + h - 2.0; y += floor) {
+      for (let b = 0; b < bays; b++, k++) {
+        const mb = hash3(seed, k, 3) > 0.82 ? lit : dark;
+        const bx0 = x0 + inset + b * bayW + 0.55;
+        const bx1 = x0 + inset + (b + 1) * bayW - 0.55;
+        face(mb, bx0, bx1, y, y + 1.7, zf, 1);
+        face(mb, bx0, bx1, y, y + 1.7, zb, -1);
+      }
+    }
+    return;
   }
-  return Math.max(5, h);
+
+  /* punched openings */
+  const step = rank === 0 ? 3.6 : 4.2;
+  const ww = rank === 0 ? 1.2 : 1.3;
+  const wh = rank === 0 ? 1.6 : 1.3;
+  const floor = rank === 0 ? 3.2 : 3.0;
+  for (let y = y0 + 2.4; y < y0 + h - 1.2; y += floor) {
+    let k = 0;
+    for (let x = x0 + 2.2; x < x1 - 1.8; x += step, k++) {
+      /* Leave a hole here and there: a perfectly regular grid is a spreadsheet, and
+         a shuttered or bricked-up bay is what a real hill town is full of. */
+      const r = hash3(seed, k, Math.round(y));
+      if (rank === 2 && r < 0.28) continue;
+      const mb = r > 0.79 ? lit : dark;
+      face(mb, x - ww * 0.5, x + ww * 0.5, y - wh * 0.5, y + wh * 0.5, zf, 1);
+      face(mb, x - ww * 0.5, x + ww * 0.5, y - wh * 0.5, y + wh * 0.5, zb, -1);
+    }
+  }
 }
+
+/* ------------------------------------------------------- the far distance */
 
 /**
  * The far terrain band. A retail vista frame is three explicit depth layers: the

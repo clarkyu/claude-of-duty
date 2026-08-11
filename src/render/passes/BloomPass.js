@@ -129,12 +129,23 @@ uniform float uStreak;
 varying vec2 vUv;
 ${GLSL_LIB}
 
+/**
+ * Per-channel radial offset — real ghosts disperse, they are never grey.
+ *
+ * The dispersion is capped, which it was not: the ghost loop passed
+ * uChroma * (i + 1), so the fourth ghost sampled R and B **0.032 uv apart** — 41 px
+ * at 1280 — off a mip that is already a broad blur of the brightest thing in frame. A
+ * muzzle flash therefore did not produce a ghost, it produced a red arc and a blue arc
+ * a couple of centimetres apart, which is the "quarter-frame flare rainbow" the review
+ * has logged twice. Real dispersion in a coated lens is a fraction of a percent of the
+ * frame and it does not grow without bound down the ghost train.
+ */
 vec3 sampleChroma( vec2 uv, vec2 dir, float amount ) {
-  // Per-channel radial offset — real ghosts disperse, they are never grey.
+  float a = min( amount, 0.006 );
   return vec3(
-    texture2D( tSrc, uv + dir * amount ).r,
+    texture2D( tSrc, uv + dir * a ).r,
     texture2D( tSrc, uv ).g,
-    texture2D( tSrc, uv - dir * amount ).b );
+    texture2D( tSrc, uv - dir * a ).b );
 }
 
 void main() {
@@ -175,7 +186,15 @@ void main() {
     wsum += w;
   }
   streak /= max( wsum, 1e-4 );
-  result += streak * vec3( 0.35, 0.55, 1.0 ) * uStreak;
+  /**
+   * The anamorphic smear is a *wide horizontal band* — it is the one part of the flare
+   * that covers real area — so a hard (0.35, 0.55, 1.0) tint on it is a blue wash laid
+   * across whatever the brightest thing in frame is standing next to. In a golden-hour
+   * frame that is the sunlit facade, and it is a large part of why the brightest decile
+   * measures as the least golden part of the image. Anamorphic flares are cool, not
+   * cyan; keep the bias and lose the cast.
+   */
+  result += streak * vec3( 0.74, 0.85, 1.0 ) * uStreak;
 
   gl_FragColor = vec4( max( result, vec3( 0.0 ) ), 1.0 );
 }
@@ -221,10 +240,12 @@ export default class BloomPass extends Pass {
           uTexel: { value: new THREE.Vector2() },
           uGhostSpacing: { value: 0.32 },
           uHaloWidth: { value: 0.42 },
-          uChroma: { value: 0.008 },
-          uStreak: { value: 0.16 },
+          // See sampleChroma(): the base dispersion, before the per-ghost ramp and the
+          // hard cap. 0.008 put the first ghost alone at 10 px of R/B separation.
+          uChroma: { value: 0.0022 },
+          uStreak: { value: 0.11 },
         },
-        { defines: { GHOSTS: 4 } }
+        { defines: { GHOSTS: 3 } }
       )
     );
 

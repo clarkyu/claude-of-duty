@@ -375,34 +375,49 @@ function mergeParts(parts) {
  * character read as a mannequin under a hard sun.
  */
 /*
- * ── Why there is a `scarf` slot ─────────────────────────────────────────────────
- * Magnified 7x, the previous soldier put helmet, torso, arms, thighs and boots in one
- * narrow brown band. The albedo ladder was there on paper (uniform 0x3c412e → boot
- * 0x131211) but everything on a body is lit by the same sky and the same sun at
- * roughly the same grazing angle, so a two-stop albedo spread renders as half a stop.
+ * ── Why there is a `scarf` slot, and why the whole ladder moved up ──────────────
+ * Round one: helmet, torso, arms, thighs and boots were all in one narrow brown band.
+ * The fix was a `scarf` slot — a light shemagh at the collar, a coloured brassard —
+ * so the figure had something that was NOT brown.
  *
- * What separates a real soldier is not more contrast inside the brown — it is the
- * things that are NOT brown: a light shemagh at the collar (which also gives the head
- * a neck to sit on instead of dropping straight into the shoulders), a coloured
- * brassard on the arm, a strip of skin at the jaw. Those get their own slot and their
- * own hue, so the read survives any exposure the grade lands on. Boots and gloves go
- * darker again, and the face goes lighter, to widen what is left.
+ * Round two measured what that actually bought at the distance the game shows an
+ * enemy, and the answer was nothing. Mean luma 57-71 against a 94-100 background: the
+ * soldier was a *hole* in the frame, not a figure in it, and every light value in the
+ * kit was allocated to the two smallest surfaces on the model — a collar roll and a
+ * strip of jaw, three pixels apiece at 40 px tall. Separation you can only see at 10 m
+ * is not separation.
+ *
+ * So the ladder is rebuilt around surface *area*:
+ *
+ *   panel   0x93967a  lightest — shoulder yokes, thigh cargo panels, helmet cover
+ *                     band, knee pads. Big, high, and on the outline.
+ *   uniform 0x74785a  the blouse, the sleeves, the trouser legs: most of the body,
+ *                     and now roughly the value of sunlit sand rather than of shade.
+ *   helmet  0x6a6d54  a fabric COVER over the shell, not a black shell. A head-sized
+ *                     dark mass on the shoulders was reading as a missing head.
+ *   webbing 0x4a4c3a  plate bags, pouches, cummerbund — the mid-dark that the light
+ *                     panels have to sit against or none of this works.
+ *   boot    0x2b2823  boots, gloves, goggles. Dark, but not a cutout.
+ *
+ * Every value is roughly 1.7-2.6x its old albedo, which is what closes the 57 -> ~105
+ * gap; the *ratios* between them are wider than before, not narrower, so the figure
+ * gains internal contrast at the same time as it stops being a silhouette.
  */
 export const VARIANTS = [
   {
     id: 'olive',
-    uniform: 0x3c412e, webbing: 0x191b15, helmet: 0x1a1c15,
-    boot: 0x0d0c0b, metalKit: 0x232529, skin: 0xa9805e, scarf: 0xc2b79b, grime: 0.6,
+    uniform: 0x74785a, panel: 0x93967a, webbing: 0x4a4c3a, helmet: 0x6a6d54,
+    boot: 0x2b2823, metalKit: 0x40434a, skin: 0xbd9068, scarf: 0xcfc6ae, grime: 0.6,
   },
   {
     id: 'coyote',
-    uniform: 0x574e37, webbing: 0x241f16, helmet: 0x26221a,
-    boot: 0x131010, metalKit: 0x27241f, skin: 0x9a6a48, scarf: 0x9c3f33, grime: 0.75,
+    uniform: 0x847958, panel: 0x9d9170, webbing: 0x51493a, helmet: 0x726851,
+    boot: 0x312b26, metalKit: 0x454039, skin: 0xb4835a, scarf: 0xb35646, grime: 0.75,
   },
   {
     id: 'urban',
-    uniform: 0x34373c, webbing: 0x141517, helmet: 0x17181b, boot: 0x0b0b0c,
-    metalKit: 0x1f2126, skin: 0x8a5c3e, scarf: 0x7d8b93, grime: 0.5,
+    uniform: 0x686d76, panel: 0x868c96, webbing: 0x3e4147, helmet: 0x5b6068,
+    boot: 0x26282c, metalKit: 0x3c3f45, skin: 0xa87a56, scarf: 0x9fb0ba, grime: 0.5,
   },
 ];
 
@@ -525,55 +540,80 @@ export default function createCharacterBuilder(ctx) {
       const shinB = `shin${sfx}`;
       const footB = `foot${sfx}`;
 
-      // Trouser leg: hip → boot blousing. The bulge at the calf and the flare at the
-      // boot cuff are what read as "trousers tucked into boots".
+      /*
+       * Trouser leg, hip to boot blousing.
+       *
+       * The old profile went .132 → .092 at the knee → .094 → .082 → .090 with almost
+       * no shaping in between, which is a pipe with a nick in it: reviewed at 7x it
+       * read as "untapered tubes with a hard pinch at the knee". A leg is not a taper,
+       * it is four masses — glute, quadriceps, knee, calf — and the calf is the widest
+       * thing below the hip. Twelve rings instead of nine, the knee is now the
+       * *narrowest* point of a smooth waist rather than a step, and the calf swells
+       * back out to 0.112 before it runs down to the boot cuff.
+       */
       add(tubeGeom([
-        [X, L.hipY + 0.09 * s, 0.006 * s, 0.132 * s, 0.125 * s],
-        [X, L.hipY - 0.02 * s, 0.004 * s, 0.126 * s, 0.121 * s],
-        [X, L.hipY - 0.16 * s, 0.002 * s, 0.112 * s, 0.108 * s],
-        [X, L.kneeY + 0.09 * s, 0, 0.098 * s, 0.096 * s],
-        [X, L.kneeY, 0.004 * s, 0.092 * s, 0.094 * s],
-        [X, L.kneeY - 0.11 * s, 0.002 * s, 0.094 * s, 0.098 * s],
-        [X, L.ankleY + 0.20 * s, -0.004 * s, 0.082 * s, 0.086 * s],
-        [X, L.ankleY + 0.115 * s, -0.004 * s, 0.090 * s, 0.092 * s],
-        [X, L.ankleY + 0.085 * s, -0.004 * s, 0.078 * s, 0.080 * s],
+        [X, L.hipY + 0.10 * s, 0.008 * s, 0.152 * s, 0.142 * s],
+        [X, L.hipY + 0.01 * s, 0.006 * s, 0.145 * s, 0.136 * s],
+        [X, L.hipY - 0.13 * s, 0.004 * s, 0.131 * s, 0.126 * s],
+        [X, L.hipY - 0.28 * s, 0.002 * s, 0.117 * s, 0.114 * s],
+        [X, L.kneeY + 0.10 * s, 0, 0.105 * s, 0.103 * s],
+        [X, L.kneeY + 0.02 * s, 0.004 * s, 0.101 * s, 0.101 * s],
+        [X, L.kneeY - 0.05 * s, 0.003 * s, 0.105 * s, 0.107 * s],
+        [X, L.kneeY - 0.14 * s, 0.001 * s, 0.113 * s, 0.116 * s],
+        [X, L.kneeY - 0.24 * s, -0.001 * s, 0.104 * s, 0.107 * s],
+        [X, L.ankleY + 0.22 * s, -0.004 * s, 0.086 * s, 0.089 * s],
+        [X, L.ankleY + 0.13 * s, -0.004 * s, 0.095 * s, 0.097 * s],
+        [X, L.ankleY + 0.09 * s, -0.004 * s, 0.080 * s, 0.082 * s],
       ], RAD(12), true, true), 'uniform', [thighB, shinB, 'pelvis', footB], 0.4);
 
-      // Cargo pocket, outboard, with a flap. Pushed 12 mm further out and given a
-      // fatter round-over: at the old offset most of the box was buried inside the
-      // 126 mm trouser tube, so from the front it read as a hard rectangular step
-      // cut into the leg rather than as a pocket sitting on it.
-      box('uniform', [thighB], 0.5, 0.062 * s, 0.17 * s, 0.115 * s, 0.03 * s,
-        X + side * 0.127 * s, L.hipY - 0.19 * s, 0.012 * s, 0, 0, side * 0.08);
-      box('webbing', [thighB], 0.6, 0.056 * s, 0.045 * s, 0.12 * s, 0.018 * s,
-        X + side * 0.13 * s, L.hipY - 0.115 * s, 0.012 * s, 0, 0, side * 0.08);
+      // Cargo pocket, outboard, with a flap. In the LIGHT panel value: a thigh is a
+      // big surface high in the silhouette, and this is where half the value read of
+      // the whole figure at 40 m now lives.
+      box('panel', [thighB], 0.5, 0.066 * s, 0.19 * s, 0.125 * s, 0.032 * s,
+        X + side * 0.132 * s, L.hipY - 0.20 * s, 0.012 * s, 0, 0, side * 0.08);
+      box('webbing', [thighB], 0.6, 0.058 * s, 0.045 * s, 0.13 * s, 0.018 * s,
+        X + side * 0.135 * s, L.hipY - 0.117 * s, 0.012 * s, 0, 0, side * 0.08);
 
       // Knee pad — three raised ribs so it is not a flat slab.
-      box('webbing', [shinB, thighB], 0.75, 0.132 * s, 0.155 * s, 0.072 * s, 0.026 * s,
-        X, L.kneeY + 0.012 * s, 0.086 * s, -0.05, 0, 0);
+      box('panel', [shinB, thighB], 0.75, 0.136 * s, 0.16 * s, 0.074 * s, 0.026 * s,
+        X, L.kneeY + 0.012 * s, 0.09 * s, -0.05, 0, 0);
       for (let k = -1; k <= 1; k++) {
         box('webbing', [shinB, thighB], 0.8, 0.112 * s, 0.024 * s, 0.022 * s, 0.008 * s,
-          X, L.kneeY + 0.012 * s + k * 0.045 * s, 0.120 * s, -0.05, 0, 0, 1);
+          X, L.kneeY + 0.012 * s + k * 0.045 * s, 0.124 * s, -0.05, 0, 0, 1);
       }
 
-      /* boot */
+      /*
+       * Boot.
+       *
+       * Three chamfered boxes stacked under a cylinder is exactly what "boots that
+       * read as bolted on" describes — a shoe is one continuous mass from heel to toe
+       * and it is *wider at the ball than at the heel*, which no axis-aligned box
+       * gives you. It is now a single tube running along +Z through five stations —
+       * heel, ankle, instep, ball, toe — with elliptical sections, so the upper
+       * flows into the cuff instead of meeting it at a seam. The sole is the only
+       * separate piece, because a sole genuinely is one.
+       */
       add(tubeGeom([
-        [X, L.ankleY + 0.135 * s, -0.006 * s, 0.070 * s, 0.076 * s],
-        [X, L.ankleY + 0.055 * s, -0.004 * s, 0.064 * s, 0.070 * s],
-        [X, L.ankleY, 0, 0.060 * s, 0.068 * s],
+        [X, L.ankleY + 0.155 * s, -0.008 * s, 0.072 * s, 0.078 * s],
+        [X, L.ankleY + 0.075 * s, -0.006 * s, 0.066 * s, 0.074 * s],
+        [X, L.ankleY + 0.018 * s, -0.002 * s, 0.062 * s, 0.070 * s],
       ], RAD(10), true, false), 'boot', [footB, shinB], 0.85);
-      box('boot', [footB], 0.9, 0.105 * s, 0.085 * s, 0.255 * s, 0.032 * s,
-        X, L.ankleY - 0.008 * s, 0.055 * s);
-      // Toe cap and heel block break the silhouette.
-      box('boot', [footB], 0.95, 0.098 * s, 0.055 * s, 0.075 * s, 0.026 * s,
-        X, L.ankleY - 0.018 * s, 0.145 * s, 0.12, 0, 0, 1);
-      // Lugged sole.
-      box('boot', [footB], 1.0, 0.112 * s, 0.028 * s, 0.272 * s, 0.012 * s,
-        X, L.ankleY - 0.048 * s, 0.052 * s, 0, 0, 0, 1);
-      // Lace panel.
+      add(tubeGeom([
+        /* heel → toe, running along +Z. rx is half-width, rz is half-height. */
+        [X, L.ankleY + 0.010 * s, -0.072 * s, 0.048 * s, 0.036 * s],
+        [X, L.ankleY - 0.004 * s, -0.040 * s, 0.056 * s, 0.050 * s],
+        [X, L.ankleY - 0.010 * s, 0.020 * s, 0.055 * s, 0.052 * s],
+        [X, L.ankleY - 0.014 * s, 0.088 * s, 0.058 * s, 0.048 * s],
+        [X, L.ankleY - 0.016 * s, 0.140 * s, 0.052 * s, 0.040 * s],
+        [X, L.ankleY - 0.014 * s, 0.172 * s, 0.032 * s, 0.026 * s],
+      ], RAD(10), true, true), 'boot', [footB], 0.9);
+      // Lugged sole: a thin slab that projects past the upper all the way round.
+      box('boot', [footB], 1.0, 0.062 * s, 0.016 * s, 0.128 * s, 0.010 * s,
+        X, L.ankleY - 0.056 * s, 0.048 * s, 0, 0, 0, 1);
+      // Lace panel — pale, so the instep is not one dark lump.
       for (let k = 0; k < 3; k++) {
-        box('webbing', [footB, shinB], 0.7, 0.05 * s, 0.012 * s, 0.014 * s, 0.005 * s,
-          X, L.ankleY + 0.03 * s + k * 0.038 * s, 0.052 * s - k * 0.006 * s, 0, 0, 0, 1);
+        box('panel', [footB, shinB], 0.7, 0.05 * s, 0.012 * s, 0.014 * s, 0.005 * s,
+          X, L.ankleY + 0.036 * s + k * 0.038 * s, 0.056 * s - k * 0.006 * s, 0, 0, 0, 1);
       }
     }
 
@@ -665,14 +705,20 @@ export default function createCharacterBuilder(ctx) {
         side * 0.208 * s, L.chestY + 0.015 * s, 0.005 * s, 0, 0, side * 0.05);
     }
 
-    // Shoulder yokes, front-over-back, riding over the deltoid.
+    /*
+     * Shoulder yokes, front-over-back, riding over the deltoid — and in the LIGHT
+     * panel value. This is the top edge of the torso silhouette, the part of a
+     * standing man that catches the sky, and the highest-value surface on the model
+     * that is more than a few pixels wide at 40 m. Fatter than before for the same
+     * reason: at RAD(8) and 48 mm it was a piped seam.
+     */
     for (const side of [-1, 1]) {
       add(tubeGeom([
-        [side * 0.108 * s, pcY + 0.155 * s, 0.118 * s, 0.048 * s, 0.028 * s],
-        [side * 0.140 * s, L.shoulderY + 0.082 * s, 0.055 * s, 0.052 * s, 0.032 * s],
-        [side * 0.150 * s, L.shoulderY + 0.104 * s, -0.018 * s, 0.052 * s, 0.032 * s],
-        [side * 0.118 * s, pcY + 0.155 * s, -0.112 * s, 0.048 * s, 0.028 * s],
-      ], RAD(8), true, true), 'webbing', ['chest'], 0.55);
+        [side * 0.108 * s, pcY + 0.155 * s, 0.122 * s, 0.058 * s, 0.034 * s],
+        [side * 0.144 * s, L.shoulderY + 0.086 * s, 0.055 * s, 0.066 * s, 0.040 * s],
+        [side * 0.154 * s, L.shoulderY + 0.108 * s, -0.018 * s, 0.066 * s, 0.040 * s],
+        [side * 0.120 * s, pcY + 0.155 * s, -0.116 * s, 0.058 * s, 0.034 * s],
+      ], RAD(9), true, true), 'panel', ['chest'], 0.5);
     }
 
     // MOLLE rows front and back.
@@ -719,17 +765,25 @@ export default function createCharacterBuilder(ctx) {
       const ex = side * L.elbowX;
       const wx = side * L.wristX;
 
-      // Sleeve: deltoid bulge, rolled cuff at the elbow, tapered forearm.
+      /*
+       * Sleeve: deltoid, bicep, a *soft* elbow, a fat forearm belly and a wrist.
+       * Same fault as the leg — the old profile stepped 0.066 → 0.070 → 0.063 across
+       * the elbow, which is a kink, not a joint. The elbow is now the waist between
+       * two masses and the forearm is widest just below it, which is where a
+       * forearm is actually widest.
+       */
       add(tubeGeom([
-        [sx, L.shoulderY + 0.078 * s, 0, 0.072 * s, 0.072 * s],
-        [sx, L.shoulderY + 0.02 * s, 0, 0.084 * s, 0.082 * s],
-        [sx + side * 0.004 * s, L.shoulderY - 0.075 * s, 0, 0.076 * s, 0.074 * s],
-        [ex, L.elbowY + 0.045 * s, 0, 0.066 * s, 0.066 * s],
-        [ex, L.elbowY - 0.005 * s, 0.002 * s, 0.070 * s, 0.070 * s],
-        [ex, L.elbowY - 0.05 * s, 0, 0.063 * s, 0.063 * s],
-        [wx, L.wristY + 0.10 * s, 0, 0.056 * s, 0.056 * s],
-        [wx, L.wristY + 0.035 * s, 0, 0.050 * s, 0.050 * s],
-        [wx, L.wristY + 0.012 * s, 0, 0.053 * s, 0.053 * s],
+        [sx, L.shoulderY + 0.082 * s, 0, 0.074 * s, 0.074 * s],
+        [sx, L.shoulderY + 0.02 * s, 0, 0.088 * s, 0.086 * s],
+        [sx + side * 0.004 * s, L.shoulderY - 0.055 * s, 0, 0.082 * s, 0.080 * s],
+        [sx + side * 0.006 * s, L.shoulderY - 0.115 * s, 0, 0.073 * s, 0.072 * s],
+        [ex, L.elbowY + 0.05 * s, 0, 0.066 * s, 0.066 * s],
+        [ex, L.elbowY, 0.002 * s, 0.064 * s, 0.065 * s],
+        [ex, L.elbowY - 0.055 * s, 0.001 * s, 0.070 * s, 0.070 * s],
+        [wx, L.wristY + 0.13 * s, 0, 0.064 * s, 0.064 * s],
+        [wx, L.wristY + 0.06 * s, 0, 0.053 * s, 0.053 * s],
+        [wx, L.wristY + 0.022 * s, 0, 0.048 * s, 0.049 * s],
+        [wx, L.wristY + 0.008 * s, 0, 0.051 * s, 0.052 * s],
       ], RAD(10), true, true), 'uniform', [uB, lB, 'chest', hB], 0.35);
 
       // Elbow pad.
@@ -832,6 +886,23 @@ export default function createCharacterBuilder(ctx) {
       [0, hy + 0.104 * s, -0.006 * s, 0.130 * s, 0.140 * s],
       [0, hy + 0.124 * s, -0.006 * s, 0.140 * s, 0.150 * s],
     ], RAD(14), false, false), 'helmet', ['head'], 0.68);
+
+    /*
+     * Helmet cover band, in the light panel value. A real cover is scrim held on by
+     * a band round the crown, and it is the one place on a soldier where a light
+     * value sits directly against the sky: the head is what the eye finds first at
+     * range and it was previously the darkest thing on the model. Two rings, and it
+     * is worth more to the read at 40 m than every pouch on the carrier.
+     */
+    add(tubeGeom([
+      [0, hy + 0.150 * s, -0.007 * s, 0.138 * s, 0.148 * s],
+      [0, hy + 0.196 * s, -0.009 * s, 0.135 * s, 0.145 * s],
+    ], RAD(14), false, false), 'panel', ['head'], 0.5);
+    /* and a light strip over the crown, so the top of the head is not one dark dome */
+    add(tubeGeom([
+      [0, hy + 0.238 * s, -0.013 * s, 0.106 * s, 0.113 * s],
+      [0, hy + 0.266 * s, -0.015 * s, 0.086 * s, 0.092 * s],
+    ], RAD(12), false, false), 'panel', ['head'], 0.55);
 
     // Goggles pushed up onto the shell, proud of it so they cast their own shadow.
     add(tubeGeom([
@@ -1013,6 +1084,17 @@ export default function createCharacterBuilder(ctx) {
     helmet: {
       name: 'fabric_webbing', repeat: 0.4, detail: 0.45, key: 'helmet',
       tune: { sheen: 0.2, sheenColor: 0x191b14, spec: 0.28, env: 0.9, rough: 0.9 },
+    },
+    /**
+     * The light end of the ladder, and the whole point of this round: shoulder yokes,
+     * thigh cargo panels, knee pads and the helmet cover band. Same cloth recipe as
+     * the uniform so it reads as sun-bleached kit rather than as a different garment,
+     * one value step up, and — critically — on surfaces that are still several pixels
+     * across when the soldier is 40 px tall.
+     */
+    panel: {
+      name: 'fabric_uniform', repeat: 0.45, detail: 0.5, key: 'panel',
+      tune: { sheen: 0.26, sheenColor: 0x2b2d22, spec: 0.24, env: 1.0, rough: 1.0 },
     },
     boot: {
       name: 'rubber_tyre', repeat: 0.5, detail: 0.5, key: 'boot',

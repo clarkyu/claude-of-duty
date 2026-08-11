@@ -69,7 +69,6 @@ const GROUP_PROP = 8;
  * for debris and one for contact grime lands around 55 batched draws.
  */
 const DISTRICTS = ['west', 'centre', 'east'];
-const DETAIL = '_detail';
 const CONTACT = '_contact';
 
 /**
@@ -719,7 +718,17 @@ export default function createProps(ctx) {
     const uvOff = [r.range(0, 3), r.range(0, 3)];
     // Only genuinely droppable debris goes to the detail bucket; a bollard is small
     // but it is cover, so it stays in the main batch.
-    const target = flat ? district(DETAIL).detail : d.main;
+    /**
+     * Flat clutter goes in the district's OWN detail bucket, not a global one.
+     *
+     * The global `_detail` bucket collected every grate, marking, drift and litter
+     * pile on the map into one mesh per material — one bounding sphere the size of
+     * the level, so it was never culled and every frame paid for all of it whichever
+     * way the camera pointed. Per-district costs at most two more draws per material
+     * and gets frustum culling back on the fastest-growing bucket in the map.
+     * `detailGroups` still collects them all, so the low tier still drops the lot.
+     */
+    const target = flat ? d.detail : d.main;
     target.merge(local, mtx, uvOff);
     /* LOD-1 shell: keep big silhouettes verbatim, box-shell the mid stuff, drop debris */
     if (!flat && CATALOG[rec.type]?.lod !== false) {

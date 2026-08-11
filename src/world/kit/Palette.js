@@ -48,6 +48,50 @@ export const PALETTE = {
   'wall.white': { m: 'plaster_cracked', o: { vertexColors: true, grime: 1.0 }, tint: 0xd9d5c8 },
   'wall.pink': { m: 'plaster_cracked', o: { vertexColors: true, grime: 1.3 }, tint: 0xc4a08e },
 
+  /* ── the backdrop ranks ─────────────────────────────────────────────────
+   * A distant city is read almost entirely as *value bands*: each rank is a step
+   * lighter and a step cooler than the one in front, because that is what 100 m of
+   * air does. The previous backdrop used the four playspace `wall.*` keys for every
+   * rank, so 60 m and 340 m came back at the same hue and the same value and the
+   * whole thing collapsed into one beige mass with no depth in it at all.
+   *
+   * Rank 1 (110-190 m) is the near hills: still chromatic, one stop up from the
+   * playspace. Rank 2 (230-360 m) is the hill town: nearly achromatic, two stops up,
+   * and the four tints inside it differ by hue only so the terrace does not stripe.
+   * Grime is dialled down with distance for the same reason — dirt does not resolve.
+   */
+  'far.bone': { m: 'stucco', o: { vertexColors: true, grime: 0.55, repeat: 0.8 }, tint: 0xcdc7b6 },
+  'far.dust': { m: 'stucco', o: { vertexColors: true, grime: 0.62, repeat: 0.8 }, tint: 0xb6a482 },
+  'far.rose': { m: 'stucco', o: { vertexColors: true, grime: 0.6, repeat: 0.8 }, tint: 0xb08a76 },
+  'far.slate': { m: 'stucco', o: { vertexColors: true, grime: 0.5, repeat: 0.8 }, tint: 0x99a2ab },
+  'far.haze': { m: 'stucco', o: { vertexColors: true, grime: 0.3, repeat: 0.55 }, tint: 0xc6c6c0 },
+  'far.hazeWarm': { m: 'stucco', o: { vertexColors: true, grime: 0.34, repeat: 0.55 }, tint: 0xcec2ac },
+  'far.hazePale': { m: 'stucco', o: { vertexColors: true, grime: 0.24, repeat: 0.55 }, tint: 0xd9d6cc },
+  'far.hazeCool': { m: 'stucco', o: { vertexColors: true, grime: 0.3, repeat: 0.55 }, tint: 0xb2bac4 },
+  /** Roof decks and parapet caps on the far ranks: the dark end of the value ladder,
+   *  which is what stops every block topping out in one flat pale line. */
+  'far.deck': { m: 'concrete_cast', o: { vertexColors: true, grime: 1.15, repeat: 0.6 }, tint: 0x6e6a60 },
+  'far.trim': { m: 'concrete_cast', o: { vertexColors: true, grime: 0.4, repeat: 0.9 }, tint: 0xd2ccbe },
+  /**
+   * ── Backdrop glazing, and why it is not glass ───────────────────────────────
+   * The far ranks used `glass.window` for their fenestration. That key resolves to
+   * `glass_dirty`: a MeshPhysical, `transparent`, `depthWrite:false`, double-sided
+   * pane at **alpha 0.055**. Which means the eight thousand window quads on the
+   * backdrop were, correctly, 5 % opaque — you could see the wall straight through
+   * them, which is why a reviewer looking at the finished city reported "not a
+   * single window". They were all there and all invisible.
+   *
+   * They were also the most expensive geometry in the map: transparent, so no depth
+   * rejection and full overdraw; double-sided, so twice the fragments; physical, so
+   * the heaviest shader in the library; and sorted per object every frame.
+   *
+   * At 60-360 m a window is a dark rectangle with a bit of sky in it. Two opaque
+   * painted-metal keys — one dark, one catching the sky — give exactly that read for
+   * a fraction of the cost, and they are visible, which the glass was not.
+   */
+  'far.glassDark': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 0.9, repeat: 1.4 }, tint: 0x2c343e },
+  'far.glassLit': { m: 'painted_steel_chipped', o: { vertexColors: true, grime: 0.45, repeat: 1.4 }, tint: 0x93a4b0 },
+
   /* ── masonry ────────────────────────────────────────────────────────── */
   'brick.red': { m: 'brick_red', o: { vertexColors: true, grime: 1.0 } },
   'brick.buff': { m: 'brick_red', o: { vertexColors: true, grime: 1.1 }, tint: 0xb99b74 },

@@ -17,7 +17,7 @@
  *   - anything that touches the ground is authored to y = 0 exactly, and the placer
  *     sinks it 15 mm so there is never a seam.
  */
-import { chamferBox, cyl, revolve, tube, torusPrim, sheet, blob, xf, lerp, TAU } from './geom.js';
+import { chamferBox, plainBox, cyl, revolve, tube, torusPrim, sheet, blob, xf, lerp, TAU, prim, quad } from './geom.js';
 
 /* ========================================================================== */
 /*                                 lamp post                                  */
@@ -152,6 +152,178 @@ export function kerbRun(a, r, o = {}) {
     });
   }
   return { colliders: [{ type: 'box', halfExtents: [0.15, h / 2, len / 2], pos: [0, h / 2, 0], surface: 'concrete' }], height: h };
+}
+
+/* ========================================================================== */
+/*                    ground structure at 1-3 metre scale                     */
+/* ========================================================================== */
+
+/**
+ * ── Why these exist ─────────────────────────────────────────────────────────────
+ * The largest continuous area in the hero frame is the two or three metres of
+ * shadowed ground the shot opens on, and it was one tiled aggregate speckle: no kerb,
+ * no drain, no pothole, no patch, no tyre track, no litter drift. A ground texture,
+ * however good, cannot fix that — the problem is the absence of *structure* at 1-3 m,
+ * which is the band the eye reads first and the band a tiling material has nothing to
+ * say about. Decals do not fix it either: at a 1.7 m eye height and a grazing angle,
+ * a flat decal is four pixels tall.
+ *
+ * So these are geometry: a patch has a lip, a pothole has a rim and a floor below
+ * grade, a drift has a section. All of them are `flat` kinds — no colliders, nothing
+ * to trip a player — and all of them are two or three dozen triangles.
+ */
+
+/**
+ * Asphalt repair patch: a rectangle of newer, smoother, differently-coloured surface
+ * with a raised ragged lip where it was over-filled. The single most common piece of
+ * structure on any real road and the cheapest way to break a tiled carriageway.
+ */
+export function roadPatch(a, r, o = {}) {
+  const w = o.w ?? r.range(1.1, 2.6);
+  const d = o.d ?? r.range(0.9, 2.2);
+  const mat = o.mat || r.pick(['concrete', 'paving', 'concrete']);
+  /* the fill itself, a few millimetres proud and not quite level */
+  a.add(mat, sheet(5, 5, (u, v) => [
+    (u - 0.5) * w,
+    0.006 + Math.sin(u * 4.1 + v * 3.3) * 0.008 + (Math.abs(u - 0.5) > 0.42 || Math.abs(v - 0.5) > 0.42 ? -0.004 : 0.01),
+    (v - 0.5) * d,
+  ]), null, { grime: 1.15, uvOff: [r.range(0, 3), r.range(0, 3)] });
+  /* the lip: four low kerbs of tar around the edge, each one wandering */
+  /* plainBox, not chamferBox: this is a 3 cm ridge of tar and a chamfer on it is
+     thirty-six triangles nobody will ever resolve */
+  const lip = (ax, sgn) => {
+    const len = ax === 0 ? w : d;
+    const n = Math.max(2, Math.round(len / 0.75));
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n - 0.5;
+      const jitter = r.range(0.01, 0.035);
+      const px = ax === 0 ? t * len : (sgn * w) / 2;
+      const pz = ax === 0 ? (sgn * d) / 2 : t * len;
+      a.add('tyre', plainBox(ax === 0 ? len / n : 0.09, 0.028 + jitter, ax === 0 ? 0.09 : len / n),
+        xf(px, 0.012, pz, 0, r.jitter(0.05), 0), { grime: 1.4 });
+    }
+  };
+  lip(0, 1);
+  lip(0, -1);
+  lip(2, 1);
+  lip(2, -1);
+  return { colliders: [], height: 0.05, radius: Math.max(w, d) * 0.6, flat: true };
+}
+
+/**
+ * Pothole: a rim of broken edge, a floor 4-8 cm below grade, and loose aggregate in
+ * the bottom. Real geometry, because a painted hole in a grazing-angle shot is a
+ * smudge and a hole with a rim catches the sun on one side and shadows the other —
+ * which is the whole reason it reads.
+ */
+export function pothole(a, r, o = {}) {
+  const R = o.radius ?? r.range(0.3, 0.62);
+  const depth = o.depth ?? r.range(0.04, 0.085);
+  const seg = 9;
+  const rim = [];
+  const flr = [];
+  for (let i = 0; i < seg; i++) {
+    const ang = (i / seg) * TAU;
+    const k = 0.78 + 0.34 * Math.sin(ang * 2.7 + R * 9) + 0.16 * Math.sin(ang * 4.3);
+    rim.push([Math.cos(ang) * R * k, 0.004, Math.sin(ang) * R * k]);
+    flr.push([Math.cos(ang) * R * k * 0.6, -depth, Math.sin(ang) * R * k * 0.6]);
+  }
+  /* the wall of the hole */
+  for (let i = 0; i < seg; i++) {
+    const j = (i + 1) % seg;
+    a.add('concrete', prim4(rim[i], rim[j], flr[j], flr[i]), null, { grime: 1.5 });
+  }
+  /* the floor */
+  for (let i = 1; i < seg - 1; i++) {
+    a.add('concrete', prim4(flr[0], flr[i], flr[i + 1], flr[i + 1]), null, { grime: 1.55 });
+  }
+  /* loose stones in the bottom and spalled off the edge */
+  const n = 4 + r.int(5);
+  for (let i = 0; i < n; i++) {
+    const ang = r.range(0, TAU);
+    const rr = r.range(0.02, 0.05);
+    const rad = R * r.range(0.2, 1.35);
+    a.add('concrete', blob(rr * 1.7, rr, rr * 1.4, 6, (dx, dy, dz) => 0.74 + 0.34 * Math.sin(dx * 5 + dz * 4 + dy * 6 + i)),
+      xf(Math.cos(ang) * rad, rr * 0.35 - (rad < R * 0.8 ? depth * 0.7 : 0), Math.sin(ang) * rad, r.range(0, 1), r.range(0, TAU), r.range(0, 1)),
+      { grime: 1.5 });
+  }
+  return { colliders: [], height: 0.04, radius: R * 1.4, flat: true };
+}
+
+/**
+ * Wind-drifted sand or silt banking against a wall, a kerb or a step. Triangular in
+ * section, feathering out to nothing away from the obstruction. Origin is at the foot
+ * of the thing it is banked against, +Z pointing away from it.
+ */
+export function sandDrift(a, r, o = {}) {
+  const len = o.length ?? r.range(2.0, 5.0);
+  const reach = o.reach ?? r.range(0.4, 0.95);
+  const rise = o.rise ?? r.range(0.05, 0.13);
+  a.add(o.mat || 'sacking', sheet(9, 4, (u, v) => {
+    const along = (u - 0.5) * len;
+    /* the drift is not a constant section: it thickens where the wall has a corner */
+    const swell = 0.55 + 0.45 * Math.sin(u * 5.1 + len) + 0.2 * Math.sin(u * 11.3);
+    const out = v * reach * (0.6 + swell * 0.6);
+    const h = rise * swell * Math.pow(1 - v, 1.7);
+    return [along, 0.004 + h, out];
+  }), null, { grime: 0.9, uvOff: [r.range(0, 3), r.range(0, 3)] });
+  /* a few stones and scraps caught in it */
+  const n = 3 + r.int(4);
+  for (let i = 0; i < n; i++) {
+    const s = r.range(0.03, 0.07);
+    a.add(r.chance(0.6) ? 'concrete' : 'card', blob(s * 1.6, s * 0.7, s * 1.3, 6, (dx, dy, dz) => 0.8 + 0.3 * Math.sin(dx * 6 + dz * 5 + i)),
+      xf((r.next() - 0.5) * len * 0.85, s * 0.3, r.range(0.05, reach * 0.8), r.range(0, 0.5), r.range(0, TAU), r.range(0, 0.5)),
+      { grime: 1.4 });
+  }
+  return { colliders: [], height: rise + 0.05, radius: Math.max(len, reach) * 0.55, flat: true };
+}
+
+/**
+ * A gutter run: the shallow dished channel at the kerb line, silted and stained, with
+ * the debris that always collects along it. Laid along local X.
+ */
+export function gutterRun(a, r, o = {}) {
+  const len = o.length ?? r.range(3.0, 6.5);
+  a.add('paving', sheet(9, 3, (u, v) => {
+    const dip = Math.sin(v * Math.PI) * 0.035;
+    return [(u - 0.5) * len, 0.005 - dip, (v - 0.5) * 0.44];
+  }), null, { grime: 1.5, uvOff: [r.range(0, 3), r.range(0, 3)] });
+  const n = 4 + r.int(5);
+  for (let i = 0; i < n; i++) {
+    const px = (r.next() - 0.5) * len * 0.9;
+    if (r.chance(0.45)) {
+      a.add('card', sheet(3, 3, (u, v) => [
+        px + (u - 0.5) * 0.15,
+        0.004 + Math.sin(u * 6 + i) * 0.012,
+        (v - 0.5) * 0.12 + r.jitter(0.08),
+      ]), null, { grime: 1.5 });
+    } else {
+      const s = r.range(0.025, 0.055);
+      a.add('concrete', blob(s * 1.5, s * 0.8, s * 1.2, 6, (dx, dy, dz) => 0.8 + 0.3 * Math.sin(dx * 5 + dz * 4 + i)),
+        xf(px, s * 0.3, r.jitter(0.12), r.range(0, 0.6), r.range(0, TAU), r.range(0, 0.6)), { grime: 1.5 });
+    }
+  }
+  return { colliders: [], height: 0.03, radius: len * 0.55, flat: true };
+}
+
+/** One quad as a Prim — the low-level helper the pothole walls need. */
+function prim4(a0, b0, c0, d0) {
+  const pr = prim();
+  const ux = b0[0] - a0[0];
+  const uy = b0[1] - a0[1];
+  const uz = b0[2] - a0[2];
+  const vx = d0[0] - a0[0];
+  const vy = d0[1] - a0[1];
+  const vz = d0[2] - a0[2];
+  let nx = uy * vz - uz * vy;
+  let ny = uz * vx - ux * vz;
+  let nz = ux * vy - uy * vx;
+  const l = Math.hypot(nx, ny, nz) || 1;
+  nx /= l;
+  ny /= l;
+  nz /= l;
+  quad(pr, a0, b0, c0, d0, [nx, ny, nz]);
+  return pr;
 }
 
 /** Gully grate set into a concrete surround. */
@@ -639,6 +811,10 @@ export default {
   lampPost,
   bollard,
   kerbRun,
+  roadPatch,
+  pothole,
+  sandDrift,
+  gutterRun,
   drainGrate,
   manholeCover,
   trafficSign,

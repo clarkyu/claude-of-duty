@@ -336,16 +336,19 @@
   height: 300px;
   overflow: visible;
 }
+/* A soft directional glow, not a graphic. The blur is the point: a hard-edged red
+   sector over a photographic frame reads as a rendering fault, which is exactly what
+   the review called it. */
 .cod-dmg .wedge {
   fill: url(#codDmgGrad);
-  filter: drop-shadow(0 0 6px rgba(200, 24, 12, 0.6));
+  filter: blur(5px) drop-shadow(0 0 10px rgba(150, 16, 8, 0.45));
 }
 .cod-dmg.go {
   animation: cod-dmg 1.5s var(--ease-out) forwards;
 }
 .cod-dmg.held {
   animation: none;
-  opacity: 0.9;
+  opacity: 0.62;
 }
 @keyframes cod-dmg {
   0% { opacity: 0; }

@@ -6,11 +6,15 @@
  *
  *   • practical split scheme — a logarithmic/uniform blend (Zhang et al.), `lambda`
  *     controls the mix. Near cascades get the texels, far cascades get the range.
- *   • stabilised cascades — every slice is fitted to its analytic **bounding sphere**
- *     (which depends only on near/far/fov/aspect, so it never changes when the camera
- *     turns) and the light-space origin is snapped to whole shadow texels. Without
- *     both of those the shadow edges crawl and shimmer whenever the camera moves; it
- *     is the single most visible difference between a good and a bad CSM.
+ *   • stabilised cascades — every slice is fitted to a **tight light-space box** around
+ *     its eight frustum corners, whose half extents are quantised to a ladder derived
+ *     from the slice's analytic bounding sphere (which depends only on
+ *     near/far/fov/aspect), and whose origin is then snapped to whole shadow texels.
+ *     The quantisation is what keeps the world-per-texel constant while the camera
+ *     turns; without it — or without the snap — the shadow edges crawl and shimmer
+ *     whenever the camera moves, which is the single most visible difference between a
+ *     good and a bad CSM. Fitting the sphere itself is stable but spends about 60 % of
+ *     every cascade's texels on empty space beside the view; see `_fitSlice`.
  *   • per-cascade depth bias + slope-scaled bias in the sampler, plus three's
  *     world-space `normalBias` in the vertex stage. Constant bias alone either
  *     peter-pans or acnes; you need all three terms.
@@ -36,13 +40,16 @@ import * as THREE from 'three';
 
 export const MAX_CASCADES = 4;
 
-const _center = new THREE.Vector3();
 const _snapped = new THREE.Vector3();
 const _forward = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _camUp = new THREE.Vector3();
 const _xAxis = new THREE.Vector3();
 const _yAxis = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _camPos = new THREE.Vector3();
+/** Light-space AABB of the current slice — see `_fitSlice`. */
+const _fit = { hx: 1, hy: 1, hz: 1, cx: 0, cy: 0, cz: 0 };
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -97,8 +104,28 @@ export class CascadedShadowMaps {
     this.count = clamp(Math.round(opts.cascades ?? 4), 1, MAX_CASCADES);
     this.resolution = clamp(Math.round(opts.resolution ?? 2048), 256, 4096);
     this.maxDistance = opts.maxDistance ?? 170;
-    /** Split-scheme blend: 1 = fully logarithmic, 0 = fully uniform. */
-    this.lambda = 0.9;
+    /**
+     * Split-scheme blend: 1 = fully logarithmic, 0 = fully uniform.
+     *
+     * **0.9 was the whole of the "shadow contrast is unchanged" finding, and adding a
+     * fourth cascade made it worse rather than better.** A practical split at lambda 0.9
+     * over 0.15-72 m puts the four boundaries at 0.15 / 2.44 / 6.57 / 19.25 / 72, i.e. it
+     * spends two of the four cascades on the first six and a half metres — which in a
+     * first-person frame is the pavement under your own feet and nothing else — and then
+     * asks one cascade to carry 6.6-19.3 m, the band every prop, stall, planter and
+     * scaffold in this level actually stands in. Fitted to its bounding sphere at a 78
+     * degree FOV that slice is 63.6 m of ortho across 1024 texels: **62 mm per texel**,
+     * which is worse than the three-cascade split it replaced (42 mm) and is why the hero
+     * scaffold — 76 mm standards, 60 mm ledgers, two metres off a sunlit wall at 11 m —
+     * rasterises into 1.2 texels and casts nothing at all.
+     *
+     * 0.6 re-splits the same range to 0.15 / 7.67 / 16.40 / 30.84 / 72. The prop band
+     * lands in cascade 1 at 52.9 mm and everything past 20 m lands in cascade 2 at 99.5
+     * instead of the 309.7 the last cascade was giving it. It is strictly better than
+     * both previous rounds over 6.6 m out, and the near field it gives up (24.7 mm rather
+     * than 7.9) is still four times finer than the 100 mm a contact point needs.
+     */
+    this.lambda = 0.6;
     /** How far behind the slice the shadow camera pulls back, so off-screen casters still cast. */
     this.extrude = 70;
     /** Fraction of each cascade spent cross-fading into the next. */
@@ -414,6 +441,101 @@ export class CascadedShadowMaps {
     return { centerZ, radius };
   }
 
+  /**
+   * **A tight light-space box instead of the slice's bounding sphere.**
+   *
+   * The sphere fit is stable because it depends only on the projection — but it is
+   * enormous, because it is dominated by the far cap: for a slice [n, f] at a 78 degree
+   * FOV the radius is `f · sqrt(tanH² + tanV²)` = 1.65 f whatever the slice's *length*.
+   * Cascade 1 of a lambda-0.6 split is 8.7 m long and gets a 54 m box. The frustum slice
+   * projected onto the light's own x/y plane is about 34 x 35 m of that, so roughly 60 %
+   * of every cascade's texels are spent on empty space beside the view.
+   *
+   * Fitting the eight corners directly is exact and — this is the part that is easy to
+   * get wrong — it is also **conservative for casters**. A shadow travels along the light
+   * direction, which is precisely the box's z axis, so anything that can darken a pixel
+   * inside the box shares that pixel's (x, y) and is inside the box's cross-section by
+   * construction. Only the depth range has to be extended, which `extrude` already does.
+   *
+   * The one thing it costs is rotation invariance: the box breathes as the camera turns,
+   * and a shadow map whose world-per-texel changes every frame crawls. So the half
+   * extents are **quantised** to a fixed ladder derived from the (rotation-invariant)
+   * sphere radius. Between steps the size is constant and the existing texel snap holds
+   * the shadow perfectly still; a step changes the footprint by at most 1/48, which is a
+   * sub-texel shift that TAA resolves in a frame.
+   *
+   * Writes `_fit` in light space (x along `_xAxis`, y along `_yAxis`, z along `dir`).
+   */
+  _fitSlice(camera, n, f, radius, dir) {
+    const e = camera.matrixWorld.elements;
+    _right.set(e[0], e[1], e[2]).normalize();
+    _camUp.set(e[4], e[5], e[6]).normalize();
+
+    const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+    const tanH = tanV * (camera.aspect || 1.7777);
+
+    // Project the camera basis onto the light basis once, then every corner is a
+    // three-term dot product instead of a matrix transform.
+    const fx = _forward.dot(_xAxis);
+    const fy = _forward.dot(_yAxis);
+    const fz = _forward.dot(dir);
+    const rx = _right.dot(_xAxis);
+    const ry = _right.dot(_yAxis);
+    const rz = _right.dot(dir);
+    const ux = _camUp.dot(_xAxis);
+    const uy = _camUp.dot(_yAxis);
+    const uz = _camUp.dot(dir);
+    const ox = _camPos.dot(_xAxis);
+    const oy = _camPos.dot(_yAxis);
+    const oz = _camPos.dot(dir);
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let c = 0; c < 8; c++) {
+      const z = c & 1 ? f : n;
+      const sh = c & 2 ? tanH * z : -tanH * z;
+      const sv = c & 4 ? tanV * z : -tanV * z;
+      const x = ox + fx * z + rx * sh + ux * sv;
+      const y = oy + fy * z + ry * sh + uy * sv;
+      const d = oz + fz * z + rz * sh + uz * sv;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (d < minZ) minZ = d;
+      if (d > maxZ) maxZ = d;
+    }
+
+    // Quantise the half-extents so the world-per-texel only ever changes in steps.
+    const step = Math.max(radius / 48, 1e-3);
+    const quant = (h) => {
+      const q = Math.ceil((h * 1.02 + step) / step) * step;
+      return clamp(q, radius * 0.18, radius);
+    };
+    const hx = quant((maxX - minX) * 0.5);
+    const hy = quant((maxY - minY) * 0.5);
+    const hz = Math.max((maxZ - minZ) * 0.5, 0.5);
+
+    if (!Number.isFinite(hx) || !Number.isFinite(hy) || !Number.isFinite(hz)) {
+      _fit.hx = _fit.hy = _fit.hz = radius;
+      _fit.cx = ox;
+      _fit.cy = oy;
+      _fit.cz = oz;
+      return _fit;
+    }
+    _fit.hx = hx;
+    _fit.hy = hy;
+    _fit.hz = hz;
+    _fit.cx = (minX + maxX) * 0.5;
+    _fit.cy = (minY + maxY) * 0.5;
+    _fit.cz = (minZ + maxZ) * 0.5;
+    return _fit;
+  }
+
   /** Fit + stabilise every cascade against the current camera. Call once per frame. */
   update(camera) {
     if (!camera || !this.lights.length) return;
@@ -437,35 +559,39 @@ export class CascadedShadowMaps {
       const light = this.lights[i];
       const n = splits[i];
       const f = splits[i + 1];
-      const { centerZ, radius } = this._sliceSphere(camera, n, f);
-
-      _center.copy(_camPos).addScaledVector(_forward, centerZ);
+      // The sphere no longer sets the ortho — it is only kept as the rotation-invariant
+      // scale the tight box's quantisation ladder is derived from.
+      const { radius } = this._sliceSphere(camera, n, f);
 
       const mapSize = light.shadow.mapSize.x;
-      const texelWorld = (2 * radius) / mapSize;
+      const fit = this._fitSlice(camera, n, f, radius, dir);
+      const texelX = (2 * fit.hx) / mapSize;
+      const texelY = (2 * fit.hy) / mapSize;
+      // Bias and PCSS both want a single number; the coarser axis is the safe one.
+      const texelWorld = Math.max(texelX, texelY);
 
-      // Snap the slice centre to the shadow texel grid, in the light's own basis.
-      const cx = Math.floor(_center.dot(_xAxis) / texelWorld) * texelWorld;
-      const cy = Math.floor(_center.dot(_yAxis) / texelWorld) * texelWorld;
-      const cz = _center.dot(dir);
+      // Snap the box centre to the shadow texel grid, in the light's own basis.
+      const cx = Math.floor(fit.cx / texelX) * texelX;
+      const cy = Math.floor(fit.cy / texelY) * texelY;
+      const cz = fit.cz;
       _snapped
         .copy(_xAxis)
         .multiplyScalar(cx)
         .addScaledVector(_yAxis, cy)
         .addScaledVector(dir, cz);
 
-      const back = radius + this.extrude;
+      const back = fit.hz + this.extrude;
       light.position.copy(_snapped).addScaledVector(dir, back);
       light.target.position.copy(_snapped);
       light.shadow.camera.up.copy(_up);
 
       const cam = light.shadow.camera;
-      cam.left = -radius;
-      cam.right = radius;
-      cam.top = radius;
-      cam.bottom = -radius;
+      cam.left = -fit.hx;
+      cam.right = fit.hx;
+      cam.top = fit.hy;
+      cam.bottom = -fit.hy;
       cam.near = 0.05;
-      cam.far = back + radius + 1;
+      cam.far = back + fit.hz + 1;
       cam.updateProjectionMatrix();
 
       const depthRange = cam.far - cam.near;
@@ -494,7 +620,10 @@ export class CascadedShadowMaps {
       const s = this.uniforms.uCsmSplits.value[i];
       s.set(n, f, blendStart, 1 / mapSize);
       const p = this.uniforms.uCsmParams.value[i];
-      p.set(constWorld / depthRange, slopeWorld / depthRange, depthRange, 2 * radius);
+      // w is the world size one full unit of shadow-map UV spans, which the PCSS step
+      // divides a world-space penumbra by. The box is rectangular now, so hand over the
+      // mean of the two axes — the residual anisotropy is under 10 % in practice.
+      p.set(constWorld / depthRange, slopeWorld / depthRange, depthRange, fit.hx + fit.hy);
 
       // Far cascades change slowly; refreshing them every other frame halves the
       // shadow cost on the software rasteriser with no visible difference.

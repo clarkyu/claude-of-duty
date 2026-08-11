@@ -1529,7 +1529,10 @@ class Sky {
      * the same term into the ambient makes the two agree and gives the shadow side of a
      * building a red channel to work with.
      */
-    const nightAmb = 0.0075 * night;
+    // Tracks the airglow floor the dome now paints (see `uNightSkyColor` below): the
+    // ambient this class publishes has to agree with the sky that is emitting it, or the
+    // white balance and the cirrus fill disagree with the dome above them.
+    const nightAmb = 0.0135 * night;
     const poll = this.lightPollution * night;
     const moonFill = this.moonIntensity * 0.02;
     this.ambientColor.setRGB(
@@ -1646,13 +1649,30 @@ class Sky {
      * The bases are retuned down by the same order the lift adds, so the *product*
      * lands where the old hand-tuned constants were aiming rather than 26x past it.
      */
+    /**
+     * **Retuned again, because the retune overshot.** Measured on the night pose, the
+     * dome came back at sRGB L 22 mid-dome and L 8 at the top, with 79 % of the frame
+     * under L 32 — which is the *same* defect the paragraph above is about, arrived at
+     * from the other side. The airglow constants ended up small enough that the
+     * horizon-weighted light-pollution wash was three to five times the airglow term at
+     * every elevation the camera actually looks at, so the night sky was a dim warm
+     * gradient rather than a deep blue source; and with the street lamps unchanged
+     * around it the auto-exposure metered the lamps and crushed everything else.
+     *
+     * Raising the airglow ~4x and trimming the pollution share (below) does two things
+     * at once: the dome becomes the brightest large area in the frame again, and because
+     * the practicals do *not* ride this term, the lamp-to-sky ratio comes down instead of
+     * the whole frame simply being scaled (which auto-exposure would have undone).
+     */
     const nightLift = this.adaptLift;
-    u.uNightSkyColor.value.set(0.00042 * nightLift, 0.00062 * nightLift, 0.00136 * nightLift);
+    u.uNightSkyColor.value.set(0.00168 * nightLift, 0.00242 * nightLift, 0.00530 * nightLift);
     // Light pollution is sodium and LED spill scattered by the air *above* the city:
     // a broad dome-wide wash that is strongest at the horizon, not a 10-degree band.
     // The shader's falloff was pow(1 - dir.y, 9), which is dead by 20 degrees up and
     // left the sky neutral and gradientless everywhere the camera actually looks.
-    const poll = this.lightPollution * nightLift * 0.42;
+    // 0.42 made the sodium wash the dominant term in the dome at every elevation above
+    // the rooftops; a real city glow is a warm *tint* on a blue sky, not the sky.
+    const poll = this.lightPollution * nightLift * 0.30;
     u.uPollutionColor.value.set(poll * 1.0, poll * 0.52, poll * 0.2);
     /**
      * **What the night dome adds, published so it can also light something.**

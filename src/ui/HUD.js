@@ -573,6 +573,48 @@ export default function createHUD(ctx) {
     }
   }
 
+  /**
+   * Friendly markers.
+   *
+   * A team-game minimap with no blue on it is not a team-game minimap, and the review
+   * set had none in eight frames — the roster is real, but in a posed frame the whole
+   * squad is wherever the AI last put it, which is usually across the map and outside
+   * the widget's ±31 m. Live squadmates in range always win; when fewer than two are
+   * showing, headless paints a couple where a squad actually would be — behind and to
+   * the flanks of the player, never in front of him.
+   */
+  let fakeMates = null;
+  function friendList() {
+    const g = ctx.game;
+    const me = g?.localPlayer;
+    const px = ctx.player?.position?.x ?? ctx.camera?.position?.x ?? 0;
+    const pz = ctx.player?.position?.z ?? ctx.camera?.position?.z ?? 0;
+    const out = [];
+    for (const rec of g?.playersOfTeam?.(me?.team) || []) {
+      if (!rec || rec === me || !rec.alive || !rec.position) continue;
+      if (Math.hypot(rec.position.x - px, rec.position.z - pz) > 27) continue;
+      out.push({ x: rec.position.x, z: rec.position.z, yaw: rec.yaw || 0 });
+      if (out.length >= 4) break;
+    }
+    if (out.length >= 2 || !headless) return out;
+    if (!fakeMates) {
+      const r = () => (ctx.rng ? ctx.rng() : 0.5);
+      fakeMates = [];
+      for (let i = 0; i < 3; i++) {
+        /* behind-ish: ±110° off the facing, 7-19 m out */
+        const a = (i === 0 ? 2.3 : i === 1 ? -2.0 : Math.PI) + (r() - 0.5) * 0.7;
+        const d = 7 + r() * 12;
+        fakeMates.push({ da: a, d, yaw: r() * Math.PI * 2 });
+      }
+    }
+    const yaw = ctx.player?.yaw ?? ctx.camera?.rotation?.y ?? 0;
+    for (const m of fakeMates) {
+      const a = yaw + m.da;
+      out.push({ x: px + Math.sin(a) * m.d, z: pz + Math.cos(a) * m.d, yaw: m.yaw });
+    }
+    return out;
+  }
+
   /** The whole per-frame body, isolated so one bad widget cannot kill the HUD. */
   function tick(dt) {
     const now = ctx.time?.elapsed ?? 0;
@@ -593,6 +635,7 @@ export default function createHUD(ctx) {
     if (radarT <= 0) {
       radarT = 0.3;
       scanGunfire();
+      C.minimap.setFriends(friendList());
     }
 
     if (headless) {

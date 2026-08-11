@@ -987,12 +987,22 @@ export default function createLevel(ctx) {
       // caster set would drag every cascade's fit out to the horizon and turn the
       // near shadows to mush — and none of it is resolvable at that range anyway.
       const far = bat.name === 'horizon' || bat.name === 'backdrop';
+      /**
+       * The outer ground rings do not cast either. They are flat dirt from the fence
+       * out to 240 m at a 6-24 m cell: a horizontal plane's only shadow is on itself,
+       * and every one of those quads was being re-rasterised into all four cascades.
+       * The play-space terrain keeps casting — its kerbs, plaza upstand and yard
+       * edges have real risers and a 15-degree sun makes real shadows off them.
+       */
+      const flatApron = bat.name === 'terrain_apron' || bat.name === 'terrain_outer';
       obj.traverse((o) => {
         if (o.isMesh) {
           groups++;
           if (far) {
             o.castShadow = false;
             o.receiveShadow = false;
+          } else if (flatApron) {
+            o.castShadow = false;
           }
           const idx = o.geometry?.index;
           if (idx) tris += idx.count / 3;

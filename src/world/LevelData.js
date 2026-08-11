@@ -431,76 +431,147 @@ export const FUEL = {
 };
 
 /**
+ * The far terrain band. A dead-straight horizon is the single loudest tell that the
+ * world stops at the fence: this puts a rolling ridge and a broken foothill line
+ * between the backdrop blocks and the sky.
+ *
+ * Declared here, ABOVE `BACKDROP`, because the hill town plants itself on this
+ * surface at module-evaluation time — see `horizonHeightAt()`.
+ */
+export const HORIZON = {
+  /* `inner` sits just inside the coarse terrain apron (+/-240 m in Terrain.js), so
+     the ridge starts under ground the player can already see and the join is never
+     visible; `outer` carries the ridgeline itself. */
+  inner: 235,
+  outer: 620,
+  segments: 64,
+  /**
+   * Ridge height as [amplitude, frequency] pairs, summed.
+   *
+   * These were 34 m at 620 m — three degrees of elevation, which from a 1.7 m eye in
+   * a street canyon is *below every roofline in the map*, so the "layered vista" was
+   * geometry nobody could ever see. A coastal Levantine town has real hills behind
+   * it; at 620 m a 90-150 m ridge subtends 8-14 degrees and finally clears the
+   * parapets, which is the whole reason it exists.
+   */
+  base: 96,
+  /* integer frequencies so the ring closes without a seam at theta = 0 */
+  bands: [
+    [46, 1],
+    [26, 3],
+    [12, 7],
+    [5, 13],
+  ],
+  mat: 'ground.dirt',
+  /** a second, higher and further ridge behind the first */
+  far: { inner: 540, outer: 1080, base: 205, amp: 78, mat: 'wall.bone' },
+};
+
+/**
+ * Periodic ridge profile — integer harmonics so the ring closes cleanly at theta 0.
+ * The authority for the far terrain surface: `buildHorizon()` in Buildings.js
+ * tessellates exactly this, and the hill town samples it to find its own ground.
+ */
+export function ridgeAt(theta, base, bands) {
+  let h = base;
+  for (let i = 0; i < bands.length; i++) {
+    const amp = bands[i][0];
+    const f = Math.max(1, Math.round(bands[i][1]));
+    h += amp * 0.62 * Math.sin(theta * f + i * 2.399 + 0.7);
+    h += amp * 0.38 * Math.sin(theta * (f * 2 + 1) + i * 1.137);
+  }
+  return Math.max(5, h);
+}
+
+/**
+ * Height of the far terrain layer at a world XZ, matching `buildHorizon()`'s linear
+ * sweep from the buried inner ring to the ridgeline. Returns 0 inside `inner`, where
+ * the ordinary terrain apron owns the ground instead.
+ */
+export function horizonHeightAt(x, z, H = HORIZON) {
+  const r = Math.hypot(x, z);
+  const inner = H.inner ?? 235;
+  const outer = H.outer ?? 620;
+  if (r <= inner) return 0;
+  const t = Math.min(1, (r - inner) / Math.max(1, outer - inner));
+  const h = ridgeAt(Math.atan2(z, x), H.base ?? 34, H.bands || [[22, 1]]);
+  return -1.6 + t * (h + 1.6);
+}
+
+/**
  * Distant silhouette blocks, LOD-2 only, outside the play space.
  *
- * Heights vary by roughly ±45 % about the mean rather than the ±10 % they used to,
- * because the thing that made the old vista frame read as scenery was that every block
- * topped out within two metres of its neighbour: a row of near-identical flat-topped
- * rectangles is the one skyline shape nobody has ever seen in a real city. Some of
- * these are 8 m sheds and some are 30 m slabs, and `buildBackdrop` puts a setback
- * tower on most of them on top of that.
- */
-/*
- * ── Why these are so much taller than they look on paper ────────────────────────
+ * Three ranks, each with its own palette family, its own window language and its own
+ * silhouette vocabulary — see `buildBackdrop()`.
+ *
+ * ── Why the ranks are graded rather than uniform ────────────────────────────────
  * A street-level camera sees the backdrop only in the slot of sky ABOVE the near
  * rooflines. The market hall parapet sits at 9.1 m and 31 m from the hero camera,
  * which is 13.4 degrees; a 24 m block at 100 m subtends 12.6 degrees and is therefore
- * *completely invisible* from the street no matter how carefully it is modelled. That
- * is exactly what happened: every rank was built, none of it was in any frame.
+ * *completely invisible* from the street no matter how carefully it is modelled — so
+ * the first rank has to be 25-40 m or it is not in any frame.
  *
- * The rule this list now follows is `h > 1.7 + 0.24 * distance` for anything meant to
- * be seen down a street — which for the first rank at 60-100 m means 25-40 m, and for
- * the second rank at 130-190 m means 40-70 m. Real Levantine cities have exactly this
- * profile: a low old town in the foreground and 12-20 storey concrete on the ridge
- * behind it.
+ * ── Why the second rank came DOWN and the hill town came down further ───────────
+ * The previous pass raised everything by the same rule and the vista frame turned
+ * into a wall: 40-70 m slabs at 110-190 m subtend 15-30 degrees from a 9.5 m parapet
+ * camera, which is the whole upper half of a 70 degree frame. Worse, the hill town's
+ * bases were hand-authored (22 m rising to 126 m) against a horizon ridge that is
+ * only 12-25 m high where those blocks stand — so thirty-five houses were floating up
+ * to a hundred metres in the sky, which is what actually read as "eight untextured
+ * beige boxes filling the top of the frame".
+ *
+ * Every hill-town base is now sampled off the real ridge surface (`horizonHeightAt`)
+ * so the terrace sits ON the hillside, and the second rank is a rank of buildings
+ * again rather than a backdrop flat.
+ *
+ * `rank` (0/1/2) is read by `buildBackdrop` and drives palette, UV scale, window
+ * language and how much roof plant a block gets.
  */
 export const BACKDROP = [
   /* first rank, 60-110 m: reads immediately over the playspace rooflines */
-  { rect: [-96, -86, -66, -60], h: 26, wall: 'wall.sand' },
-  { rect: [-60, -92, -34, -62], h: 38, wall: 'wall.bone' },
-  { rect: [-28, -88, -4, -60], h: 29, wall: 'wall.terracotta' },
-  { rect: [2, -96, 30, -62], h: 44, wall: 'wall.sand' },
-  { rect: [36, -84, 66, -60], h: 23, wall: 'wall.ochre' },
-  { rect: [70, -70, 100, -30], h: 34, wall: 'wall.bone' },
-  { rect: [72, -12, 98, 30], h: 25, wall: 'wall.sand' },
-  { rect: [68, 40, 96, 76], h: 37, wall: 'wall.terracotta' },
-  { rect: [10, 62, 48, 92], h: 27, wall: 'wall.bone' },
-  { rect: [-40, 60, -2, 88], h: 33, wall: 'wall.ochre' },
-  { rect: [-92, 46, -56, 82], h: 24, wall: 'wall.sand' },
-  { rect: [-100, -18, -70, 30], h: 36, wall: 'wall.bone' },
+  { rect: [-96, -86, -66, -60], h: 26, wall: 'wall.sand', rank: 0 },
+  { rect: [-60, -92, -34, -62], h: 34, wall: 'wall.bone', rank: 0 },
+  { rect: [-28, -88, -4, -60], h: 27, wall: 'wall.terracotta', rank: 0 },
+  { rect: [2, -96, 30, -62], h: 38, wall: 'wall.sand', rank: 0 },
+  { rect: [36, -84, 66, -60], h: 23, wall: 'wall.ochre', rank: 0 },
+  { rect: [70, -70, 100, -30], h: 31, wall: 'wall.bone', rank: 0 },
+  { rect: [72, -12, 98, 30], h: 25, wall: 'wall.sand', rank: 0 },
+  { rect: [68, 40, 96, 76], h: 33, wall: 'wall.terracotta', rank: 0 },
+  { rect: [10, 62, 48, 92], h: 27, wall: 'wall.bone', rank: 0 },
+  { rect: [-40, 60, -2, 88], h: 30, wall: 'wall.ochre', rank: 0 },
+  { rect: [-92, 46, -56, 82], h: 24, wall: 'wall.sand', rank: 0 },
+  { rect: [-100, -18, -70, 30], h: 33, wall: 'wall.bone', rank: 0 },
   /* infill between the first-rank blocks, so the rank is a town and not a picket
      fence with sky between the posts */
-  { rect: [-34, -74, -6, -56], h: 19, wall: 'wall.ochre' },
-  { rect: [30, -78, 42, -58], h: 22, wall: 'wall.bone' },
-  { rect: [-70, -60, -50, -50], h: 16, wall: 'wall.terracotta' },
-  { rect: [56, -58, 78, -44], h: 18, wall: 'wall.sand' },
+  { rect: [-34, -74, -6, -56], h: 19, wall: 'wall.ochre', rank: 0 },
+  { rect: [30, -78, 42, -58], h: 22, wall: 'wall.bone', rank: 0 },
+  { rect: [-70, -60, -50, -50], h: 16, wall: 'wall.terracotta', rank: 0 },
+  { rect: [56, -58, 78, -44], h: 18, wall: 'wall.sand', rank: 0 },
 
   /* Second rank at 110-190 m: the depth cue that turns one row of boxes into a town.
-     Taller than the first rank, because at that distance anything shorter is behind
-     it. */
-  { rect: [-150, -160, -104, -122], h: 44, wall: 'wall.bone' },
-  { rect: [-92, -168, -46, -128], h: 62, wall: 'wall.sand' },
-  { rect: [-30, -172, 18, -132], h: 38, wall: 'wall.ochre' },
-  { rect: [30, -166, 88, -124], h: 68, wall: 'wall.bone' },
-  { rect: [104, -140, 158, -96], h: 46, wall: 'wall.terracotta' },
-  { rect: [126, -60, 176, 6], h: 40, wall: 'wall.sand' },
-  { rect: [132, 28, 184, 92], h: 54, wall: 'wall.bone' },
-  { rect: [58, 106, 116, 156], h: 42, wall: 'wall.ochre' },
-  { rect: [-34, 116, 30, 168], h: 50, wall: 'wall.sand' },
-  { rect: [-124, 98, -60, 150], h: 36, wall: 'wall.bone' },
-  { rect: [-168, 4, -116, 66], h: 48, wall: 'wall.terracotta' },
-  { rect: [-176, -74, -122, -18], h: 41, wall: 'wall.sand' },
+     Its own palette family — a stop lighter and a good deal cooler than the first
+     rank, because 150 m of air between the camera and a wall is worth about that. */
+  { rect: [-150, -160, -104, -122], h: 31, wall: 'far.bone', rank: 1 },
+  { rect: [-92, -168, -46, -128], h: 44, wall: 'far.dust', rank: 1 },
+  { rect: [-30, -172, 18, -132], h: 27, wall: 'far.rose', rank: 1 },
+  { rect: [30, -166, 88, -124], h: 47, wall: 'far.bone', rank: 1 },
+  { rect: [104, -140, 158, -96], h: 33, wall: 'far.slate', rank: 1 },
+  { rect: [126, -60, 176, 6], h: 29, wall: 'far.dust', rank: 1 },
+  { rect: [132, 28, 184, 92], h: 38, wall: 'far.bone', rank: 1 },
+  { rect: [58, 106, 116, 156], h: 30, wall: 'far.rose', rank: 1 },
+  { rect: [-34, 116, 30, 168], h: 35, wall: 'far.dust', rank: 1 },
+  { rect: [-124, 98, -60, 150], h: 26, wall: 'far.slate', rank: 1 },
+  { rect: [-168, 4, -116, 66], h: 34, wall: 'far.rose', rank: 1 },
+  { rect: [-176, -74, -122, -18], h: 29, wall: 'far.bone', rank: 1 },
   /* the north-west block the hero camera looks straight down the market hall at */
-  { rect: [-118, -126, -66, -96], h: 52, wall: 'wall.ochre' },
-  { rect: [-56, -128, -16, -100], h: 47, wall: 'wall.bone' },
-  { rect: [-8, -132, 40, -104], h: 58, wall: 'wall.terracotta' },
+  { rect: [-118, -126, -66, -96], h: 36, wall: 'far.slate', rank: 1 },
+  { rect: [-56, -128, -16, -100], h: 33, wall: 'far.dust', rank: 1 },
+  { rect: [-8, -132, 40, -104], h: 41, wall: 'far.bone', rank: 1 },
 
   /**
-   * Third rank, 230-360 m: the hill town. Small blocks stepping up a slope, each one
-   * sitting a little higher than the one in front, which is the layer that reads as
-   * *landscape* rather than as another row of buildings. `far` drops the window quads
-   * and the roof plant — none of it resolves past 200 m and it is a third of the
-   * backdrop's triangles.
+   * Third rank, 230-360 m: the hill town. Small houses stepping up the real ridge
+   * surface, each terrace a little higher than the one in front, which is the layer
+   * that reads as *landscape* rather than as another row of buildings.
    */
   ...hillTown(),
 ];
@@ -508,22 +579,34 @@ export const BACKDROP = [
 /**
  * A stepped hillside of small houses climbing away to the north-north-west, which is
  * the bearing every street pose looks down. Deterministic — no RNG at module scope.
+ *
+ * Bases come from `horizonHeightAt()`, i.e. the actual surface `buildHorizon()`
+ * generates, so the terrace is planted on the hill rather than hovering over it.
  */
 function hillTown() {
   const out = [];
-  const walls = ['wall.sand', 'wall.bone', 'wall.ochre', 'wall.terracotta'];
+  const walls = ['far.haze', 'far.hazeWarm', 'far.hazePale', 'far.hazeCool'];
   /* five terraces, each further back and higher up the slope */
   for (let row = 0; row < 5; row++) {
-    const z = -238 - row * 30;
-    const base = 22 + row * 26; // the ground rises away from the town
+    const z = -246 - row * 28;
     const n = 9 - row;
     for (let i = 0; i < n; i++) {
       const t = n === 1 ? 0.5 : i / (n - 1);
       const cx = -300 + t * 600 + ((row % 2) * 34 - 17);
-      const w = 26 + ((i * 13 + row * 7) % 22);
-      const d = 20 + ((i * 7 + row * 11) % 16);
-      const h = base + ((i * 17 + row * 23) % 26);
-      out.push({ rect: [cx - w / 2, z - d / 2, cx + w / 2, z + d / 2], h, wall: walls[(i + row) % 4], far: true });
+      const w = 22 + ((i * 13 + row * 7) % 20);
+      const d = 17 + ((i * 7 + row * 11) % 14);
+      /* Sit on the hillside. `- 1.4` buries the plinth so no house floats on a slope
+         the ring only samples every 5.6 degrees. */
+      const base = horizonHeightAt(cx, z) - 1.4;
+      const h = 11 + ((i * 17 + row * 23) % 15) + row * 1.6;
+      out.push({
+        rect: [cx - w / 2, z - d / 2, cx + w / 2, z + d / 2],
+        h,
+        base,
+        wall: walls[(i + row) % 4],
+        rank: 2,
+        far: true,
+      });
     }
   }
   return out;
@@ -563,46 +646,14 @@ export const SKYLINE = [
   { kind: 'mast', x: -224, z: -30, base: 0, h: 74 },
   { kind: 'mast', x: 214, z: 92, base: 0, h: 62 },
   { kind: 'crane', x: 168, z: -158, base: 0, h: 66, jib: 36, yaw: 2.6 },
-  /* landmarks standing on the hill town, so the far terrace is not just boxes */
-  { kind: 'minaret', x: -168, z: -268, base: 30, h: 44, r: 3.0 },
-  { kind: 'minaret', x: 122, z: -296, base: 48, h: 40, r: 2.8 },
-  { kind: 'tower', x: -66, z: -330, base: 74, h: 38, r: 5.4 },
-  { kind: 'stack', x: 214, z: -252, base: 26, h: 58, r: 3.0 },
+  /* Landmarks standing on the hill town, so the far terrace is not just boxes.
+     Their bases are sampled off the ridge for the same reason the houses are: the
+     hand-authored ones (30 / 48 / 74 m) put a minaret forty metres into the sky. */
+  { kind: 'minaret', x: -168, z: -268, base: horizonHeightAt(-168, -268) - 1.2, h: 34, r: 3.0 },
+  { kind: 'minaret', x: 122, z: -296, base: horizonHeightAt(122, -296) - 1.2, h: 32, r: 2.8 },
+  { kind: 'tower', x: -66, z: -330, base: horizonHeightAt(-66, -330) - 1.2, h: 30, r: 5.4 },
+  { kind: 'stack', x: 214, z: -252, base: horizonHeightAt(214, -252) - 1.2, h: 46, r: 3.0 },
 ];
-
-/**
- * The far terrain band. A dead-straight horizon is the single loudest tell that the
- * world stops at the fence: this puts a rolling ridge and a broken foothill line
- * between the backdrop blocks and the sky.
- */
-export const HORIZON = {
-  /* `inner` sits just inside the coarse terrain apron (+/-240 m in Terrain.js), so
-     the ridge starts under ground the player can already see and the join is never
-     visible; `outer` carries the ridgeline itself. */
-  inner: 235,
-  outer: 620,
-  segments: 64,
-  /**
-   * Ridge height as [amplitude, frequency] pairs, summed.
-   *
-   * These were 34 m at 620 m — three degrees of elevation, which from a 1.7 m eye in
-   * a street canyon is *below every roofline in the map*, so the "layered vista" was
-   * geometry nobody could ever see. A coastal Levantine town has real hills behind
-   * it; at 620 m a 90-150 m ridge subtends 8-14 degrees and finally clears the
-   * parapets, which is the whole reason it exists.
-   */
-  base: 96,
-  /* integer frequencies so the ring closes without a seam at theta = 0 */
-  bands: [
-    [46, 1],
-    [26, 3],
-    [12, 7],
-    [5, 13],
-  ],
-  mat: 'ground.dirt',
-  /** a second, higher and further ridge behind the first */
-  far: { inner: 540, outer: 1080, base: 205, amp: 78, mat: 'wall.bone' },
-};
 
 /**
  * Overhead cable runs. Every real street in this part of the world is netted with

@@ -68,6 +68,23 @@ export const PROP_MATS = {
   signRed: { base: 'painted_steel_chipped', tint: 0x8e2a22, opts: { repeat: 2.0, grime: 1.0 }, rough: [0.2, 0.75] },
   produce: { base: 'dry_grass_ground', tint: 0x8b8a3c, opts: { repeat: 4.0, grime: 0.6 }, rough: [0.3, 0.8] },
 
+  /* ── people ──────────────────────────────────────────────────────────────
+   * Two keys, because a market with nobody in it is the loudest thing missing from
+   * this map and two draw calls is what it costs. Everything else a figure wears
+   * comes out of the keys above (canvas, tarp, olive, signRed, plasticBlue, card,
+   * sacking), so the crowd has hue variety without adding materials for it.
+   *
+   * `skin` is deliberately a stop lighter than the soldiers' 0xa9805e: a civilian in
+   * a sunlit street is the lightest mid-tone in the frame and that is what makes a
+   * figure separate from the stall behind them at 15 m.
+   * `robe` is the pale thobe / dishdasha — the single most recognisable silhouette
+   * fill in a Levantine street, and near-white, which is the value the crowd needs.
+   */
+  skin: { base: 'plywood_painted', tint: 0x9c6f4c, opts: { repeat: 0.9, grime: 0.5 }, rough: [0.5, 0.82] },
+  /* Not double-sided: a thobe here is a closed tube, so the back faces are never
+     seen and `double` is a straight doubling of its fragment cost. */
+  robe: { base: 'fabric_canvas', tint: 0xc9c3b1, opts: { repeat: 1.1, grime: 0.85 } },
+
   /* ── emissive lenses: built by PropPalette.lens(), listed here so surfaceTag()
         still reports glass to ballistics and FX ─────────────────────────────── */
   lens: { base: 'light_panel', opts: {} },

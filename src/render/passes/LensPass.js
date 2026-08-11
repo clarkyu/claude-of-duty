@@ -80,7 +80,13 @@ void main() {
   float rr = length( vc ) * 2.0;
   float cosTheta = inversesqrt( 1.0 + rr * rr * 0.55 );
   float natural = cosTheta * cosTheta * cosTheta * cosTheta;
-  float mechanical = 1.0 - smoothstep( 0.78, 1.5, rr ) * 0.35;
+  /**
+   * The mechanical term is the lens barrel clipping the corners, so it has no business
+   * starting at rr = 0.78 — which on a 16:9 frame is a third of the way *up the vertical
+   * edge*, i.e. exactly the near foreground. Pushed out to 0.92 it is a corner effect
+   * again and the bottom edge is left to the cos^4 falloff alone.
+   */
+  float mechanical = 1.0 - smoothstep( 0.92, 1.6, rr ) * 0.35;
   color *= mix( 1.0, natural * mechanical, uVignette );
 
   // --- grain ---------------------------------------------------------------
@@ -206,21 +212,21 @@ export default class LensPass extends Pass {
       aberration: 0.0006,   // fraction of the frame at the corners
       distortion: 0.0,      // Brown-Conrady k1; off by default
       /**
-       * 0.55 multiplied the bottom third of the frame by 0.67 — and the bottom third
-       * of an FPS frame is the ground the player is standing on, which on this map is
-       * also the part the review measured as dead. A lens that eats a third of the
-       * exposure exactly where the near foreground lives is fighting the lighting.
-       * 0.44 keeps the cos^4 falloff clearly present at the corners (0.75 at the
-       * bottom edge, 0.70 in the corners) without taxing the foreground for it.
+       * Walked down 0.55 -> 0.44 -> 0.30 over three rounds, each time for the same
+       * reason and each time not far enough. Measured on the shipped shader, 0.30
+       * multiplies the bottom-centre by 0.815 and the corners by 0.733 — and the review
+       * traced "the near foreground is the darkest region in 8 of 8 frames" to this term
+       * plus the metering's bottom-of-frame suppression, explicitly *not* to the ground
+       * bounce. Taking 19 % of the exposure out of the part of an FPS frame that is the
+       * floor the player is standing on is the lens fighting the lighting, and it is the
+       * half of that finding this file owns.
+       *
+       * 0.17, with the mechanical term pushed out to the corners where it belongs, puts
+       * the bottom-centre at 0.90 and the corners at 0.85: unmistakably a lens, and no
+       * longer a 19 % tax on the foreground. The remaining foreground deficit, if any, is
+       * then honestly attributable to the lighting rather than to the optics.
        */
-      /**
-       * At 0.44 the cos^4 term takes 27 % off the bottom-centre of a 78-degree frame and
-       * over 40 % out of the corners — and the bottom-centre of every one of these poses
-       * is the near foreground, which the review measured as the darkest region in eight
-       * frames out of eight. Some of that darkness was the lens, not the lighting. 0.30
-       * keeps the frame from looking flat-fielded without the optics doing the crushing.
-       */
-      vignette: 0.3,
+      vignette: 0.17,
       vignetteRoundness: 0.65,
       // Display-space amplitudes now (see the grain block in the shader): 0.010 is
       // ±2.5/255, which reads as a sensor at 1:1 and disappears at viewing distance,

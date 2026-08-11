@@ -509,18 +509,40 @@ export default function createAISystem(ctx) {
    * side-on in the frame — and it is also what a real firefight looks like, because
    * not everybody in it is shooting at you.
    */
+  /*
+   * ── Round three: the lanes are tighter and much more central ─────────────────
+   * Measured on the capture, the two visible fighters came out at ~40 px, at the two
+   * extreme edges of the frame, with the whole middle third empty. Two causes, both
+   * here: the lateral offsets were up to 6 m (at 8-10 m down the axis that is 30-37
+   * degrees off centre, i.e. two thirds of the way to the frame edge), and the cover
+   * search below was free to relocate a soldier several metres from the lane it had
+   * just chosen for him — usually to the barrier at the side of the street.
+   *
+   * The lateral spread is now under 2.6 m in the near lanes and grows with distance,
+   * so the fireteam forms a wedge in the middle of the frame the way one actually
+   * would in a street. Cover displacement is clamped (see COVER_SHIFT_MAX).
+   */
   const LANES = [
-    [7.0, -3.0, 0],
-    [10.5, 3.4, 6.5],
-    [13.5, -5.2, 0],
-    [16.5, 2.2, -8.0],
-    [9.5, 6.0, 0],
-    [20.0, -2.0, 7.0],
-    [12.0, -0.8, -6.0],
-    [18.0, 6.2, 0],
-    [8.0, 2.2, 5.0],
-    [23.0, 4.2, 0],
+    [6.2, -1.9, 0],
+    [8.6, 2.1, 5.0],
+    [11.0, -2.6, 0],
+    [9.4, 0.6, -6.0],
+    [14.0, 3.2, 0],
+    [12.6, -3.4, 6.0],
+    [17.0, 1.4, -5.0],
+    [15.5, -4.4, 0],
+    [7.4, 2.6, 4.0],
+    [20.0, 3.0, 0],
   ];
+
+  /**
+   * How far the cover search may move a soldier off his lane. Cover is worth having —
+   * six men upright in an open street is a line-up — but not at the price of the
+   * composition: a barrier three metres to the left of a lane is a soldier three
+   * metres closer to the edge of frame, and that is how a combat shot ends up with an
+   * empty middle.
+   */
+  const COVER_SHIFT_MAX = 1.6;
 
   /**
    * Place the opposition in front of the camera for the `firefight` pose: spread
@@ -588,11 +610,15 @@ export default function createAISystem(ctx) {
        * over the top. What is left over goes to `suppress`, which crouches and
        * shoots. Only a third stay standing.
        */
-      const cover = findCoverNear(best, _camPos);
+      const cover = findCoverNear(best, _camPos, i === 0 ? 2.2 : 4.2);
       let role = i % 3 === 0 ? 'engage' : 'suppress';
-      if (cover) {
+      if (cover && cover.stand.distanceTo(best) <= COVER_SHIFT_MAX) {
         best.copy(cover.stand);
         role = i % 2 === 0 ? 'cover' : 'suppress';
+      } else if (cover) {
+        /* Cover exists but taking it would drag him out of the frame. Keep the lane,
+           keep the crouch: a man low in the open still reads as a man in a fight. */
+        role = 'suppress';
       }
       const peekOut = role !== 'cover' || i % 4 !== 3;
 
