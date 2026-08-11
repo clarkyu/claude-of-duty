@@ -56,7 +56,7 @@ export const POSES = {
     fov: 70,
     time: 6.6,
     warm: 48,
-    state: { sunAzimuth: 20, sunAltitude: 12.0, sunKelvin: 3050, weapon: 'none' },
+    state: { sunAzimuth: 20, sunAltitude: 12.0, sunKelvin: 3050, weapon: 'ar_wolverine' },
   },
   weapon: {
     desc: 'Viewmodel inspect: weapon geometry, machining, wear, optic glass, hands',
