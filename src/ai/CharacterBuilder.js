@@ -456,16 +456,28 @@ export default function createCharacterBuilder(ctx) {
    *   • `envMapIntensity` 1.0 gives the kit a full unoccluded sky hemisphere. A man
    *     standing in a street sees a slot of sky, not a dome of it.
    *
-   * ── Round three: env goes back UP, and it is the only lever that moved ──────────
-   * Measured across two capture rounds: raising every authored albedo 1.75x moved the
-   * rendered soldier 71.8 -> 78.2, and lifting the grime tint the mask blends to
-   * moved it 78.2 -> 81.2. Both were nearly free of effect, for the same reason — the
-   * side of a soldier the camera usually sees is the side facing AWAY from the sun,
-   * and a shaded surface's value is set almost entirely by the image-based ambient,
-   * not by its albedo or its dirt. `env` is the term that multiplies that. It is
-   * raised here rather than restored to the library default because a man in a cross
-   * street genuinely does see most of the sky; the original argument for dialling it
-   * back was about a man in a canyon, and it cost more than it bought.
+   * ── What three measured attempts at "the soldier is too dark" actually found ────
+   * Same pose, same camera, same hour, one variable at a time, measured off the
+   * firefight capture (soldier patch / whole-scene mean):
+   *
+   *   1. every authored albedo x1.75            71.8 -> 78.2   (scene 93.8 -> 109.7)
+   *   2. + grime tint 0x6a6055 -> 0x8c8377,
+   *        aoMapIntensity 1.35 -> 1.12          78.2 -> 81.2
+   *   3. + envMapIntensity 1.0 -> 1.45          81.2 -> 81.2   (no change at all)
+   *
+   * The soldier-to-frame RATIO is 0.76 before and 0.74 after: essentially untouched.
+   * Attempt 3 is reverted above because it demonstrably did nothing — the diffuse
+   * ambient on these materials does not come through three's `envMap` at all, it is
+   * injected by render/Lighting.js as an L2 irradiance SH on its own `uCodSH`
+   * uniform, so `material.envMapIntensity` only scales a specular lobe.
+   *
+   * The conclusion for whoever picks this up: a shaded soldier's value is set by the
+   * probe irradiance reaching him, and **no material-side lever in this file moves it
+   * more than a few percent**. Attempts 1 and 2 are kept because they are correct on
+   * their own terms and they did buy the thing that IS now visible at 3x — an
+   * internal value ladder, with the helmet cover, shoulder yokes, thigh panels and
+   * knee pads reading clearly lighter than the webbing instead of the whole figure
+   * collapsing into one mass. The other half of the finding belongs to lighting.
    *   • the dust layer lerps albedo towards a pale sand colour on up-facing facets.
    *     Right for a windowsill that has stood there a month, wrong for a soldier.
    *
@@ -1097,15 +1109,15 @@ export default function createCharacterBuilder(ctx) {
       // sheen*sheenColor lands at ~0.005 against the library's 0.174: the lobe is
       // still there as a hint of cloth, it just no longer outruns the albedo.
       name: 'fabric_uniform', repeat: 0.5, detail: 0.5, key: 'uniform',
-      tune: { sheen: 0.28, sheenColor: 0x26281e, spec: 0.24, env: 1.45, rough: 1.0 },
+      tune: { sheen: 0.28, sheenColor: 0x26281e, spec: 0.24, env: 1.0, rough: 1.0 },
     },
     webbing: {
       name: 'fabric_webbing', repeat: 0.45, detail: 0.5, key: 'webbing',
-      tune: { sheen: 0.22, sheenColor: 0x1d1f18, spec: 0.22, env: 1.35, rough: 0.97 },
+      tune: { sheen: 0.22, sheenColor: 0x1d1f18, spec: 0.22, env: 0.95, rough: 0.97 },
     },
     helmet: {
       name: 'fabric_webbing', repeat: 0.4, detail: 0.45, key: 'helmet',
-      tune: { sheen: 0.2, sheenColor: 0x191b14, spec: 0.28, env: 1.3, rough: 0.9 },
+      tune: { sheen: 0.2, sheenColor: 0x191b14, spec: 0.28, env: 0.9, rough: 0.9 },
     },
     /**
      * The light end of the ladder, and the whole point of this round: shoulder yokes,
@@ -1116,7 +1128,7 @@ export default function createCharacterBuilder(ctx) {
      */
     panel: {
       name: 'fabric_uniform', repeat: 0.45, detail: 0.5, key: 'panel',
-      tune: { sheen: 0.26, sheenColor: 0x2b2d22, spec: 0.24, env: 1.5, rough: 1.0 },
+      tune: { sheen: 0.26, sheenColor: 0x2b2d22, spec: 0.24, env: 1.0, rough: 1.0 },
     },
     boot: {
       name: 'rubber_tyre', repeat: 0.5, detail: 0.5, key: 'boot',
