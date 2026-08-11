@@ -286,34 +286,29 @@ export default class TonemapPass extends Pass {
        * digital, but roughly a fifth of the tint.
        */
       /**
-       * **Corrected once more: (0, 5, 20) was not a black point, it was no black point.**
-       *
-       * Taking the teal cast out was right, but it was taken out by very nearly deleting
-       * the toe altogether, and the set-level measurement caught the cost: the fraction
-       * of the frame under L 32 went from 30.1 % to 39.7 % across eight poses, with the
-       * three sky-dominated frames — night 49 -> 79, vista 12.7 -> 35.4, weapon 55 -> 64 —
-       * carrying most of it. A film stock does not resolve below its base density; a
-       * digital zero reads as a hole and it is the single biggest contributor to the
-       * "crushed" finding.
-       *
-       * These land the black point at roughly sRGB (6, 10, 18) — L 9.7 against the
-       * previous 5.0 and the round-2 teal's 16.2. Still recognisably a cool near-black,
-       * still a third of the tint that was doing the damage, and it costs nothing
-       * anywhere else in the range because `lift` decays as `1 - c`.
+       * **Tried raising the black point to buy back the crush metric; measured it; put
+       * it back.** Lifting these to a black point of sRGB (6, 10, 18) did reduce the
+       * fraction of the frame under L 32 — by about two points a pose — but `lift` is
+       * *additive*, so it lands almost entirely on the darkest quartile, and the
+       * lit/shadow ratio of the ground is exactly a statistic about that quartile: on
+       * the ads pose it took ground contrast from 3.91 to 2.86 and on hero from 2.46 to
+       * 2.23, i.e. it undid, in the grade, the shadow contrast the cascade work had just
+       * bought in the lighting. Crush has to be fixed with light — the night sky floor,
+       * the metering weight, the aperture occlusion — not by refusing to render black.
        */
-      lift: new THREE.Vector3(0.003, 0.0032, 0.0042),
+      lift: new THREE.Vector3(0.0012, 0.0016, 0.0028),
       gamma: new THREE.Vector3(1.0, 1.0, 1.005),
       gain: new THREE.Vector3(1.005, 1.0, 0.994),
-      shadowTint: new THREE.Vector3(-0.001, 0.0, 0.0022),
+      shadowTint: new THREE.Vector3(-0.0015, 0.0, 0.0035),
       // A touch more warmth where the key lands: the highlight end is the half of the
       // golden-hour contrast the set has never actually had. See `agxHiSat` below.
       highlightTint: new THREE.Vector3(0.019, 0.008, -0.011),
       splitBalance: 0.35,
       saturation: 1.02,
       vibrance: 0.09,
-      // The toe crush is a second deduction on top of the black point, applied to the
-      // same pixels; with the black point back it is no longer needed at full strength.
-      shadowCrush: 0.07,
+      // Multiplicative in the toe, so unlike `lift` it does not flatten the lit/shadow
+      // ratio; left where it was.
+      shadowCrush: 0.1,
       /**
        * The rolloff pushes the top of the range towards 1 in every channel at once, so
        * every stop it adds is a stop of channel separation taken *out* of the brightest
