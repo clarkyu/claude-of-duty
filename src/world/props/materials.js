@@ -83,7 +83,7 @@ export const PROP_MATS = {
   skin: { base: 'plywood_painted', tint: 0x9a7a5c, opts: { repeat: 0.9, grime: 0.5 }, rough: [0.5, 0.82] },
   /* Not double-sided: a thobe here is a closed tube, so the back faces are never
      seen and `double` is a straight doubling of its fragment cost. */
-  robe: { base: 'fabric_canvas', tint: 0xc9c3b1, opts: { repeat: 1.1, grime: 0.85 } },
+  robe: { base: 'fabric_canvas', tint: 0xc9c3b1, opts: { repeat: 1.1, grime: 0.85, envMapIntensity: 1.5 } },
 
   /**
    * Washing.
@@ -99,7 +99,23 @@ export const PROP_MATS = {
    * Double-sided because a hanging sheet genuinely is, near-white because washing is,
    * and in the CLOTH set below so it moves in the wind.
    */
-  washing: { base: 'fabric_canvas', tint: 0xd9d4c6, opts: { repeat: 1.3, side: 'double', grime: 0.75 } },
+  washing: {
+    base: 'fabric_canvas',
+    tint: 0xe4e0d4,
+    /**
+     * `envMapIntensity` is the load-bearing value here, not the tint.
+     *
+     * Switching the cloth from painted steel to fabric helped and did not finish the
+     * job: measured on the hero frame the garments were still near-black, because
+     * they hang at 4-5 m in a street canyon with a 15-degree sun, so they are not
+     * backlit — they are simply *in shadow*, and a shadowed surface is lit by the
+     * ambient term alone. A shirt on a line over an open street sees most of the sky
+     * hemisphere, which is exactly the case the default env intensity of 1.0 (tuned
+     * for a wall in a slot of sky) under-serves. 2.4 is the ratio between those two
+     * situations and it costs nothing at night, when there is no sky to gather.
+     */
+    opts: { repeat: 1.3, side: 'double', grime: 0.7, envMapIntensity: 2.4 },
+  },
 
   /* ── emissive lenses: built by PropPalette.lens(), listed here so surfaceTag()
         still reports glass to ballistics and FX ─────────────────────────────── */
