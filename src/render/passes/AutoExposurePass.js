@@ -36,9 +36,15 @@ const METER_WEIGHT = /* glsl */ `
 float meterWeight( vec2 uv ) {
   vec2 d = uv - vec2( 0.5 );
   d.y *= 0.82;                                  // slightly wider than tall
-  float radial = 1.0 - smoothstep( 0.16, 0.62, length( d ) );
-  float lower = 1.0 - 0.88 * smoothstep( 0.52, 0.98, uv.y );  // uv.y 1.0 = bottom
-  return max( 0.02, radial * lower );
+  float radial = 1.0 - smoothstep( 0.22, 0.78, length( d ) );
+  // The bottom of frame used to be suppressed 0.88 because the viewmodel was metered
+  // along with the scene. It no longer is — RenderPipeline meters before the viewmodel
+  // is composited — so that term became a second deduction on top of the first, and it
+  // measurably under-exposed the poses where the gun is largest: firefight median L
+  // 80 -> 69.4, and the weapon pose's ochre wall (132,81,49) -> (72,53,40). What remains
+  // is only the mild real-camera bias away from the bottom edge.
+  float lower = 1.0 - 0.22 * smoothstep( 0.70, 1.0, uv.y );
+  return max( 0.10, radial * lower );
 }
 `;
 
