@@ -1036,6 +1036,8 @@ class Lighting {
       uCodBounce: { value: new THREE.Vector4(0, 0, 0, 1) },
       /** x = AO floor on the indirect term, y = spare. */
       uCodAoFloor: { value: new THREE.Vector2(0.34, 0) },
+      /** Global scale on the irradiance SH — see the `COD_SH` block in `_glsl()`. */
+      uCodShGain: { value: 1 },
       /* ── window / aperture portals, see `_updatePortals` ───────────────── */
       uCodPortalP: { value: Array.from({ length: PORTAL_SLOTS }, () => new THREE.Vector4()) },
       uCodPortalN: { value: Array.from({ length: PORTAL_SLOTS }, () => new THREE.Vector4(0, 0, 1, 0)) },
@@ -2607,6 +2609,34 @@ vec3 codPortalIrradiance( vec3 wp, vec3 wn, out vec4 aim ) {
       pars += `
 #define COD_SH 1
 uniform vec3 uCodSH[ 9 ];
+uniform float uCodShGain;
+
+/**
+ * **How much of the SH a material is allowed to receive.**
+ *
+ * The diffuse ambient in this rig is an irradiance SH injected into iblIrradiance,
+ * and it was being multiplied by envMapIntensity — which is not an ambient control.
+ * It is the dial a material author reaches for to stop a *specular* environment lobe
+ * making something look like wet plastic, and across this project it is authored
+ * anywhere from 0.35 to 2.4 for exactly that reason. The consequence, measured by the
+ * character agent on the firefight pose: soldier kit ships at 0.55, so every soldier in
+ * the level was quietly receiving 55 % of the fill the pavement behind them got, and
+ * read as a hole in the frame at mean luma 57-71 against a 94-100 background. No
+ * material-side change could fix it, because the term is ours.
+ *
+ * Diffuse ambient is a property of the *place*, not of a material's reflection slot, so
+ * the material's opinion is kept but bounded: it can still tune its own fill by a
+ * reasonable factor, and it can no longer starve or flood it. The floor is what puts
+ * the characters and the viewmodel back on the same footing as the geometry they stand
+ * on; the ceiling stops a 2.4 prop out-glowing the street.
+ */
+float codShScale() {
+	#if defined( USE_ENVMAP )
+		return uCodShGain * clamp( envMapIntensity, 0.85, 1.6 );
+	#else
+		return uCodShGain;
+	#endif
+}
 
 /** Ramamoorthi/Hanrahan L2 irradiance. Returns E, matching getIBLIrradiance(). */
 vec3 codShIrradiance( vec3 nView ) {
@@ -2813,7 +2843,7 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
         mapsChunk = mapsChunk.replace(
           needle,
           `#ifdef COD_SH
-				iblIrradiance += codShIrradiance( geometryNormal ) * envMapIntensity;
+				iblIrradiance += codShIrradiance( geometryNormal ) * codShScale();
 			#else
 				iblIrradiance += getIBLIrradiance( geometryNormal );
 			#endif`
@@ -2833,6 +2863,25 @@ vec3 codIblRadiance( vec3 viewDir, vec3 nrm, float rough ) {
         );
       }
     }
+    /**
+     * **A material with no cube-uv environment still stands in a place.**
+     *
+     * three emits its IBL diffuse only inside
+     * `#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )`, so the needle
+     * replaced above — and with it the entire irradiance SH, which is the only diffuse
+     * ambient this rig has — is compiled out of any material the renderer did not hand a
+     * cube-uv environment. Such a material is then lit by the key and nothing else: pure
+     * black wherever the sun does not reach. Re-add it outside the guard; the negated
+     * `#if` means it can never double-count with the branch above.
+     */
+    if (useSH) {
+      mapsChunk += `
+#if defined( COD_SH ) && defined( RE_IndirectDiffuse ) && !( defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV ) )
+	iblIrradiance += codShIrradiance( geometryNormal ) * codShScale();
+#endif
+`;
+    }
+
     /**
      * ---- aperture portals: an opening lights the room it opens into ----
      *
