@@ -78,6 +78,13 @@ try {
     const t = Date.now();
     process.stdout.write(`  ${name.padEnd(11)} `);
     try {
+      // Re-boot between poses. A single boot lets the simulation run on across the whole
+      // set: the player dies partway through and every later pose is captured through a
+      // "RESPAWN IN n" death overlay. Measured on one contaminated run, firefight came
+      // out at mean L 37.5 with 50.8% of pixels under L32, against 93.1 and 6.8% for the
+      // identical code captured alive. That is the HUD, not the renderer, and it silently
+      // corrupts every review that reads the set.
+      if (name !== names[0]) await bootGame(page, server.url, { quality });
       const stats = await capture(page, pose, out, {
         warm: warmOverride ? Number(warmOverride) : null,
       });
