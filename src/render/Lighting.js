@@ -15,9 +15,13 @@
  *                (the same scattering model the sky dome renders) plus a **measured**
  *                one-bounce term: a 16-bin horizon profile raycast against the
  *                collision world tells the projection which bearings are sky and which
- *                are masonry, and shades the masonry properly. Shadowed faces therefore
- *                pick up warm facade bounce where a wall is standing and sky blue where
- *                it is not — for free, and with no ringing. See `_gatherLocalEnvironment`.
+ *                are masonry, and shades the masonry properly — by the sun it can
+ *                actually see, by the sky it can actually see, and by whichever of the
+ *                level's practicals are switched on and within range. Shadowed faces
+ *                therefore pick up warm facade bounce where a wall is standing and sky
+ *                blue where it is not, and after dark the street is lit by the bounce of
+ *                its own lamps rather than by the airglow floor alone — for free, and
+ *                with no ringing. See `_gatherLocalEnvironment` / `_practicalIrradiance`.
  *   • specular — the sky's PMREM roughness chain on `scene.environment`, overridden
  *                locally by box-projected reflection probes (see ProbeSystem.js).
  *
@@ -83,6 +87,8 @@ const _hzO = new THREE.Vector3();
 const _hzD = new THREE.Vector3();
 const _hzP = new THREE.Vector3();
 const _hzN = new THREE.Vector3();
+/** Scratch for `_practicalIrradiance` — must not alias the horizon fan's own vectors. */
+const _peD = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
 const _DOWN = new THREE.Vector3(0, -1, 0);
 
@@ -923,6 +929,18 @@ const HZ_RANGE = 52;
 const HZ_FEATHER = 0.11;
 /** A one-point probe is not the whole scene: never claim more than this much occlusion. */
 const HZ_FILL = 0.86;
+/**
+ * Mean fraction of a practical that reaches a probe hit inside its radius.
+ *
+ * `_practicalIrradiance` costs one dot product per light per hit, which is affordable;
+ * a shadow raycast per light per hit is not (16 lights x ~90 hits). So the visibility
+ * is a constant, and it has to be an honest one: a street lamp lights the pavement
+ * under it and roughly half of what else is inside its 8-12 m radius, the rest being
+ * behind a stall, a planter, a parked truck or the kerb it is standing on. Measured
+ * against the sun visibility the same probe *does* raycast (`_hzVis`, 0.3-0.6 on this
+ * plaza at golden hour), 0.55 is the same order and errs low.
+ */
+const PRACTICAL_VIS = 0.55;
 /** Diffuse albedo relative to BOUNCE_ALBEDO, by physics surface tag. */
 const BOUNCE_GAIN = {
   concrete: 1.3,
@@ -1725,15 +1743,25 @@ class Lighting {
     return dirs;
   }
 
-  /** Cache key for the local environment probe: where we stand, and where the sun is. */
+  /**
+   * Cache key for the local environment probe: where we stand, where the sun is — and
+   * how many practicals are burning, because since `_practicalIrradiance` the lamps are
+   * part of what the probe measures. Without the light count a level that publishes its
+   * street lighting *after* the first probe (which is every level: `init()` runs at
+   * order 24, `level:ready` lands later) would keep a profile gathered in an empty
+   * world until the camera happened to move two metres.
+   */
   _envKey() {
     const cam = this.ctx.camera;
     if (!cam) return '';
     const p = cam.position;
     const d = this.sunDirection;
+    // The *registered* count, not the active one: `_mod` flickers, and a key that
+    // flickers re-fires 150 raycasts every half second for nothing.
+    const n = this.lights?.requests?.length ?? 0;
     return `${Math.round(p.x * 0.5)},${Math.round(p.y * 0.5)},${Math.round(p.z * 0.5)}|${Math.round(
       d.x * 40
-    )},${Math.round(d.y * 40)},${Math.round(d.z * 40)}|${Math.round(this.sunIntensity * 8)}`;
+    )},${Math.round(d.y * 40)},${Math.round(d.z * 40)}|${Math.round(this.sunIntensity * 8)}|${n}`;
   }
 
   /**
@@ -1748,6 +1776,95 @@ class Lighting {
    * @param {number} eR sky irradiance on an unoccluded horizontal plane, per channel
    * @returns {object|null} the cached profile, or null when there is no physics world
    */
+  /**
+   * **The practicals have to bounce too, and at night they are the only thing that can.**
+   *
+   * Every term in the horizon probe below shades its hits with the sun and the sky and
+   * nothing else. Outdoors at midday that is nearly the whole truth. On the night pose
+   * it is *none* of it: the sun is gone, `sampleSky` returns essentially zero, and the
+   * only light in the level is fourteen sodium street lamps and the market's interior
+   * practicals — not one photon of which reached the irradiance SH, the bounce colour
+   * the screen-space AO occludes towards, or anything else in the indirect path. So the
+   * whole frame outside a lamp's own falloff was lit by the airglow floor alone, which
+   * is exactly the measured defect: 81 % of the night frame under L 32 and a central
+   * channel spread of 3.7 — a warm-lit street rendered as a monochrome dark one.
+   *
+   * Raising the airglow does not fix that (it was tried; the dome is a handful of pixels
+   * in a canyon, so it moved the meter and not the frame). What was missing is the
+   * bounce of the lamps themselves, and this is it: three's own punctual falloff —
+   * `1/d²` inside a `(1 - (d/R)⁴)²` window, `decay = 2` — evaluated at the probe hit, so
+   * the number is in exactly the same render units as the solar term beside it and
+   * carries the same daylight dimmer (`_mod`) that decides whether a lamp is on at all.
+   * In full sun a sky-lit lamp is at 5 % and contributes nothing; in the canyon it is at
+   * a third and gives the hero foreground the motivated warm fill the review asked for.
+   *
+   * Writes `_peR/_peG/_peB`. Allocation-free; called once per probe hit.
+   *
+   * @param {THREE.Vector3} p world-space surface point
+   * @param {THREE.Vector3} n unit surface normal
+   */
+  _practicalIrradiance(p, n) {
+    this._peR = 0;
+    this._peG = 0;
+    this._peB = 0;
+    const list = this.lights?.requests;
+    if (!list || !list.length) return;
+    const scale = this.localLightScale;
+    if (!(scale > 0)) return;
+    let sr = 0;
+    let sg = 0;
+    let sb = 0;
+    for (let i = 0; i < list.length; i++) {
+      const L = list[i];
+      if (!L.enabled) continue;
+      /**
+       * The muzzle flash and the explosion light are deliberately excluded. They are
+       * 55 ms transients and this probe is *cached* — keyed on the camera and the sun,
+       * refreshed a few times a second at best — so a flash caught by the gather would
+       * be baked into the irradiance SH and the AO's bounce colour and stay there long
+       * after the flash itself was gone. A flash lights the scene as the punctual light
+       * it already is; it has no business in the ambient.
+       */
+      if (L === this._muzzleLight || L === this._blastLight) continue;
+      const mod = L._mod ?? 0;
+      if (mod <= 0.02 || !(L.intensity > 0.01)) continue;
+      const dx = L.position.x - p.x;
+      const dy = L.position.y - p.y;
+      const dz = L.position.z - p.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      const rad = Math.max(L.radius, 0.5);
+      const r2 = rad * rad;
+      if (d2 >= r2) continue;
+      const inv = 1 / Math.sqrt(Math.max(d2, 1e-6));
+      const ndl = (dx * n.x + dy * n.y + dz * n.z) * inv;
+      if (ndl <= 0) continue;
+      const t = d2 / r2;
+      const win = Math.max(1 - t * t, 0);
+      // The 0.09 floor is the same "a point light is not actually a point" guard three
+      // applies; without it a probe hit 10 cm from a lamp returns a hundred suns.
+      let k = (L.intensity * mod * scale * ndl * win * win) / Math.max(d2, 0.09);
+      if (L.type === 'spot') {
+        _peD.copy(L.target).sub(L.position);
+        const len = _peD.length();
+        if (len < 1e-5) continue;
+        _peD.multiplyScalar(1 / len);
+        const cosA = -(dx * _peD.x + dy * _peD.y + dz * _peD.z) * inv;
+        const ang = clamp(L.angle, 0.02, Math.PI / 2 - 0.01);
+        const cosOuter = Math.cos(ang);
+        if (cosA <= cosOuter) continue;
+        const cosInner = Math.cos(ang * (1 - clamp01(L.penumbra) * 0.85));
+        if (cosA < cosInner) k *= (cosA - cosOuter) / Math.max(cosInner - cosOuter, 1e-4);
+      }
+      k *= PRACTICAL_VIS;
+      sr += L.color.r * k;
+      sg += L.color.g * k;
+      sb += L.color.b * k;
+    }
+    this._peR = sr;
+    this._peG = sg;
+    this._peB = sb;
+  }
+
   _gatherLocalEnvironment(eR, eG, eB) {
     const ctx = this.ctx;
     const phys = ctx.physics;
@@ -1805,10 +1922,12 @@ class Lighting {
       const skyW = (0.5 + 0.5 * n.y) * openUp;
       const e = sunI * nl * vis;
       this._hzVis = vis;
+      // Sun + sky + *the lamps that are actually switched on*. See _practicalIrradiance.
+      this._practicalIrradiance(hit.point, n);
       _color.setRGB(
-        BOUNCE_ALBEDO.r * gain * (e * sunC.r + eR * skyW) * INV_PI,
-        BOUNCE_ALBEDO.g * gain * (e * sunC.g + eG * skyW) * INV_PI,
-        BOUNCE_ALBEDO.b * gain * (e * sunC.b + eB * skyW) * INV_PI
+        BOUNCE_ALBEDO.r * gain * (e * sunC.r + eR * skyW + this._peR) * INV_PI,
+        BOUNCE_ALBEDO.g * gain * (e * sunC.g + eG * skyW + this._peG) * INV_PI,
+        BOUNCE_ALBEDO.b * gain * (e * sunC.b + eB * skyW + this._peB) * INV_PI
       );
     };
 
@@ -2347,6 +2466,30 @@ class Lighting {
       g = Math.max(c.y, 0) * 0.0282;
       b = Math.max(c.z, 0) * 0.0282;
     }
+    /**
+     * **Occlusion may recolour the indirect term; it may never brighten it.**
+     *
+     * The shader evaluates `iblIrradiance * ao + bounce * (1 - ao) * gain`, which is a
+     * lerp between the open-sky irradiance and the bounce — correct, and bounded by
+     * whichever of the two is larger. In daylight the sky is always the larger, so the
+     * bound never binds and nobody noticed it was there. At night it inverts: the sky is
+     * an airglow floor and the surroundings are lit by sodium, so once the practicals
+     * feed the probe (see `_practicalIrradiance`) the bounce can exceed the sky by 2x —
+     * and a screen-space AO term is not a measurement of "this fragment faces the lit
+     * pavement", it is a measurement of "this fragment is in a crevice". Left uncapped
+     * it would light every crevice in the level brighter than the wall around it.
+     *
+     * So cap the bounce at the SH's own DC irradiance (`0.886227 * c0`, the constant
+     * term of `codShIrradiance`), which is the mean irradiance the environment delivers.
+     * Occlusion then always removes energy, and only ever changes its colour.
+     */
+    if (this._shValid) {
+      const c = this.sh.coefficients[0];
+      const cap = 0.886227 / Math.PI;
+      r = Math.min(r, Math.max(c.x, 0) * cap);
+      g = Math.min(g, Math.max(c.y, 0) * cap);
+      b = Math.min(b, Math.max(c.z, 0) * cap);
+    }
     u.set(Math.max(r, 0) * Math.PI, Math.max(g, 0) * Math.PI, Math.max(b, 0) * Math.PI, this.bounceGain);
     this.uniforms.uCodAoFloor.value.x = this.aoFloor;
   }
@@ -2612,30 +2755,36 @@ uniform vec3 uCodSH[ 9 ];
 uniform float uCodShGain;
 
 /**
- * **How much of the SH a material is allowed to receive.**
+ * **How much of the SH a material is allowed to receive: all of it.**
  *
- * The diffuse ambient in this rig is an irradiance SH injected into iblIrradiance,
- * and it was being multiplied by envMapIntensity — which is not an ambient control.
- * It is the dial a material author reaches for to stop a *specular* environment lobe
- * making something look like wet plastic, and across this project it is authored
- * anywhere from 0.35 to 2.4 for exactly that reason. The consequence, measured by the
- * character agent on the firefight pose: soldier kit ships at 0.55, so every soldier in
- * the level was quietly receiving 55 % of the fill the pavement behind them got, and
- * read as a hole in the frame at mean luma 57-71 against a 94-100 background. No
- * material-side change could fix it, because the term is ours.
+ * This used to scale the irradiance SH — the only diffuse ambient in the whole rig — by
+ * envMapIntensity, on the theory that the character agent's soldier kit shipped at
+ * 0.55 and was therefore receiving 55 % of the fill the pavement behind it got. That
+ * theory is wrong, and the character agent's own third experiment is the proof: it set
+ * envMapIntensity to 1.45 on the soldier materials and measured **no change at all**.
  *
- * Diffuse ambient is a property of the *place*, not of a material's reflection slot, so
- * the material's opinion is kept but bounded: it can still tune its own fill by a
- * reasonable factor, and it can no longer starve or flood it. The floor is what puts
- * the characters and the viewmodel back on the same footing as the geometry they stand
- * on; the ceiling stops a 2.4 prop out-glowing the street.
+ * The reason is in three itself (WebGLRenderer, the refreshMaterial block):
+ *
+ *     if ( material.isMeshStandardMaterial && material.envMap === null &&
+ *          scene.environment !== null )
+ *         m_uniforms.envMapIntensity.value = scene.environmentIntensity;
+ *
+ * Every material in this level takes its environment from scene.environment, so the
+ * envMapIntensity the *shader* sees is never the material's — it is the scene's, which
+ * _rebuildIBL pins at 1. So the clamp was a no-op across the entire world scene, and
+ * the only place it did anything was the viewmodel scene, where WeaponSystem
+ * deliberately sets environmentIntensity to 0.035-0.17 to stop the HDR sky making a
+ * mirror of the gun. There the clamp's floor turned that into a flat 0.85x tax on the
+ * viewmodel's diffuse fill — the one term that had nothing to do with the specular
+ * problem it was set for, and the reason the review found the same flattening on "every
+ * dynamic object including the viewmodel".
+ *
+ * Diffuse ambient is a property of the *place*. A material's reflection slot does not
+ * get a vote, and neither does a scene-level specular trim. Characters, props and the
+ * viewmodel now receive exactly the irradiance the geometry they stand on receives.
  */
 float codShScale() {
-	#if defined( USE_ENVMAP )
-		return uCodShGain * clamp( envMapIntensity, 0.85, 1.6 );
-	#else
-		return uCodShGain;
-	#endif
+	return uCodShGain;
 }
 
 /** Ramamoorthi/Hanrahan L2 irradiance. Returns E, matching getIBLIrradiance(). */

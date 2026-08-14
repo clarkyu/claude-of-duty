@@ -22,29 +22,33 @@ import * as THREE from 'three';
 import { Pass, GLSL_LIB, postMaterial, blit } from './Pass.js';
 
 /**
- * Metering weight. A flat full-frame log-average lets the viewmodel drive the
- * exposure: when the player aims, a blown optic and a big slab of gun fill a
- * narrowed FOV, drag the average up, and the whole world stops down with them —
- * measured as the sky falling from (105,118,131) to (12,15,19) between the hero
- * and ads poses at the same hour. Real cameras centre-weight, and the viewmodel
- * is not part of the scene the exposure is metering.
+ * Metering weight. A flat full-frame log-average lets whatever happens to be large
+ * drive the exposure. Real cameras centre-weight, so this is a radial falloff about
+ * the optical centre plus a bias away from the sky.
  *
- * Radial falloff about the centre, with the bottom of the frame suppressed
- * hardest because that is where the weapon lives.
+ * **Which edge is which.** `Pass.js` draws every post pass as a fullscreen triangle with
+ * `uv = (0,0)` pinned to clip `(-1,-1)`, so `uv.y = 0` is the **bottom** of the frame and
+ * `uv.y = 1` is the **top**. The asymmetric term below therefore de-weights the *top* —
+ * the sky — and always has, whatever three rounds of comments above it claimed. That is
+ * worth keeping and worth stating: biasing a centre-weighted meter away from the sky is
+ * exactly what a stills camera does, and on the exterior poses it is the only thing
+ * stopping a bright dome metering the shaded street underneath it into the floor.
+ *
+ * What is *not* needed any more is a viewmodel deduction of any kind, at either edge:
+ * `RenderPipeline` meters `rtComp` before the viewmodel is composited, so the gun is
+ * not in this average at all. Anyone reading a "the weapon lives at the bottom"
+ * justification here should delete the justification, not flip the term — flipping it
+ * would take 22 % of the metering weight off the pavement in the near foreground, which
+ * is the region the review has now twice measured as the darkest in 8 of 8 frames.
  */
 const METER_WEIGHT = /* glsl */ `
 float meterWeight( vec2 uv ) {
   vec2 d = uv - vec2( 0.5 );
   d.y *= 0.82;                                  // slightly wider than tall
   float radial = 1.0 - smoothstep( 0.22, 0.78, length( d ) );
-  // The bottom of frame used to be suppressed 0.88 because the viewmodel was metered
-  // along with the scene. It no longer is — RenderPipeline meters before the viewmodel
-  // is composited — so that term became a second deduction on top of the first, and it
-  // measurably under-exposed the poses where the gun is largest: firefight median L
-  // 80 -> 69.4, and the weapon pose's ochre wall (132,81,49) -> (72,53,40). What remains
-  // is only the mild real-camera bias away from the bottom edge.
-  float lower = 1.0 - 0.22 * smoothstep( 0.70, 1.0, uv.y );
-  return max( 0.10, radial * lower );
+  // Sky bias: uv.y = 1 is the top of the frame (see the note above).
+  float skyBias = 1.0 - 0.22 * smoothstep( 0.70, 1.0, uv.y );
+  return max( 0.10, radial * skyBias );
 }
 `;
 
@@ -187,13 +191,26 @@ export default class AutoExposurePass extends Pass {
         uKey: { value: 0.115 },
         uMinGain: { value: 0.28 },
         /**
-         * Wide enough that neither end is the operative constraint for any pose the
-         * game contains, but still narrow enough that adaptation is a correction and
-         * not a normaliser: the sky's own `adaptLift` has already compressed the
-         * day-to-night range before the frame ever reaches this pass, and
-         * `uAutoStrength` blends most of the way back to the artistic exposure.
+         * **The ceiling was the operative constraint on the two poses the review calls
+         * crushed, which means the meter had no authority over either of them.**
+         *
+         * The claim above — "wide enough that neither end is the operative constraint
+         * for any pose the game contains" — is false for at least two of the eight. The
+         * night pose measures a display mean of L 24 and the weapon pose L 32, which put
+         * their log-averages an order of magnitude under the 0.115 key; the meter asks
+         * for 10-30x, gets 4.5, and every frame in that region renders at exactly the
+         * clamp. That is the same "auto-exposure is a constant" failure `uKey` was
+         * corrected for one round earlier, arrived at from the other end of the range,
+         * and it is a large part of the 81 % / 66 % under L 32 those two poses measure.
+         *
+         * 6.0 is still not a normaliser. `uAutoStrength` blends 30 % back towards the
+         * artistic exposure, so a fully railed frame renders at 4.5x rather than 3.45x —
+         * a third of a stop — and a night street at 81 % below L 32 is in no danger of
+         * looking like daylight after a third of a stop. Nothing changes for hero, ads,
+         * interior or firefight: those meter at 3-4x, inside the old range, so the
+         * clamp never touched them and still does not.
          */
-        uMaxGain: { value: 4.5 },
+        uMaxGain: { value: 6.0 },
         uAutoStrength: { value: 0.7 },
         uReset: { value: 1 },
       })
