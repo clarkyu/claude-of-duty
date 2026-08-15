@@ -10,7 +10,7 @@
  * Exit code is non-zero if the build fails or the game never boots, so agents can
  * gate on it.
  */
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { POSES, DEFAULT_SET } from './poses.js';
 import { ROOT, build, serve, launch, bootGame, capture } from './harness.mjs';
@@ -78,6 +78,13 @@ try {
     const t = Date.now();
     process.stdout.write(`  ${name.padEnd(11)} `);
     try {
+      // --resume: a reaped run costs at most one pose, not the whole set. Poses whose
+      // PNG already exists are skipped, so a watchdog can relaunch this command blindly.
+      if (flag('resume') && existsSync(out)) {
+        report.poses[name] = { ok: true, skipped: true, file: out, desc: pose.desc };
+        console.log('skip (already captured)');
+        continue;
+      }
       // Re-boot between poses. A single boot lets the simulation run on across the whole
       // set: the player dies partway through and every later pose is captured through a
       // "RESPAWN IN n" death overlay. Measured on one contaminated run, firefight came
